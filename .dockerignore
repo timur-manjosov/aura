@@ -1,0 +1,35 @@
+# Version control
+.git
+.gitignore
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Local data (bind-mounted at runtime, not needed in the image)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Tests / dev tooling (not needed at runtime)
+tests/
+pytest.ini
+pyrightconfig.json
+
+# Docs / misc
+README.md
+*.md
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml
+.dockerignore

@@ -1,0 +1,13 @@
+{
+    "ping_response": "Pong! 🏓",
+    "ping_command_name": "ping",
+    "ping_command_description": "Check whether Aura is responsive.",
+    "fact_add_modal_title": "Add as Aura Fact",
+    "fact_add_modal_label": "Fact content",
+    "fact_add_success": "Fact #{fact_id} created.",
+    "fact_add_empty_error": "Fact content can't be empty.",
+    "fact_permission_error": "You need the Manage Server permission to do that.",
+    "fact_list_title": "Aura's Active Facts",
+    "fact_list_empty": "There are no active facts for this server yet.",
+    "fact_list_truncated_note": "…and {count} more."
+}

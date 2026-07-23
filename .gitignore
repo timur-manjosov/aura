@@ -1,0 +1,27 @@
+# Environment / secrets
+.env
+
+# Local data (SQLite DB, etc.) — the directory is tracked, its contents are not
+data/*
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
