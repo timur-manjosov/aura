@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
+import numpy as np
+import pydantic
 import pytest
 
 from aura.db.models import Fact, FactLink, FactStatus
@@ -26,6 +28,15 @@ from aura.db.repository import (
 GUILD_A = 100000000000000001
 GUILD_B = 200000000000000002
 
+# A valid-shape (float32 x 384) but semantically meaningless embedding, for
+# tests that exercise storage/retrieval/concurrency/guild-isolation rather
+# than similarity ranking. IEEE-754 positive zero is the all-zero bit
+# pattern, so this is exactly what np.zeros(384, dtype=np.float32).tobytes()
+# would produce, without needing a real model (or even numpy) at this layer
+# -- similarity-ranking behavior itself is aura.embeddings's job, tested
+# against the real model in test_embeddings.py.
+_FAKE_EMBEDDING = bytes(384 * 4)
+
 
 @pytest.fixture
 async def conn():
@@ -42,9 +53,15 @@ async def _make_fact(
     channel_id: int = 1,
     message_id: int = 1,
     content: str = "test fact",
+    embedding: bytes = _FAKE_EMBEDDING,
 ) -> Fact:
     return await create_fact(
-        conn, guild_id=guild_id, channel_id=channel_id, message_id=message_id, content=content
+        conn,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        message_id=message_id,
+        content=content,
+        embedding=embedding,
     )
 
 
@@ -60,6 +77,18 @@ class TestModels:
     def test_fact_status_members_equal_their_db_string_values(self) -> None:
         assert FactStatus.ACTIVE == "active"
         assert FactStatus.SUPERSEDED == "superseded"
+
+    def test_fact_requires_an_embedding(self) -> None:
+        with pytest.raises(pydantic.ValidationError):
+            Fact(
+                id=1,
+                guild_id=GUILD_A,
+                channel_id=1,
+                message_id=1,
+                content="x",
+                status=FactStatus.ACTIVE,
+                created_at=datetime.fromisoformat("2026-01-01T00:00:00.000000+00:00"),
+            )  # type: ignore[call-arg]
 
 
 class TestInitSchema:
@@ -104,13 +133,34 @@ class TestInitSchema:
     ) -> None:
         await init_schema(conn)
 
+    async def test_null_embedding_is_rejected_at_the_schema_level(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # Deliberately bypasses create_fact() -- like the FK test above, this
+        # proves the schema itself enforces "every fact has an embedding"
+        # (the atomicity guarantee facts_service.add_fact relies on),
+        # independent of any application-level check.
+        with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+            await conn.execute(
+                """
+                INSERT INTO facts (guild_id, channel_id, message_id, content, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (GUILD_A, 1, 1, "no embedding", FactStatus.ACTIVE, "2026-01-01T00:00:00.000000+00:00"),
+            )
+
 
 class TestCreateFact:
     async def test_creates_an_active_fact_with_all_fields_set(
         self, conn: aiosqlite.Connection
     ) -> None:
         fact = await create_fact(
-            conn, guild_id=GUILD_A, channel_id=42, message_id=99, content="the sky is blue"
+            conn,
+            guild_id=GUILD_A,
+            channel_id=42,
+            message_id=99,
+            content="the sky is blue",
+            embedding=_FAKE_EMBEDDING,
         )
         assert fact.guild_id == GUILD_A
         assert fact.channel_id == 42
@@ -144,6 +194,7 @@ class TestCreateFact:
             channel_id=snowflake_channel,
             message_id=snowflake_message,
             content="realistic ids",
+            embedding=_FAKE_EMBEDDING,
         )
         assert fact.guild_id == snowflake_guild
         assert fact.channel_id == snowflake_channel
@@ -152,7 +203,12 @@ class TestCreateFact:
     async def test_unicode_content_round_trips_correctly(self, conn: aiosqlite.Connection) -> None:
         content = "サーバーのルールは 日本語 でも読めます 🎉 مرحبا"
         fact = await create_fact(
-            conn, guild_id=GUILD_A, channel_id=1, message_id=1, content=content
+            conn,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            content=content,
+            embedding=_FAKE_EMBEDDING,
         )
         [readback] = await get_active_facts(conn, GUILD_A)
         assert fact.content == content
@@ -162,7 +218,14 @@ class TestCreateFact:
         self, conn: aiosqlite.Connection
     ) -> None:
         malicious = "'; DROP TABLE facts; --"
-        await create_fact(conn, guild_id=GUILD_A, channel_id=1, message_id=1, content=malicious)
+        await create_fact(
+            conn,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            content=malicious,
+            embedding=_FAKE_EMBEDDING,
+        )
         active = await get_active_facts(conn, GUILD_A)
         assert [f.content for f in active] == [malicious]
 
@@ -171,8 +234,41 @@ class TestCreateFact:
         # deciding what counts as a fact worth storing is fact-extraction's
         # job (a later phase), not the data layer's. This documents that as
         # a deliberate choice rather than an untested gap.
-        fact = await create_fact(conn, guild_id=GUILD_A, channel_id=1, message_id=1, content="")
+        fact = await create_fact(
+            conn,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            content="",
+            embedding=_FAKE_EMBEDDING,
+        )
         assert fact.content == ""
+
+    async def test_embedding_blob_round_trips_bit_identical_through_sqlite(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # Deliberately varied, non-trivial float32 bit patterns (not just
+        # all-zero like _FAKE_EMBEDDING) -- proves SQLite's BLOB storage
+        # preserves arbitrary embedding bytes exactly, not just the
+        # degenerate all-zero case. IEEE-754 float bit patterns aren't
+        # constrained to valid UTF-8, so this also guards against a driver
+        # or column type silently mis-treating the blob as text.
+        original = np.linspace(-5.0, 5.0, 384, dtype=np.float32)
+        embedding_bytes = original.tobytes()
+
+        await create_fact(
+            conn,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            content="round trip check",
+            embedding=embedding_bytes,
+        )
+        [readback] = await get_active_facts(conn, GUILD_A)
+
+        assert isinstance(readback.embedding, bytes)
+        assert readback.embedding == embedding_bytes
+        assert np.array_equal(np.frombuffer(readback.embedding, dtype=np.float32), original)
 
     async def test_concurrent_creates_both_succeed_with_distinct_ids(
         self, conn: aiosqlite.Connection
@@ -198,6 +294,7 @@ class TestSupersedeFact:
             channel_id=1,
             message_id=2,
             content="new content",
+            embedding=_FAKE_EMBEDDING,
         )
         assert new.status == FactStatus.ACTIVE
         assert new.id != old.id
@@ -226,6 +323,7 @@ class TestSupersedeFact:
                 channel_id=1,
                 message_id=1,
                 content="should not be created",
+                embedding=_FAKE_EMBEDDING,
             )
         assert await get_active_facts(conn, GUILD_A) == []
 
@@ -234,7 +332,13 @@ class TestSupersedeFact:
     ) -> None:
         old = await _make_fact(conn)
         await supersede_fact(
-            conn, old_fact_id=old.id, guild_id=GUILD_A, channel_id=1, message_id=2, content="v2"
+            conn,
+            old_fact_id=old.id,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=2,
+            content="v2",
+            embedding=_FAKE_EMBEDDING,
         )
         with pytest.raises(FactAlreadySupersededError):
             await supersede_fact(
@@ -244,6 +348,7 @@ class TestSupersedeFact:
                 channel_id=1,
                 message_id=3,
                 content="v3-should-not-exist",
+                embedding=_FAKE_EMBEDDING,
             )
         active = await get_active_facts(conn, GUILD_A)
         assert [f.content for f in active] == ["v2"]
@@ -263,6 +368,7 @@ class TestSupersedeFact:
                 channel_id=1,
                 message_id=2,
                 content="should not be created",
+                embedding=_FAKE_EMBEDDING,
             )
         assert await get_active_facts(conn, GUILD_B) == []
         [still_active] = await get_active_facts(conn, GUILD_A)
@@ -281,6 +387,7 @@ class TestSupersedeFact:
                 channel_id=1,
                 message_id=2,
                 content=content,
+                embedding=_FAKE_EMBEDDING,
             )
 
         results = await asyncio.gather(
@@ -319,6 +426,7 @@ class TestSupersedeFact:
                 channel_id=1,
                 message_id=2,
                 content=content,
+                embedding=_FAKE_EMBEDDING,
             )
 
         results = await asyncio.gather(
@@ -458,7 +566,13 @@ class TestGetActiveFacts:
     async def test_superseded_facts_are_excluded(self, conn: aiosqlite.Connection) -> None:
         old = await _make_fact(conn, content="old")
         new = await supersede_fact(
-            conn, old_fact_id=old.id, guild_id=GUILD_A, channel_id=1, message_id=2, content="new"
+            conn,
+            old_fact_id=old.id,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=2,
+            content="new",
+            embedding=_FAKE_EMBEDDING,
         )
         active = await get_active_facts(conn, GUILD_A)
         assert [f.id for f in active] == [new.id]

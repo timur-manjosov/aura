@@ -1,4 +1,12 @@
 """Discord-facing command registration, grouped by knowledge-model area."""
+from aura.commands.ask import register_ask_command
+from aura.commands.config import register_config_command
 from aura.commands.facts import register_fact_commands
+from aura.commands.proactive import register_proactive_commands
 
-__all__ = ["register_fact_commands"]
+__all__ = [
+    "register_ask_command",
+    "register_config_command",
+    "register_fact_commands",
+    "register_proactive_commands",
+]

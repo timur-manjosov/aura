@@ -7,8 +7,10 @@ from typing import TYPE_CHECKING
 import aiosqlite
 import discord
 from discord import app_commands
+from fastembed import TextEmbedding
 
 from aura.db.repository import get_active_facts
+from aura.embeddings import find_similar_facts
 from aura.facts_service import add_fact
 from aura.i18n import t
 
@@ -29,6 +31,13 @@ _LIST_DISPLAY_LIMIT = 20
 # expected case.
 _FIELD_VALUE_DISPLAY_LIMIT = 200
 
+# Discord's slash command STRING options default to a 6000-character max --
+# comfortably enough for a full-text query, but far too long to ever put
+# raw into an embed title (hard-capped by Discord at 256 characters). This
+# is the display-only budget for a query embedded in fact_search_results_header;
+# the full, untruncated query text is still what gets embedded and searched.
+_QUERY_DISPLAY_LIMIT = 100
+
 
 def _truncate(content: str, limit: int) -> str:
     """Truncate content to limit characters, appending an ellipsis if it was cut."""
@@ -40,12 +49,12 @@ def _truncate(content: str, limit: int) -> str:
 class AddFactModal(discord.ui.Modal):
     """Collects and distills a fact's content from a moderator, pre-filled from a message.
 
-    Takes the DB connection directly rather than reaching into
-    interaction.client.db from on_submit: Modal.on_submit/on_error are
-    generic over the client type in the base class, so narrowing their
-    interaction parameter to Interaction[AuraClient] here would be an
-    incompatible override. Accepting the connection as a constructor
-    argument (from callers that *aren't* overriding a generic base method,
+    Takes the DB connection and embedding model directly rather than
+    reaching into interaction.client.db / .embedding_model from on_submit:
+    Modal.on_submit/on_error are generic over the client type in the base
+    class, so narrowing their interaction parameter to Interaction[AuraClient]
+    here would be an incompatible override. Accepting both as constructor
+    arguments (from callers that *aren't* overriding a generic base method,
     and so can type interaction.client precisely) sidesteps that entirely.
     """
 
@@ -53,6 +62,7 @@ class AddFactModal(discord.ui.Modal):
         self,
         *,
         db: aiosqlite.Connection,
+        model: TextEmbedding,
         locale: str,
         guild_id: int,
         channel_id: int,
@@ -61,6 +71,7 @@ class AddFactModal(discord.ui.Modal):
     ) -> None:
         super().__init__(title=_truncate(t("fact_add_modal_title", locale), 45))
         self._db = db
+        self._model = model
         self._guild_id = guild_id
         self._channel_id = channel_id
         self._message_id = message_id
@@ -88,6 +99,7 @@ class AddFactModal(discord.ui.Modal):
 
         fact = await add_fact(
             self._db,
+            self._model,
             guild_id=self._guild_id,
             channel_id=self._channel_id,
             message_id=self._message_id,
@@ -143,10 +155,13 @@ async def add_fact_context_menu(
     assert message.guild is not None  # guaranteed by guild_only()
     db = interaction.client.db
     assert db is not None  # setup_hook always finishes before commands go live
+    model = interaction.client.embedding_model
+    assert model is not None  # setup_hook always finishes before commands go live
 
     locale = str(interaction.locale)
     modal = AddFactModal(
         db=db,
+        model=model,
         locale=locale,
         guild_id=message.guild.id,
         channel_id=message.channel.id,
@@ -157,15 +172,36 @@ async def add_fact_context_menu(
 
 
 @app_commands.command(name="aura-facts", description="List Aura's current active facts for this server.")
+@app_commands.describe(
+    query="Optional: find facts similar to this text instead of listing all of them."
+)
 @app_commands.guild_only()
 @app_commands.checks.has_permissions(manage_guild=True)
-async def list_facts_command(interaction: discord.Interaction[AuraClient]) -> None:
-    """Show the guild's active facts, newest first, capped at _LIST_DISPLAY_LIMIT."""
+async def list_facts_command(
+    interaction: discord.Interaction[AuraClient], query: str | None = None
+) -> None:
+    """List the guild's active facts, or -- if query is given -- rank them by similarity to it.
+
+    query omitted or blank: unchanged Phase 1c behavior, newest-first,
+    capped at _LIST_DISPLAY_LIMIT. query given: a raw debug view over
+    find_similar_facts's ranking (fact content alongside its similarity
+    score) -- not the synthesized, cited answer a later phase builds on top
+    of this, on purpose.
+    """
     assert interaction.guild_id is not None  # guaranteed by guild_only()
     locale = str(interaction.locale)
 
     db = interaction.client.db
     assert db is not None  # setup_hook always finishes before commands go live
+
+    stripped_query = query.strip() if query else ""
+    if stripped_query:
+        model = interaction.client.embedding_model
+        assert model is not None  # setup_hook always finishes before commands go live
+        await _respond_with_search_results(
+            interaction, db, model, guild_id=interaction.guild_id, query=stripped_query, locale=locale
+        )
+        return
 
     facts = await get_active_facts(db, interaction.guild_id)
 
@@ -186,6 +222,36 @@ async def list_facts_command(interaction: discord.Interaction[AuraClient]) -> No
         )
     if remaining > 0:
         embed.set_footer(text=t("fact_list_truncated_note", locale, count=remaining))
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+async def _respond_with_search_results(
+    interaction: discord.Interaction[AuraClient],
+    db: aiosqlite.Connection,
+    model: TextEmbedding,
+    *,
+    guild_id: int,
+    query: str,
+    locale: str,
+) -> None:
+    """Run find_similar_facts and render a raw debug view: content plus score, per result."""
+    results = await find_similar_facts(db, model, guild_id=guild_id, query=query)
+    display_query = _truncate(query, _QUERY_DISPLAY_LIMIT)
+
+    if not results:
+        await interaction.response.send_message(
+            t("fact_search_no_matches", locale, query=display_query), ephemeral=True
+        )
+        return
+
+    embed = discord.Embed(title=t("fact_search_results_header", locale, query=display_query))
+    for fact, score in results:
+        embed.add_field(
+            name=f"#{fact.id} ({score:.3f})",
+            value=_truncate(fact.content, _FIELD_VALUE_DISPLAY_LIMIT),
+            inline=False,
+        )
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 

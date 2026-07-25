@@ -4,6 +4,9 @@
 # Local data (SQLite DB, etc.) — the directory is tracked, its contents are not
 data/*
 !data/.gitkeep
+prompts/*
+reports/*
+
 
 # Python
 __pycache__/

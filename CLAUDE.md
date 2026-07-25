@@ -113,3 +113,14 @@ Therefore, for every implementation, without exception:
 
 - Every non-trivial feature ships with `pytest` / `pytest-asyncio` tests: the happy path **and** the adversarial cases above.
 - Test fact-extraction and matching logic as pure functions/units, independent of Discord — a live Discord connection should never be required to verify this logic is correct.
+
+## Open Items (deferred, tracked here so they are not lost)
+
+- **Cross-guild shared budget for a future hosted free tier.** The proactive
+  daily cap (Phase 2a-2) is per-guild, which is correct when each deployment
+  brings its own OpenRouter key. A future hosted free tier would put many
+  guilds behind one shared key, where per-guild caps no longer bound the
+  operator's total spend — one busy guild, or many guilds together, could run
+  up a shared bill. A cross-guild budget layer would be needed above the
+  per-guild cap before offering that. Explicitly out of scope until such a tier
+  exists; noted here so it is designed for, not discovered.

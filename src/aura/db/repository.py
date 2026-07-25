@@ -1,59 +1,27 @@
 """Async data access for the knowledge model: facts, supersession, and links.
 
-All operations against a given aiosqlite.Connection are serialized through a
-lock scoped to that connection (see _lock_for). This isn't about SQLite
-throughput (aiosqlite already funnels every statement through one worker
-thread) -- it's about transaction integrity. A bare aiosqlite.Connection has
-exactly one transaction at a time; without this lock, two concurrently-running
-multi-statement operations (e.g. two supersede_fact calls) interleave their
-statements into what SQLite sees as a *single* transaction, so one call's
-rollback can silently discard the other call's already-committed work.
-Serializing every operation's DB work behind one lock is the simplest correct
-fix at the data volume this project targets.
-
-The lock is deliberately *per-connection*, not a single module-level
-asyncio.Lock. asyncio's lock only binds to a specific event loop lazily, the
-first time it's actually contended -- a module-level lock that's never
-contended (e.g. in a test that never runs two ops concurrently) will happily
-survive being reused from a later, different event loop, but the moment it
-*is* contended under one loop, it permanently binds to that loop and raises
-RuntimeError if a different loop ever contends it again. In production
-there's exactly one connection and one long-lived event loop for the
-process's whole life, so this never surfaces -- but a test suite naturally
-creates a fresh event loop per test, so a shared module-level lock would
-break the second test that exercises real contention. Keying the lock by
-connection identity means each connection (and, in tests, each fresh
-in-memory database) gets its own lock tied to whichever loop actually uses it.
+Every operation here runs under the shared per-connection lock from
+aura.db.connection, which is also where the reasoning for that lock lives --
+it is a rule for all writers on the connection, not just this module's.
 """
 from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from weakref import WeakKeyDictionary
 
 import aiosqlite
 
+from aura.db.connection import connection_lock, utc_now_iso
 from aura.db.models import Fact, FactStatus
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 _FACT_COLUMNS = (
-    "id, guild_id, channel_id, message_id, content, status, "
+    "id, guild_id, channel_id, message_id, content, embedding, status, "
     "superseded_by_id, created_at, superseded_at"
 )
-
-_connection_locks: WeakKeyDictionary[aiosqlite.Connection, asyncio.Lock] = WeakKeyDictionary()
-
-
-def _lock_for(conn: aiosqlite.Connection) -> asyncio.Lock:
-    """Return this connection's write/read serialization lock, creating it on first use."""
-    lock = _connection_locks.get(conn)
-    if lock is None:
-        lock = asyncio.Lock()
-        _connection_locks[conn] = lock
-    return lock
 
 
 class RepositoryError(Exception):
@@ -89,19 +57,6 @@ class CrossGuildLinkError(RepositoryError):
     """
 
 
-def _now_iso() -> str:
-    """Current UTC time as a fixed-width ISO-8601 string (always 6 fractional digits).
-
-    datetime.isoformat() omits the microsecond field entirely when it's
-    zero, which makes plain lexicographic string comparison of timestamps
-    unreliable. strftime's %f is always zero-padded to 6 digits, so these
-    strings sort correctly as text -- relied on by the periodic digest in a
-    later phase, and handy for `sqlite3 data/aura.db "select * from facts
-    order by created_at"` in the meantime.
-    """
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
-
-
 def _row_to_fact(row: sqlite3.Row) -> Fact:
     (
         id_,
@@ -109,6 +64,7 @@ def _row_to_fact(row: sqlite3.Row) -> Fact:
         channel_id,
         message_id,
         content,
+        embedding,
         status,
         superseded_by_id,
         created_at,
@@ -120,6 +76,7 @@ def _row_to_fact(row: sqlite3.Row) -> Fact:
         channel_id=channel_id,
         message_id=message_id,
         content=content,
+        embedding=embedding,
         status=FactStatus(status),
         superseded_by_id=superseded_by_id,
         created_at=created_at,
@@ -149,16 +106,25 @@ async def create_fact(
     channel_id: int,
     message_id: int,
     content: str,
+    embedding: bytes,
 ) -> Fact:
-    """Insert a new active fact and return it."""
-    created_at = _now_iso()
-    async with _lock_for(conn):
+    """Insert a new active fact and return it.
+
+    embedding is required, not optional: every fact this schema can produce
+    must carry one from the moment it's written, or find_similar_facts (see
+    aura.embeddings) has a silent invariant violation waiting to happen the
+    first time it scans a fact with none. Callers must compute it before
+    calling this function -- see aura.facts_service.add_fact for why the
+    computation itself belongs there, one call site, not here.
+    """
+    created_at = utc_now_iso()
+    async with connection_lock(conn):
         cursor = await conn.execute(
             """
-            INSERT INTO facts (guild_id, channel_id, message_id, content, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO facts (guild_id, channel_id, message_id, content, embedding, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (guild_id, channel_id, message_id, content, FactStatus.ACTIVE, created_at),
+            (guild_id, channel_id, message_id, content, embedding, FactStatus.ACTIVE, created_at),
         )
         await conn.commit()
         fact_id = cursor.lastrowid
@@ -170,6 +136,7 @@ async def create_fact(
         channel_id=channel_id,
         message_id=message_id,
         content=content,
+        embedding=embedding,
         status=FactStatus.ACTIVE,
         superseded_by_id=None,
         created_at=datetime.fromisoformat(created_at),
@@ -185,22 +152,30 @@ async def supersede_fact(
     channel_id: int,
     message_id: int,
     content: str,
+    embedding: bytes,
 ) -> Fact:
     """Insert a new active fact and mark old_fact_id superseded by it, atomically.
+
+    embedding is required for the same reason it's required on create_fact:
+    the new fact's content is different text than the one it replaces, so it
+    needs its own vector, computed by the caller before this is called. Not
+    wired to any command yet (see Phase 1d's scope), but every row this
+    function can produce must already satisfy find_similar_facts's
+    every-active-fact-has-an-embedding invariant.
 
     Raises FactAlreadySupersededError, with the whole transaction rolled
     back (including the new insert), if old_fact_id doesn't exist, is
     already superseded, or belongs to a different guild than guild_id.
     """
-    now = _now_iso()
-    async with _lock_for(conn):
+    now = utc_now_iso()
+    async with connection_lock(conn):
         try:
             cursor = await conn.execute(
                 """
-                INSERT INTO facts (guild_id, channel_id, message_id, content, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO facts (guild_id, channel_id, message_id, content, embedding, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (guild_id, channel_id, message_id, content, FactStatus.ACTIVE, now),
+                (guild_id, channel_id, message_id, content, embedding, FactStatus.ACTIVE, now),
             )
             new_fact_id = cursor.lastrowid
             assert new_fact_id is not None
@@ -232,6 +207,7 @@ async def supersede_fact(
         channel_id=channel_id,
         message_id=message_id,
         content=content,
+        embedding=embedding,
         status=FactStatus.ACTIVE,
         superseded_by_id=None,
         created_at=datetime.fromisoformat(now),
@@ -250,9 +226,9 @@ async def link_facts(conn: aiosqlite.Connection, fact_id_1: int, fact_id_2: int)
         raise SelfLinkError(f"Cannot link fact {fact_id_1} to itself.")
 
     fact_a_id, fact_b_id = sorted((fact_id_1, fact_id_2))
-    now = _now_iso()
+    now = utc_now_iso()
 
-    async with _lock_for(conn):
+    async with connection_lock(conn):
         async with conn.execute(
             "SELECT id, guild_id FROM facts WHERE id IN (?, ?)", (fact_a_id, fact_b_id)
         ) as cursor:
@@ -278,7 +254,7 @@ async def link_facts(conn: aiosqlite.Connection, fact_id_1: int, fact_id_2: int)
 
 async def get_active_facts(conn: aiosqlite.Connection, guild_id: int) -> list[Fact]:
     """Return every currently-active fact for a guild."""
-    async with _lock_for(conn):
+    async with connection_lock(conn):
         async with conn.execute(
             f"SELECT {_FACT_COLUMNS} FROM facts WHERE guild_id = ? AND status = ?",
             (guild_id, FactStatus.ACTIVE),
@@ -289,7 +265,7 @@ async def get_active_facts(conn: aiosqlite.Connection, guild_id: int) -> list[Fa
 
 async def get_linked_facts(conn: aiosqlite.Connection, fact_id: int) -> list[Fact]:
     """Return every fact linked to fact_id, checking both sides of the undirected link."""
-    async with _lock_for(conn):
+    async with connection_lock(conn):
         async with conn.execute(
             f"""
             SELECT {_FACT_COLUMNS} FROM facts

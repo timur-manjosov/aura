@@ -25,6 +25,12 @@ class Fact(BaseModel):
     `superseded_by_id` chains to the fact that replaced this one when
     `status` is SUPERSEDED; both it and `superseded_at` are None while a
     fact is still active.
+
+    `embedding` is `content`'s vector representation, float32 always (see
+    aura.embeddings.EMBEDDING_DTYPE), stored raw via ndarray.tobytes() and
+    read back via np.frombuffer(fact.embedding, dtype=EMBEDDING_DTYPE) --
+    never re-derived here, since deserializing needs the dtype declared once
+    and shared, not guessed independently at every read site.
     """
 
     id: int
@@ -32,6 +38,7 @@ class Fact(BaseModel):
     channel_id: int
     message_id: int
     content: str
+    embedding: bytes
     status: FactStatus
     superseded_by_id: int | None = None
     created_at: datetime
