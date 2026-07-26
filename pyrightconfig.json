@@ -1,6 +1,6 @@
 {
-    "include": ["src", "tests"],
-    "extraPaths": ["src"],
+    "include": ["src", "tests", "scripts"],
+    "extraPaths": ["src", "scripts"],
     "venvPath": ".",
     "venv": ".venv"
 }
