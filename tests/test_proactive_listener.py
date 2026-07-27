@@ -37,7 +37,6 @@ GUILD_B = 200000000000000002
 CONFIG = ProactiveGateConfig(
     question_threshold=0.0,
     similarity_threshold=0.5,
-    minimum_confidence_gap=0.1,
     cooldown_seconds=900.0,
     daily_cap=5,
 )
@@ -125,6 +124,22 @@ class _MatchingModel:
     def embed(self, documents: list[str], **_kwargs: object):
         for _ in documents:
             yield np.ones(4, dtype=np.float32)
+
+
+class _WeaklyMatchingModel:
+    """A fact that scores far under any plausible Stage 2 bar against a query.
+
+    Facts embed to a different basis direction than queries do, giving a fixed
+    cosine similarity of 0 -- comfortably below every threshold in play, so a
+    test using it is asserting "the similarity bar still rejects", not sitting
+    on a boundary that a future recalibration would silently move.
+    """
+
+    def embed(self, documents: list[str], **_kwargs: object):
+        for document in documents:
+            vector = np.zeros(4, dtype=np.float32)
+            vector[1 if document.startswith("A fact nothing resembles") else 0] = 1.0
+            yield vector
 
 
 async def _seed_matching_fact(conn: aiosqlite.Connection, *, guild_id: int = GUILD_A) -> None:
@@ -889,15 +904,22 @@ class TestNumericGateIsIndependentOfTheLLM:
 
 
 class TestThresholdInteraction:
-    """The recalibrated similarity threshold plus the gap must still reject a near-miss."""
+    """What two equally-matching facts do to the pipeline end to end.
 
-    async def test_two_topically_adjacent_facts_are_held_by_the_confidence_gap(
+    Through Phase 2b-3 this class asserted the opposite of what it asserts now:
+    a tie was held back before any paid call. Phase 2b-4 hands the tie to the
+    model instead, because a tie is exactly as likely to be two complementary
+    facts as two conflicting ones, and only the model can tell which.
+    """
+
+    async def test_two_equally_matching_facts_now_reach_synthesis_together(
         self, conn: aiosqlite.Connection
     ) -> None:
-        # A moderately-scoring, topically-adjacent fact with a rival that scores
-        # just as high: the message resembles the topic but no single fact
-        # clearly answers it. The gap check catches this before any paid call,
-        # so the lower 0.45 similarity bar does not, on its own, open the gate.
+        # The live complementary case, end to end: two facts scoring identically
+        # against the message. Both must reach synthesis, in one call, so the
+        # model can combine them or refuse -- and BOTH must be in the context,
+        # since an answer that cites one of a complementary pair is a worse
+        # answer, not a safer one.
         for message_id in (901, 902):
             await add_fact(
                 conn,
@@ -915,10 +937,45 @@ class TestThresholdInteraction:
         ) as synth:
             await _handle(message, db=conn, settings=_configured_settings())
 
-        synth.assert_not_awaited()  # never reached synthesis
+        synth.assert_awaited_once()
+        assert synth.await_args is not None
+        facts_sent = synth.await_args.args[0]
+        assert len(facts_sent) == 2, "both tied facts must reach the model, not just the winner"
+
+        [signal] = await get_recent_signals(conn, guild_id=GUILD_A, limit=10)
+        assert signal.verdict is GateVerdict.ELIGIBLE
+        assert signal.stage2_gap == pytest.approx(0.0, abs=1e-6)  # recorded, not enforced
+
+    async def test_a_top_score_under_the_bar_is_still_refused_end_to_end(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # The similarity bar is now the only Stage 2 check; removing the gap
+        # must not have quietly opened the gate to everything.
+        await add_fact(
+            conn,
+            _WeaklyMatchingModel(),  # type: ignore[arg-type]
+            guild_id=GUILD_A,
+            channel_id=999,
+            message_id=903,
+            content="A fact nothing resembles.",
+        )
+        message = _make_postable_message()
+
+        with patch(
+            "aura.proactive.responder.synthesize_answer",
+            AsyncMock(return_value=_CONFIDENT_RESULT),
+        ) as synth:
+            await _handle(
+                message,
+                db=conn,
+                model=_WeaklyMatchingModel(),
+                settings=_configured_settings(),
+            )
+
+        synth.assert_not_awaited()
         message.channel.send.assert_not_called()
         [signal] = await get_recent_signals(conn, guild_id=GUILD_A, limit=10)
-        assert signal.verdict is GateVerdict.AMBIGUOUS_FACTS
+        assert signal.verdict is GateVerdict.NO_MATCHING_FACT
 
 
 class TestFailuresNeverEscape:

@@ -4,12 +4,41 @@ Three gates, cheapest first, each one only reached if the previous one passed:
 
 1. **Question-likeness** (free, local). Does this even read like someone asking
    for information? See aura.proactive.question_detector.
-2. **Fact confidence** (free, local). Is there a fact that clearly answers it --
-   clearly meaning both "similar enough" and "distinctly more similar than the
-   runner-up", so Aura never answers confidently while two different facts
-   compete to be the answer.
+2. **Fact confidence** (free, local). Is there at least one fact similar enough
+   to be worth paying to reason about? See _score_best_two_facts, and the
+   "Why there is no confidence-gap gate" note below for what this stage
+   deliberately does NOT decide.
 3. **Budget** (durable, atomic). Is this channel off cooldown, and does this
    guild have any of today's escalations left? See aura.db.proactive_state.
+
+**Why there is no confidence-gap gate.** Through Phase 2b-3, Stage 2 also
+required the best fact to beat the runner-up by PROACTIVE_CONFIDENCE_GAP, on
+the theory that two facts scoring almost equally meant a near-duplicate or an
+unsuperseded contradiction, and that answering from whichever ranked first was
+a coin flip. Phase 2b-4 removed that requirement, because a similarity gap
+cannot tell apart the two situations it was being asked to distinguish:
+
+  * two facts compete because one is stale and the other replaced it -- Aura
+    must not answer from either without saying so; and
+  * two facts compete because both are genuinely relevant and COMPLEMENTARY --
+    the case CLAUDE.md's "Link" component exists for, where the right answer
+    combines them and cites both.
+
+Both produce the same small number here. Phase 2b-2's corpus already showed it
+(median gaps of 0.075 / 0.069 / 0.075 across answered, partial and
+contradictory cases -- indistinguishable), and Aura's first live day confirmed
+it from the other direction: two genuinely complementary maintenance facts were
+refused escalation three times at gaps of 0.047, 0.012 and 0.014, while
+/aura-ask -- which has no such gate -- combined the very same pair correctly in
+two different languages, citing both sources.
+
+Telling those two situations apart is a judgement about MEANING, not about
+geometry, so it is made where judgement lives: the synthesis prompt asks the
+model to check whether the facts it would cite genuinely conflict on the same
+specific detail and to refuse (answers_question=false) when they do. That is
+Stage 3's job, proven on real contradictions, and this stage no longer
+pre-empts it. The measured gap is still recorded on the trail -- it remains
+useful diagnostic reading -- it simply decides nothing.
 
 Nothing in this module calls an LLM or posts anything, in this sub-phase or
 by accident later: the gate's entire output is a DecisionTrail describing what
@@ -40,7 +69,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 from fastembed import TextEmbedding
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from aura.db.proactive_signals import DecisionTrail, GateVerdict
 from aura.db.proactive_state import (
@@ -57,9 +86,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Only the top two matter: the best candidate answer, and the runner-up it has
-# to beat by a clear margin. Ranking any deeper would be work whose result is
-# thrown away.
+# Two, still, but for a different reason than before Phase 2b-4. The top score
+# alone decides this stage now -- if it clears the threshold then at least one
+# fact qualifies, and if it does not then none can. The runner-up is fetched
+# solely so the trail can keep reporting the gap between them as diagnostic
+# context. Ranking deeper here would be work whose result is thrown away: the
+# responder does its own retrieval when it builds the synthesis context, and
+# THAT is where the number of facts actually matters (see
+# aura.embeddings.SYNTHESIS_FACT_LIMIT).
 _STAGE2_TOP_K = 2
 
 _ESCALATION_VERDICTS: dict[EscalationOutcome, GateVerdict] = {
@@ -71,7 +105,7 @@ _ESCALATION_VERDICTS: dict[EscalationOutcome, GateVerdict] = {
 
 
 class ProactiveGateConfig(BaseModel):
-    """The five numbers the gate decides with, validated once instead of per message.
+    """The four numbers the gate decides with, validated once instead of per message.
 
     A separate model rather than passing Settings straight through, for two
     reasons: the gate stays independently testable with explicit values (no
@@ -79,18 +113,30 @@ class ProactiveGateConfig(BaseModel):
     nonsensical threshold fails at startup where an operator sees it rather
     than silently disabling proactive relief in production.
 
+    Four, not five: Phase 2b-4 removed minimum_confidence_gap from this model
+    entirely rather than keeping it here unused, so nothing can read it back
+    and assume it still gates something. See this module's docstring for why
+    the gap stopped being a gate; PROACTIVE_CONFIDENCE_GAP survives in Settings
+    only so an existing .env carrying it does not fail to start.
+
     Bounds are the mathematical limits of what each number is compared
     against, not taste: a contrastive score cannot leave [-2, 2] (a
-    difference of two cosine similarities), a raw similarity cannot leave
-    [-1, 1], and a gap between two similarities cannot exceed 2.
+    difference of two cosine similarities) and a raw similarity cannot leave
+    [-1, 1].
     """
+
+    # Rejects any field this model does not define, which is what makes the
+    # removal above enforceable rather than cosmetic: a caller still passing
+    # minimum_confidence_gap now fails loudly at construction instead of having
+    # it silently dropped and believing a gap is still being applied. The same
+    # protection catches a plain misspelling of any other threshold.
+    model_config = ConfigDict(extra="forbid")
 
     # Strictly greater than the floor of the contrastive range, because the
     # floor is reserved: question_likeness returns it for text it cannot score
     # at all, and a threshold of exactly -2.0 would let that sentinel pass.
     question_threshold: float = Field(gt=-2.0, le=2.0, allow_inf_nan=False)
     similarity_threshold: float = Field(ge=-1.0, le=1.0, allow_inf_nan=False)
-    minimum_confidence_gap: float = Field(ge=0.0, le=2.0, allow_inf_nan=False)
     # Upper-bounded, not merely non-negative: see MAX_COOLDOWN_SECONDS and
     # MAX_DAILY_CAP for the arithmetic that overflows past them.
     cooldown_seconds: float = Field(ge=0.0, le=MAX_COOLDOWN_SECONDS, allow_inf_nan=False)
@@ -106,7 +152,6 @@ class ProactiveGateConfig(BaseModel):
         return cls(
             question_threshold=settings.proactive_question_threshold,
             similarity_threshold=settings.proactive_similarity_threshold,
-            minimum_confidence_gap=settings.proactive_confidence_gap,
             cooldown_seconds=settings.proactive_cooldown_seconds,
             daily_cap=settings.proactive_daily_cap,
         )
@@ -149,21 +194,15 @@ async def evaluate_message(
     )
     gap = None if top_score is None or runner_up_score is None else top_score - runner_up_score
 
-    # A message can fail Stage 2 two distinguishable ways, and the trail keeps
-    # them apart because they call for opposite responses: "no fact matched
-    # well enough" suggests the knowledge model is missing something, while
-    # "two facts matched almost equally" suggests it holds a near-duplicate or
-    # an unsuperseded contradiction.
+    # The whole of Stage 2 since Phase 2b-4: does any fact clear the bar? The
+    # top score answers that on its own, since nothing can clear a threshold
+    # the best candidate misses. `gap` is computed and recorded beside it as
+    # diagnostic context and is deliberately never compared against anything --
+    # see this module's docstring for why a gap cannot decide what it was
+    # previously being asked to decide.
     if top_score is None or top_score < config.similarity_threshold:
-        stage2_verdict = GateVerdict.NO_MATCHING_FACT
-    elif gap is not None and gap < config.minimum_confidence_gap:
-        stage2_verdict = GateVerdict.AMBIGUOUS_FACTS
-    else:
-        stage2_verdict = None
-
-    if stage2_verdict is not None:
         return DecisionTrail(
-            verdict=stage2_verdict,
+            verdict=GateVerdict.NO_MATCHING_FACT,
             stage1_score=stage1_score,
             stage1_passed=True,
             stage2_top_score=top_score,

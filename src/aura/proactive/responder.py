@@ -27,8 +27,8 @@ and any single "no" is silence:
   3. Synthesis returned a well-formed result.
   4. The result's own answers_question self-assessment is true, AND it actually
      cited at least one fact.
-The numeric Stage 1/2 gates (question-likeness, similarity, confidence gap) and
-the budget gate were already satisfied upstream, computed from the message
+The numeric Stage 1/2 gates (question-likeness, similarity) and the budget gate
+were already satisfied upstream, computed from the message
 geometry alone and entirely independent of anything the LLM concludes here.
 That independence is the defense against prompt injection: a message crafted to
 flip answers_question to true can, at most, affect that one field -- it can
@@ -47,7 +47,7 @@ from pydantic import BaseModel
 from aura.config import ModelComponent, Settings
 from aura.db.models import Fact
 from aura.db.proactive_channel_config import is_channel_enabled
-from aura.embeddings import find_similar_facts
+from aura.embeddings import SYNTHESIS_FACT_LIMIT, find_similar_facts
 from aura.i18n import DEFAULT_LOCALE, t
 from aura.synthesis import SynthesisResult, synthesize_answer
 
@@ -151,8 +151,27 @@ async def respond_with_synthesis(
         # that a channel was enabled but no model is configured.
         return ProactiveResponseOutcome(answers_question=None, posted=False)
 
-    results = await find_similar_facts(db, model, guild_id=guild.id, query=message.content)
-    relevant_facts = [fact for fact, score in results if score >= settings.similarity_threshold]
+    # PROACTIVE_SIMILARITY_THRESHOLD, not the direct-query SIMILARITY_THRESHOLD.
+    # Through Phase 2b-3 this filtered on the latter (0.40) while the gate that
+    # authorized the call used the former (0.30), and the mismatch was a live
+    # defect rather than a stylistic one: any message whose best fact scored
+    # between the two bars was granted an escalation slot upstream and then
+    # found nothing to answer from here -- a spent slot, permanent silence, and
+    # a trail row indistinguishable from a failed LLM call. Measured at 45 of
+    # 580 cases on the Phase 2b-2 corpus, so roughly one eligible message in
+    # eight. Trigger 2 now uses one bar end to end, which is what makes the
+    # gate's verdict mean what it says.
+    #
+    # Bounded explicitly rather than by find_similar_facts' default: for an
+    # unprompted call the number of facts entering the prompt is a cost ceiling
+    # (see SYNTHESIS_FACT_LIMIT), and a ceiling should be stated where it is
+    # relied upon.
+    results = await find_similar_facts(
+        db, model, guild_id=guild.id, query=message.content, top_k=SYNTHESIS_FACT_LIMIT
+    )
+    relevant_facts = [
+        fact for fact, score in results if score >= settings.proactive_similarity_threshold
+    ]
     if not relevant_facts:
         # The knowledge model moved between the gate and here (a fact was
         # superseded, say). No basis to answer; stay silent.

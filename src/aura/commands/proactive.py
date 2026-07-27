@@ -61,6 +61,8 @@ _VERDICT_DISPLAY: dict[GateVerdict, tuple[str, str]] = {
     GateVerdict.ELIGIBLE: ("✅", "debug_signals_verdict_eligible"),
     GateVerdict.STAGE1_REJECTED: ("➖", "debug_signals_verdict_stage1_rejected"),
     GateVerdict.NO_MATCHING_FACT: ("❔", "debug_signals_verdict_no_matching_fact"),
+    # Kept for rows recorded before Phase 2b-4 retired this verdict; the gate
+    # cannot produce it any more. See GateVerdict.AMBIGUOUS_FACTS.
     GateVerdict.AMBIGUOUS_FACTS: ("⚖️", "debug_signals_verdict_ambiguous_facts"),
     GateVerdict.COOLDOWN_ACTIVE: ("⏳", "debug_signals_verdict_cooldown_active"),
     GateVerdict.DAILY_CAP_REACHED: ("🚫", "debug_signals_verdict_daily_cap_reached"),
@@ -119,7 +121,15 @@ def _format_stage1(signal: ProactiveSignal) -> str:
 
 
 def _format_stage2(signal: ProactiveSignal, locale: str) -> str:
-    """Render the best fact match, its margin over the runner-up, and the outcome."""
+    """Render the best fact match, its margin over the runner-up, and the outcome.
+
+    The margin is shown as diagnostic context, not as a reason: since Phase
+    2b-4 it decides nothing (see aura.proactive.gate), and only the top score
+    is compared against anything. It stays on the trail because "how close were
+    the top two facts?" is still the fastest way to see that a guild holds a
+    near-duplicate or an unsuperseded pair -- a question a moderator can act on
+    with /aura-supersede.
+    """
     if signal.stage2_passed is None:
         return _NOT_EVALUATED
     if signal.stage2_top_score is None:

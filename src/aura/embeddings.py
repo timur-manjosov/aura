@@ -23,6 +23,26 @@ from aura.db.repository import get_active_facts
 # see Fact.embedding's docstring, the other place this same dtype matters.
 EMBEDDING_DTYPE = np.float32
 
+# How many facts either answering trigger may carry into one synthesis call.
+#
+# A bound, not a preference, which is why it is a named constant rather than a
+# bare default buried in a signature: it is the only thing standing between a
+# guild with hundreds of facts on one topic and an unbounded prompt. Both
+# triggers observe it -- /aura-ask by taking this default, proactive relief by
+# passing it explicitly, since for an unprompted call it is a cost ceiling and
+# not a convenience.
+#
+# Five, for two independent reasons that agree. Semantically, CLAUDE.md's
+# "Link" component asks for thematically related facts to be pulled into ONE
+# synthesized answer with multiple citations; a handful is what a human would
+# weigh at once, and past that an answer stops reading as an answer. And in
+# cost terms it stays negligible: fact content is capped at 4000 characters by
+# the entry modal, so five is a hard worst case of ~20k characters (~6k tokens)
+# per call, while real facts are one distilled sentence each and land nearer
+# ~500 tokens for the whole set. Raising this would widen the worst case
+# faster than it would improve any answer.
+SYNTHESIS_FACT_LIMIT = 5
+
 
 async def embed_text(model: TextEmbedding, text: str) -> np.ndarray:
     """Compute one text's embedding vector as a fixed-dtype numpy array.
@@ -113,7 +133,7 @@ async def find_similar_facts(
     *,
     guild_id: int,
     query: str,
-    top_k: int = 5,
+    top_k: int = SYNTHESIS_FACT_LIMIT,
 ) -> list[tuple[Fact, float]]:
     """Rank guild_id's active facts by similarity to query, most similar first.
 
@@ -125,6 +145,18 @@ async def find_similar_facts(
     Never errors on sparse data: an empty guild, or a top_k larger than the
     number of active facts, both just return however many results actually
     exist (possibly zero).
+
+    Ties are broken by fact id, oldest first, so the ranking is fully
+    determined by the data rather than by the order SQLite happened to return
+    rows in. This is not cosmetic. Since Phase 2b-4 the top_k cut decides which
+    facts are shown to a paid model, and near-duplicate facts -- the case that
+    produces ties -- are precisely what a guild accumulates on a topic it has
+    documented more than once. Without a tiebreak, the same question could draw
+    a different set of facts across two calls, which would make an inconsistent
+    answer impossible to reproduce and therefore impossible to diagnose. Oldest
+    first is the meaningful direction of the two: where a fact really has been
+    superseded but nobody has run /aura-supersede yet, the original is the one
+    whose Discord permalink a moderator needs in order to fix it.
     """
     query_embedding = await embed_text(model, query)
     facts = await get_active_facts(conn, guild_id)
@@ -138,5 +170,5 @@ async def find_similar_facts(
         )
         for fact in facts
     ]
-    scored.sort(key=lambda pair: pair[1], reverse=True)
+    scored.sort(key=lambda pair: (-pair[1], pair[0].id))
     return scored[:top_k]

@@ -596,3 +596,109 @@ class TestRealProviderSanityCheck:
         result = await synthesize_answer(facts, venting, "en-US", model=model)
         assert result is not None
         assert result.answers_question is False
+
+
+@pytest.mark.skipif(
+    not os.environ.get("AURA_RUN_REAL_LLM"),
+    reason="opt-in only: set AURA_RUN_REAL_LLM=1 (plus a funded LLM_API_KEY and "
+    "PROACTIVE_MODEL/SYNTHESIS_MODEL) to make real, paid calls. Same guard and "
+    "same reasoning as TestRealProviderSanityCheck above.",
+)
+class TestRealProviderMultiFactJudgement:
+    """Opt-in, paid: the judgement Phase 2b-4 handed the model instead of a threshold.
+
+    Removing PROACTIVE_CONFIDENCE_GAP moved a decision out of arithmetic and
+    into this model. That is only defensible if the model actually makes the
+    decision correctly, so the two live cases that motivated the move are
+    permanent regression tests here -- in the original German, because the
+    numbers that caused the bug are a property of these exact sentences.
+
+    Skipped unless AURA_RUN_REAL_LLM is set, like every other real-provider
+    check in this suite (see conftest.block_real_llm_calls).
+    """
+
+    @staticmethod
+    def _model() -> str:
+        return os.environ.get("PROACTIVE_MODEL") or os.environ.get("SYNTHESIS_MODEL", "")
+
+    async def test_complementary_facts_are_combined_rather_than_refused(self) -> None:
+        # The case proactive relief silenced three times while /aura-ask
+        # answered it correctly twice. A schedule and a caveat about that
+        # schedule are not a contradiction, and must not be treated as one now
+        # that the model -- not a margin -- decides.
+        facts = [
+            _make_fact(1, "Die Serverwartung findet von nun an jeden Montag um 6:00 MEZ statt."),
+            _make_fact(
+                2,
+                "Zusätzlich muss angemerkt werden, dass die Server Wartung auch mal "
+                "spontan stattfinden kann, wenn irgendetwas mit dem Provider ist.",
+            ),
+        ]
+        result = await synthesize_answer(
+            facts, "Wann wird der Server gewartet?", "de", model=self._model()
+        )
+        assert result is not None
+        assert result.answers_question is True
+        assert set(result.used_fact_ids) == {1, 2}, (
+            "a complementary pair must be cited in full; citing one half is the "
+            "incomplete answer this phase exists to stop producing"
+        )
+
+    async def test_contradictory_facts_are_refused_rather_than_picked_between(self) -> None:
+        # The other live case. Both active, neither superseded, opposite
+        # meanings -- the model must decline instead of choosing a side, which
+        # is the guarantee that makes escalating ties safe.
+        facts = [
+            _make_fact(1, "Hier wachsen die Pflanzen, als Zeichen unser Serveraktivität."),
+            _make_fact(2, "Hier wachsen Pflanzen als Zeichen unserer Inaktivität."),
+        ]
+        result = await synthesize_answer(
+            facts, "Warum wachsen hier Pflanzen?", "de", model=self._model()
+        )
+        assert result is not None
+        assert result.answers_question is False
+
+    async def test_a_mixed_set_answers_the_documented_part_and_flags_the_conflict(
+        self,
+    ) -> None:
+        # The hardest shape, and one nothing had tested: within ONE top-K set,
+        # two facts genuinely conflict while a third complements a different
+        # part of the same question. The correct behaviour is neither "answer
+        # everything confidently" nor "refuse everything" -- it is to decline,
+        # because the conflict is on the specific detail asked about, and a
+        # partial answer that silently drops the conflicting half would state
+        # a schedule Aura cannot actually vouch for.
+        facts = [
+            _make_fact(1, "Die Serverwartung findet jeden Montag um 6:00 MEZ statt."),
+            _make_fact(2, "Die Serverwartung findet jeden Donnerstag um 22:00 MEZ statt."),
+            _make_fact(
+                3,
+                "Während der Wartung ist der Voice-Chat weiterhin erreichbar, nur die "
+                "Spielserver sind offline.",
+            ),
+        ]
+        result = await synthesize_answer(
+            facts, "Wann ist die Wartung und was ist dann offline?", "de", model=self._model()
+        )
+        assert result is not None
+        assert result.answers_question is False, (
+            "two facts state different times for the same event; the conflict is "
+            "on the detail asked about, so a side must not be picked"
+        )
+
+    async def test_an_unrelated_fact_riding_along_in_the_context_is_not_stretched(
+        self,
+    ) -> None:
+        # Aligning the responder's fact bar with the gate's means marginally
+        # relevant facts can now share the context with relevant ones. That is
+        # only safe if the model refuses to press an unrelated fact into
+        # service, so it is asserted rather than assumed.
+        facts = [
+            _make_fact(1, "Hier wachsen Pflanzen als Zeichen unserer Serveraktivität."),
+            _make_fact(2, "Der Willkommensbereich dient den Willkommensnachrichten."),
+        ]
+        result = await synthesize_answer(
+            facts, "Wann ist die nächste Serverwartung?", "de", model=self._model()
+        )
+        assert result is not None
+        assert result.answers_question is False

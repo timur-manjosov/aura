@@ -237,11 +237,15 @@ async def verify_gate_agreement(
         )
 
         sweep_stage1_passed = case.stage1_score >= config.question_threshold
+        # One comparison, matching the gate since Phase 2b-4: the confidence
+        # gap is still measured onto every case, and still swept in the report,
+        # but it is no longer part of the escalate/hold decision here either --
+        # if it were, this integrity check would agree with a gate that no
+        # longer exists.
         sweep_stage2_passed = (
             sweep_stage1_passed
             and case.stage2_top_score is not None
             and case.stage2_top_score >= config.similarity_threshold
-            and (case.stage2_gap is None or case.stage2_gap >= config.minimum_confidence_gap)
         )
 
         if trail.stage1_passed == sweep_stage1_passed and bool(

@@ -54,7 +54,6 @@ NOON = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
 CONFIG = ProactiveGateConfig(
     question_threshold=0.0,
     similarity_threshold=0.5,
-    minimum_confidence_gap=0.1,
     cooldown_seconds=900.0,
     daily_cap=5,
 )
@@ -311,77 +310,98 @@ class TestStageTwoSimilarity:
         assert decision.stage2_top_score is None
 
 
-class TestConfidenceGap:
-    async def test_two_similarly_scored_facts_block_escalation(
+class TestTheConfidenceGapNoLongerGates:
+    """Phase 2b-4: competing facts escalate instead of being silenced.
+
+    The inverse of what this class asserted through Phase 2b-3. The gap it used
+    to enforce could not tell "one of these is stale" apart from "both of these
+    are relevant and complementary" -- they produce the same number -- so the
+    distinction moved to Stage 3, which is asked about it directly. These tests
+    pin the removal so it cannot be reintroduced by accident: a near-tie is now
+    a reason to let the model look, never a reason to stay silent.
+    """
+
+    async def test_two_similarly_scored_facts_now_escalate(
         self, conn: aiosqlite.Connection
     ) -> None:
-        # Both clear the similarity bar, so without the gap check Aura would
-        # confidently answer from whichever happened to sort first.
+        # The live case in miniature: two facts both clearly about the question,
+        # 0.02 apart. Through Phase 2b-3 this was AMBIGUOUS_FACTS and Aura said
+        # nothing -- while /aura-ask, given the same pair, combined them.
         model = await _seed_scored_facts(conn, [0.92, 0.9])
 
         decision = await _evaluate(conn, model, _stub_detector(0.5))
 
-        assert decision.verdict is GateVerdict.AMBIGUOUS_FACTS
+        assert decision.verdict is GateVerdict.ELIGIBLE
+        assert decision.stage2_passed is True
+        # Still measured and still recorded -- as diagnostics, deciding nothing.
         assert decision.stage2_gap == pytest.approx(0.02, abs=1e-6)
-        assert decision.stage2_passed is False
 
-    async def test_two_identically_scored_facts_block_escalation(
+    async def test_two_identically_scored_facts_now_escalate(
         self, conn: aiosqlite.Connection
     ) -> None:
+        # An exact tie is the strongest form of the old block, and the case
+        # where a numeric rule is least able to say anything useful.
         model = await _seed_scored_facts(conn, [0.9, 0.9])
 
         decision = await _evaluate(conn, model, _stub_detector(0.5))
 
-        assert decision.verdict is GateVerdict.AMBIGUOUS_FACTS
+        assert decision.verdict is GateVerdict.ELIGIBLE
         assert decision.stage2_gap == pytest.approx(0.0, abs=1e-6)
 
-    async def test_a_gap_exactly_at_the_minimum_passes(
+    async def test_a_vanishing_gap_between_strong_facts_still_escalates(
         self, conn: aiosqlite.Connection
     ) -> None:
-        # Inclusive, measured rather than assumed, for the float32 reason
-        # documented on the similarity boundary above.
-        model = await _seed_scored_facts(conn, [0.9, 0.8])
-        probe = await _evaluate(conn, model, _stub_detector(0.5), message_id=1)
-        assert probe.stage2_gap == pytest.approx(0.1, abs=1e-6)
+        # Smaller than any gap observed live (0.012 was the tightest), so the
+        # removal is pinned past the real evidence rather than at it.
+        model = await _seed_scored_facts(conn, [0.9001, 0.9])
 
-        at_the_boundary = CONFIG.model_copy(
-            update={"minimum_confidence_gap": probe.stage2_gap}
-        )
-        decision = await _evaluate(
-            conn,
-            model,
-            _stub_detector(0.5),
-            channel_id=CHANNEL_2,
-            message_id=2,
-            config=at_the_boundary,
-        )
+        decision = await _evaluate(conn, model, _stub_detector(0.5))
 
         assert decision.verdict is GateVerdict.ELIGIBLE
 
-    async def test_the_runner_up_competes_even_when_it_fails_the_threshold_itself(
+    async def test_the_runner_up_no_longer_competes_at_all(
         self, conn: aiosqlite.Connection
     ) -> None:
-        # 0.48 does not qualify as an answer on its own, but a top score only
-        # 0.02 ahead of it is a coin flip, and answering on a coin flip in
-        # public is the outcome this whole gate exists to avoid.
+        # 0.48 does not clear the bar on its own. Through Phase 2b-3 it could
+        # still veto the 0.50 fact above it by sitting close to it; now a fact
+        # that does not qualify as an answer cannot silence one that does.
         model = await _seed_scored_facts(conn, [0.5, 0.48])
 
         decision = await _evaluate(conn, model, _stub_detector(0.5))
 
-        assert decision.verdict is GateVerdict.AMBIGUOUS_FACTS
+        assert decision.verdict is GateVerdict.ELIGIBLE
+        assert decision.stage2_runner_up_score == pytest.approx(0.48, abs=1e-6)
 
-    async def test_a_zero_minimum_gap_disables_the_check(
+    async def test_the_gate_config_no_longer_accepts_a_gap_at_all(self) -> None:
+        # Removed from the model rather than left in and ignored, so nothing can
+        # set it and quietly believe it still gates something.
+        assert "minimum_confidence_gap" not in ProactiveGateConfig.model_fields
+        with pytest.raises(ValidationError):
+            ProactiveGateConfig(
+                question_threshold=0.0,
+                similarity_threshold=0.5,
+                minimum_confidence_gap=0.1,  # type: ignore[call-arg]
+                cooldown_seconds=900.0,
+                daily_cap=5,
+            )
+
+    async def test_a_below_threshold_top_score_is_still_refused(
         self, conn: aiosqlite.Connection
     ) -> None:
-        model = await _seed_scored_facts(conn, [0.9, 0.9])
-        no_gap_required = CONFIG.model_copy(update={"minimum_confidence_gap": 0.0})
+        # The similarity bar is the one Stage 2 check left; removing the gap
+        # must not have removed it too.
+        model = await _seed_scored_facts(conn, [0.49, 0.48])
 
-        decision = await _evaluate(conn, model, _stub_detector(0.5), config=no_gap_required)
+        decision = await _evaluate(conn, model, _stub_detector(0.5))
 
-        assert decision.verdict is GateVerdict.ELIGIBLE
+        assert decision.verdict is GateVerdict.NO_MATCHING_FACT
+        assert decision.stage2_passed is False
 
-    async def test_only_the_top_two_facts_matter(self, conn: aiosqlite.Connection) -> None:
-        # A crowd of weak matches further down must not affect the decision.
+    async def test_only_the_top_two_facts_are_scored_for_the_trail(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # The gate still ranks only two: the top decides, the runner-up is
+        # recorded. A crowd further down changes neither.
         model = await _seed_scored_facts(conn, [0.9, 0.2, 0.19, 0.18, 0.17, 0.16])
 
         decision = await _evaluate(conn, model, _stub_detector(0.5))
@@ -582,7 +602,6 @@ class TestConfigValidation:
 
         assert config.question_threshold == settings.proactive_question_threshold
         assert config.similarity_threshold == settings.proactive_similarity_threshold
-        assert config.minimum_confidence_gap == settings.proactive_confidence_gap
         assert config.cooldown_seconds == settings.proactive_cooldown_seconds
         assert config.daily_cap == settings.proactive_daily_cap
 
@@ -594,7 +613,6 @@ class TestConfigValidation:
             {"question_threshold": float("nan")},
             {"similarity_threshold": 1.5},  # outside the cosine range
             {"similarity_threshold": float("inf")},
-            {"minimum_confidence_gap": -0.1},
             {"cooldown_seconds": -1.0},
             {"cooldown_seconds": float("nan")},
             {"daily_cap": -1},
@@ -637,9 +655,7 @@ class TestWithTheRealModel:
         detector = await QuestionDetector.create(embedding_model)
         # A low similarity bar, because the measured reality is that a
         # question and the fact answering it are not paraphrases: real repeats
-        # scored 0.53-0.78 against their own fact (see config.py). What is
-        # under test here is the *gap*, which is what the ambiguity guard
-        # depends on.
+        # scored 0.53-0.78 against their own fact (see config.py).
         lenient = CONFIG.model_copy(update={"similarity_threshold": 0.4})
 
         decision = await _evaluate(
@@ -651,8 +667,12 @@ class TestWithTheRealModel:
         )
 
         assert decision.stage1_passed is True
+        # The gap is still measured and still recorded; since Phase 2b-4 it is
+        # asserted as a recorded diagnostic rather than as a gate -- a genuine
+        # repeat question does pull clearly ahead of unrelated facts, and that
+        # remains worth knowing even though nothing is decided from it.
         assert decision.stage2_gap is not None
-        assert decision.stage2_gap > lenient.minimum_confidence_gap
+        assert decision.stage2_gap > 0.0
         assert decision.verdict is GateVerdict.ELIGIBLE
 
     async def test_real_chatter_with_facts_present_stays_silent(

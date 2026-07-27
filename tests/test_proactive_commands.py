@@ -49,7 +49,6 @@ GUILD_B = 200000000000000002
 CONFIG = ProactiveGateConfig(
     question_threshold=0.0,
     similarity_threshold=0.5,
-    minimum_confidence_gap=0.1,
     cooldown_seconds=900.0,
     daily_cap=20,
 )

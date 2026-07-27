@@ -96,12 +96,11 @@ class AuraClient(discord.Client):
             "on" if self.settings.is_llm_configured(ModelComponent.PROACTIVE) else "off"
         )
         logger.info(
-            "Proactive gate ready: question>=%.3f, similarity>=%.2f, gap>=%.2f, "
+            "Proactive gate ready: question>=%.3f, similarity>=%.2f, "
             "cooldown %.0fs/channel, cap %d/guild/UTC-day, grace %.0fs, LLM %s "
             "(posts only in channels enabled via /aura-config)",
             gate_config.question_threshold,
             gate_config.similarity_threshold,
-            gate_config.minimum_confidence_gap,
             gate_config.cooldown_seconds,
             gate_config.daily_cap,
             self.settings.proactive_grace_period_seconds,

@@ -607,9 +607,19 @@ def key_observations(
     gaps = sorted(case.stage2_gap for case in answered if case.stage2_gap is not None)
     median_gap = gaps[len(gaps) // 2] if gaps else 0.0
 
+    # Since Phase 2b-4 the shipped gate applies no gap at all, and callers
+    # describing the shipped gate pass 0.0 to say so. Spelling that out beats
+    # printing "gap=0.0", which reads like a tuned value that happens to be
+    # zero rather than a check that no longer exists.
+    gap_description = (
+        "no confidence gap (retired in Phase 2b-4)"
+        if current_gap == 0.0
+        else f"gap={current_gap}"
+    )
+
     return [
         "All figures below are at the CURRENTLY CONFIGURED thresholds",
-        f"(question={current_threshold}, similarity={current_similarity}, gap={current_gap}).",
+        f"(question={current_threshold}, similarity={current_similarity}, {gap_description}).",
         "",
         "Stage 1:",
         f"  recall {stage1.recall:.3f} -- {stage1.false_negative} of "
@@ -620,11 +630,15 @@ def key_observations(
         "  only a free local Stage 2 evaluation each.",
         "",
         "Stage 2, on the answered-question cases (the ones a fact genuinely answers):",
-        f"  {len(survived_stage2)} of {len(answered)} survive both Stage 2 checks.",
+        f"  {len(survived_stage2)} of {len(answered)} survive Stage 2.",
         f"  {len(blocked_by_similarity)} are held by the similarity bar, "
         f"{len(blocked_by_gap)} by the confidence gap.",
-        f"  Their median gap over the runner-up is {median_gap:+.3f}, against a "
-        f"configured requirement of {current_gap}.",
+        f"  Their median gap over the runner-up is {median_gap:+.3f}"
+        + (
+            " -- recorded as diagnostics only; nothing is gated on it."
+            if current_gap == 0.0
+            else f", against a configured requirement of {current_gap}."
+        ),
         "",
         "Retrieval, independent of any threshold:",
         f"  the fact a case was written against ranked FIRST for "

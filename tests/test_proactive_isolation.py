@@ -63,7 +63,6 @@ CHANNEL = 555
 CONFIG = ProactiveGateConfig(
     question_threshold=-2.0 + 1e-9,  # everything passes Stage 1, so the path runs in full
     similarity_threshold=-1.0,  # and Stage 2 too, so the budget is reached as well
-    minimum_confidence_gap=0.0,
     cooldown_seconds=900.0,
     daily_cap=20,
 )

@@ -170,37 +170,45 @@ class Settings(BaseSettings):
     # the cost increase in exchange for Aura being genuinely, visibly active,
     # bounded by proactive_daily_cap below, at a server count small enough
     # that the worst case is still cheap in absolute terms.
+    #
+    # UNCHANGED in value by Phase 2b-4, but now load-bearing in two places
+    # instead of one, and the second is a bug fix rather than an extension.
+    # This is Trigger 2's ONE fact-relevance bar: the gate escalates on it, and
+    # aura.proactive.responder now selects the facts it sends to synthesis on
+    # it too. Until Phase 2b-4 the responder filtered on similarity_threshold
+    # (0.40) instead, so a message whose best fact scored between 0.30 and 0.40
+    # was granted an escalation slot and then found nothing to answer from --
+    # 45 of 580 corpus cases. Since proactive_confidence_gap retired above,
+    # this is also the only Stage 2 number left, so it no longer "moves as a
+    # pair" with anything.
     proactive_similarity_threshold: float = Field(
         default=0.30, ge=-1.0, le=1.0, allow_inf_nan=False
     )
 
-    # Stage 2: how far ahead of the runner-up the best fact must be. Guards
-    # the case where two different facts both plausibly answer the question --
-    # a near-duplicate, or a contradiction that was never superseded -- where
-    # answering from whichever happened to rank first is a coin flip.
+    # RETIRED in Phase 2b-4. This value no longer gates anything: it is read,
+    # validated, and then used by nothing. Read aura.proactive.gate's module
+    # docstring for the reasoning; the short version is that it was asked to
+    # separate "two facts compete because one is stale" from "two facts compete
+    # because both are relevant and complementary", those two produce the same
+    # number, and the distinction is a judgement about meaning that Stage 3
+    # makes instead.
     #
-    # Measured (Phase 2a-2): true repeat questions beat their runner-up by
-    # 0.31-0.52, while a deliberately ambiguous pair (the same fact before and
-    # after a schedule change, both active) differed by only 0.14. 0.15
-    # blocked that ambiguous case with every genuine match still clearing it
-    # by at least double.
+    # It is retained as a field rather than deleted outright, and that is a
+    # deliberate compatibility decision rather than an oversight. Settings runs
+    # under pydantic-settings' extra="forbid", which tolerates undeclared
+    # process environment variables but REJECTS an undeclared key in a .env
+    # file -- verified, not assumed. Every deployment that copied .env.example
+    # since Phase 2a-2 has PROACTIVE_CONFIDENCE_GAP in its .env, so deleting
+    # the field here would turn a routine `git pull && docker compose up` into
+    # a container that will not start, with a pydantic traceback as its only
+    # explanation. Silently refusing to boot is a far worse outcome than one
+    # inert setting, so the field stays until a phase that is willing to own a
+    # migration note removes it.
     #
-    # RECALIBRATED for Phase 2b-3, 0.15 -> 0.05, paired with
-    # proactive_similarity_threshold above -- see that field's comment for the
-    # (0.30, 0.05) sweep result. This threshold was NOT used as the lever for
-    # the partial-answer/contradiction risk that its Phase 2a-2 framing might
-    # suggest: reports/phase-2b-2.txt's full corpus shows median confidence
-    # gaps are nearly identical across answered_question (0.075),
-    # partial_answer (0.069), and contradictory_facts (0.075) -- a gap
-    # threshold cannot separate "genuinely risky" from "fine" among those
-    # three, and a value high enough to hold back contradictions would have
-    # silenced roughly half of all three categories indiscriminately. That
-    # correctness risk is deliberately handled elsewhere instead: the
-    # synthesis prompt (see aura.synthesis) now explicitly asks the model to
-    # check cited facts for mutual contradiction and refuse to answer
-    # (answers_question=false) when it finds one -- the model's judgment, not
-    # a numeric proxy. This threshold's only job is keeping the ambiguous-pair
-    # case above from slipping through at the loosened similarity bar.
+    # Nothing reads it, so nothing can regress if it is mis-set. It is also NOT
+    # passed to ProactiveGateConfig any more -- an unused field on the gate's
+    # own config would invite exactly the "wait, does this still do something?"
+    # question this comment exists to answer.
     proactive_confidence_gap: float = Field(
         default=0.05, ge=0.0, le=2.0, allow_inf_nan=False
     )

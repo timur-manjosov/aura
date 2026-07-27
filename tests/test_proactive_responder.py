@@ -47,12 +47,13 @@ class _MatchingModel:
 class _ScoredModel:
     """One specific fact content scores an exact cosine similarity against any query.
 
-    Used to place a fact strictly between PROACTIVE_SIMILARITY_THRESHOLD (the
-    gate's Stage 2 bar, loosened to 0.30 in Phase 2b-3) and similarity_threshold
-    (the direct-query bar, 0.4, which respond_with_synthesis reuses when
-    filtering facts for the LLM -- see that filter's own comment). A fact whose
-    embedding was produced by this model is a unit vector at exactly the
-    requested angle from the query's own unit vector.
+    Used to place a fact at a chosen point relative to the two bars that used
+    to differ: PROACTIVE_SIMILARITY_THRESHOLD (0.30) and similarity_threshold
+    (0.40). Since Phase 2b-4 the proactive path uses only the former, so the
+    band between them is where that change is observable -- which is exactly
+    what the tests below aim this model at. A fact whose embedding was produced
+    by this model is a unit vector at exactly the requested angle from the
+    query's own unit vector.
     """
 
     def __init__(self, fact_content: str, similarity: float) -> None:
@@ -166,17 +167,31 @@ class TestShortCircuitsBeforeSpending:
         message.channel.send.assert_not_called()
         assert outcome == outcome.model_copy(update={"answers_question": None, "posted": False})
 
-    async def test_a_fact_between_the_gate_bar_and_the_direct_query_bar_still_never_synthesizes(
+    async def test_a_fact_between_the_gate_bar_and_the_direct_query_bar_now_synthesizes(
         self, conn: aiosqlite.Connection
     ) -> None:
+        # REVERSED in Phase 2b-4, deliberately, and this comment records why so
+        # the reversal is not mistaken for drift.
+        #
         # Phase 2b-3 loosened PROACTIVE_SIMILARITY_THRESHOLD (the gate's Stage 2
-        # bar) to 0.30, below similarity_threshold (0.4, the direct-query bar).
-        # This proves the content Trigger 2 can actually cite is NOT governed by
-        # the loosened gate bar: respond_with_synthesis re-filters with
-        # settings.similarity_threshold regardless of how the gate scored the
-        # message, so a fact at 0.35 -- above the new gate bar, below the
-        # content bar -- still never reaches the paid call. The gate got looser
-        # on purpose; what the LLM is allowed to answer from did not.
+        # bar) to 0.30 but left this filter on similarity_threshold (0.40, the
+        # direct-query bar), reasoning that "the gate got looser on purpose;
+        # what the LLM is allowed to answer from did not." That reads well and
+        # measures badly. The two bars answer questions that collapse into each
+        # other -- a message is worth paying for exactly when there is a fact
+        # worth reasoning from -- so holding them apart produced messages that
+        # were granted an escalation slot upstream and then found nothing here:
+        # 45 of 580 cases on the Phase 2b-2 corpus, and 111 of 580 once the
+        # confidence gap stopped blocking. Every one spends real budget, posts
+        # nothing, and lands on the trail as answers_question=None, which reads
+        # identically to "the LLM call failed".
+        #
+        # So Trigger 2 now uses one bar end to end. It is NOT a loosening of
+        # Trigger 2 relative to Trigger 1: /aura-ask still answers from a single
+        # 0.40 bar with no other checks at all, while everything reaching this
+        # function has already cleared question-likeness, cooldown, the daily
+        # cap and the grace period, and still has to clear answers_question and
+        # the cited-fact requirement below before a word is posted.
         content = "The rules are in #welcome."
         model = _ScoredModel(content, similarity=0.35)
         await add_fact(
@@ -187,6 +202,36 @@ class TestShortCircuitsBeforeSpending:
         settings = _configured_settings()
         assert settings.proactive_similarity_threshold < 0.35 < settings.similarity_threshold
 
+        with patch(
+            "aura.proactive.responder.synthesize_answer", AsyncMock(return_value=None)
+        ) as synth:
+            outcome = await respond_with_synthesis(
+                message, db=conn, model=model, settings=settings  # type: ignore[arg-type]
+            )
+
+        synth.assert_awaited_once()
+        assert synth.await_args is not None
+        assert len(synth.await_args.args[0]) == 1
+        # Synthesis was reached; it returning None here is this test's way of
+        # keeping the assertion about fact selection and nothing else.
+        assert outcome.posted is False
+
+    async def test_a_fact_below_the_proactive_bar_still_never_synthesizes(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # The other half of the same change: aligning the two bars must not be
+        # mistaken for removing the remaining one. A fact under
+        # PROACTIVE_SIMILARITY_THRESHOLD is still no basis to answer from.
+        content = "The rules are in #welcome."
+        model = _ScoredModel(content, similarity=0.20)
+        await add_fact(
+            conn, model, guild_id=GUILD_A, channel_id=1, message_id=1, content=content  # type: ignore[arg-type]
+        )
+        await _enable(conn)
+        message = _make_message()
+        settings = _configured_settings()
+        assert 0.20 < settings.proactive_similarity_threshold
+
         with patch("aura.proactive.responder.synthesize_answer", AsyncMock()) as synth:
             outcome = await respond_with_synthesis(
                 message, db=conn, model=model, settings=settings  # type: ignore[arg-type]
@@ -194,6 +239,7 @@ class TestShortCircuitsBeforeSpending:
 
         synth.assert_not_awaited()
         message.channel.send.assert_not_called()
+        assert outcome.answers_question is None
         assert outcome.posted is False
 
 

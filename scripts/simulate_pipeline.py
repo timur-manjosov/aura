@@ -122,6 +122,17 @@ DEFAULT_STAGE3_MAX_SPEND_USD = 0.50
 # that reshuffled between runs would make two reports incomparable for no gain.
 _SAMPLE_SEED = 20260725
 
+# The gap the SHIPPED gate applies since Phase 2b-4 retired it: none.
+#
+# Expressed as 0.0 rather than by deleting the parameter, because the sweep
+# tables below still sweep the gap across its whole range -- that evidence is
+# why it was retired and is worth keeping visible -- and 0.0 is exactly
+# equivalent to "no gap check" for them: a gap is top-minus-runner-up over a
+# descending sort, so it is never negative, and `gap >= 0.0` is always true.
+# Every section that claims to describe what Aura actually does passes this,
+# so no part of the report can quietly describe a gate that no longer exists.
+_SHIPPED_CONFIDENCE_GAP = 0.0
+
 
 def _stratified_sample(cases: list[ScoredCase]) -> list[ScoredCase]:
     """Pick the calibration sample: fixed shape, fixed seed, locale-balanced.
@@ -374,7 +385,6 @@ async def main() -> int:
         agreement_config = ProactiveGateConfig(
             question_threshold=gate_config.question_threshold,
             similarity_threshold=gate_config.similarity_threshold,
-            minimum_confidence_gap=gate_config.minimum_confidence_gap,
             cooldown_seconds=0.0,
             daily_cap=1_000_000,
         )
@@ -428,7 +438,7 @@ async def main() -> int:
         outcomes = await _run_stage3_pass(
             adversarial,
             model=stage3_model,
-            similarity_threshold=settings.similarity_threshold,
+            similarity_threshold=settings.proactive_similarity_threshold,
             force=True,
             budget=stage3_budget,
             price=stage3_price,
@@ -443,7 +453,7 @@ async def main() -> int:
         calibration_outcomes = await _run_stage3_pass(
             sample,
             model=stage3_model,
-            similarity_threshold=settings.similarity_threshold,
+            similarity_threshold=settings.proactive_similarity_threshold,
             force=False,
             budget=stage3_budget,
             price=stage3_price,
@@ -489,7 +499,7 @@ async def main() -> int:
             "current_thresholds": {
                 "PROACTIVE_QUESTION_THRESHOLD": settings.proactive_question_threshold,
                 "PROACTIVE_SIMILARITY_THRESHOLD": settings.proactive_similarity_threshold,
-                "PROACTIVE_CONFIDENCE_GAP": settings.proactive_confidence_gap,
+                "PROACTIVE_CONFIDENCE_GAP": "retired-in-2b-4",
             },
         },
     )
@@ -558,7 +568,7 @@ def _build_report(
         "Current configuration under test:",
         f"  PROACTIVE_QUESTION_THRESHOLD  = {settings.proactive_question_threshold}",
         f"  PROACTIVE_SIMILARITY_THRESHOLD= {settings.proactive_similarity_threshold}",
-        f"  PROACTIVE_CONFIDENCE_GAP      = {settings.proactive_confidence_gap}",
+        "  PROACTIVE_CONFIDENCE_GAP      = retired in Phase 2b-4 (no longer a gate)",
     ]
 
     lines += section("0. HOW TO READ THIS REPORT")
@@ -637,7 +647,7 @@ def _build_report(
     lines += report_sections.stage2_sweep_table(
         calibration,
         settings.proactive_similarity_threshold,
-        settings.proactive_confidence_gap,
+        _SHIPPED_CONFIDENCE_GAP,
     )
 
     lines += section("8. STAGE 2 -- RETRIEVAL QUALITY AND SCORE DISTRIBUTIONS")
@@ -647,7 +657,7 @@ def _build_report(
     lines += report_sections.partial_answer_tradeoff(
         calibration,
         settings.proactive_similarity_threshold,
-        settings.proactive_confidence_gap,
+        _SHIPPED_CONFIDENCE_GAP,
     )
 
     lines += section("10. ADVERSARIAL & MALFORMED INPUT -- END-TO-END")
@@ -656,7 +666,7 @@ def _build_report(
         stage3,
         settings.proactive_question_threshold,
         settings.proactive_similarity_threshold,
-        settings.proactive_confidence_gap,
+        _SHIPPED_CONFIDENCE_GAP,
     )
 
     lines += section("11. STAGE 3 CALIBRATION SAMPLE (optional pass)")
@@ -678,7 +688,7 @@ def _build_report(
         calibration,
         settings.proactive_question_threshold,
         settings.proactive_similarity_threshold,
-        settings.proactive_confidence_gap,
+        _SHIPPED_CONFIDENCE_GAP,
     )
     lines += [
         "",

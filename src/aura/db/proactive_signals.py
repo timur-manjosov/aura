@@ -86,6 +86,16 @@ class GateVerdict(StrEnum):
 
     STAGE1_REJECTED = "stage1_rejected"
     NO_MATCHING_FACT = "no_matching_fact"
+    # HISTORICAL as of Phase 2b-4: the gate can no longer produce this verdict,
+    # because the confidence-gap check that produced it is gone (see
+    # aura.proactive.gate). It stays in the enum, and stays mapped in the debug
+    # command, because rows carrying it already exist in deployed databases --
+    # three of them in the live guild whose evidence motivated the removal --
+    # and get_recent_signals parses this column straight back through
+    # GateVerdict(...). Dropping the member would turn every historical row
+    # into a ValueError and take /aura-debug-signals down for the whole page it
+    # appears on, which is a strictly worse outcome than one member that is
+    # only ever read.
     AMBIGUOUS_FACTS = "ambiguous_facts"
     COOLDOWN_ACTIVE = "cooldown_active"
     DAILY_CAP_REACHED = "daily_cap_reached"
