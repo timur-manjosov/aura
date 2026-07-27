@@ -57,6 +57,22 @@ class CrossGuildLinkError(RepositoryError):
     """
 
 
+class SelfSupersessionError(RepositoryError):
+    """Raised when supersede_fact_with_existing_successor is asked to make a fact its own successor."""
+
+
+class SuccessorNotActiveError(RepositoryError):
+    """Raised by supersede_fact_with_existing_successor when new_fact_id can't be a successor.
+
+    Covers three cases identically, for the same reason FactAlreadySupersededError
+    does for old_fact_id: the successor doesn't exist, belongs to a different
+    guild, or is itself already superseded. A fact that isn't currently true
+    can't be the fact that retires something else -- allowing it would let a
+    supersession chain point at a dead end instead of at whatever's actually
+    current.
+    """
+
+
 def _row_to_fact(row: sqlite3.Row) -> Fact:
     (
         id_,
@@ -213,6 +229,96 @@ async def supersede_fact(
         created_at=datetime.fromisoformat(now),
         superseded_at=None,
     )
+
+
+async def supersede_fact_with_existing_successor(
+    conn: aiosqlite.Connection,
+    *,
+    old_fact_id: int,
+    new_fact_id: int,
+    guild_id: int,
+) -> None:
+    """Mark old_fact_id superseded by the already-existing new_fact_id, atomically.
+
+    This is the manual /aura-supersede command's operation, not a variant of
+    supersede_fact above: supersede_fact creates a brand-new fact row and
+    supersedes the old one with it in the same transaction, for Phase 3a's
+    future automatic detection (where the "new" content only exists at the
+    moment of detection). Here both facts already exist -- the mod picked an
+    old fact and an already-created replacement (e.g. via the "Add as Aura
+    Fact" context menu) -- so the only thing left to do is link the chain.
+    Reusing supersede_fact by copying the successor's content across would
+    insert a second, duplicate active fact and leave the mod's actual chosen
+    successor an unlinked orphan: a real correctness bug, not just an unused
+    code path. Hence a separate, minimal sibling function instead of reusing
+    supersede_fact -- which stays completely untouched.
+
+    Raises SelfSupersessionError if old_fact_id == new_fact_id, checked
+    before touching the database. Raises FactAlreadySupersededError if
+    old_fact_id doesn't exist, belongs to a different guild than guild_id, or
+    is already superseded. Raises SuccessorNotActiveError if new_fact_id
+    doesn't exist, belongs to a different guild, or is not itself active --
+    checked under the same lock and transaction as the update, so a
+    concurrent change to either fact can't slip in between the check and the
+    commit.
+    """
+    if old_fact_id == new_fact_id:
+        raise SelfSupersessionError(f"Fact {old_fact_id} cannot supersede itself.")
+
+    now = utc_now_iso()
+    async with connection_lock(conn):
+        try:
+            async with conn.execute(
+                "SELECT status FROM facts WHERE id = ? AND guild_id = ?",
+                (new_fact_id, guild_id),
+            ) as cursor:
+                successor_row = await cursor.fetchone()
+
+            if successor_row is None or FactStatus(successor_row[0]) != FactStatus.ACTIVE:
+                raise SuccessorNotActiveError(
+                    f"Fact {new_fact_id} in guild {guild_id} cannot be a successor: it does "
+                    "not exist, does not belong to that guild, or is not currently active."
+                )
+
+            update_cursor = await conn.execute(
+                """
+                UPDATE facts
+                SET status = ?, superseded_by_id = ?, superseded_at = ?
+                WHERE id = ? AND status = ? AND guild_id = ?
+                """,
+                (FactStatus.SUPERSEDED, new_fact_id, now, old_fact_id, FactStatus.ACTIVE, guild_id),
+            )
+
+            if update_cursor.rowcount != 1:
+                raise FactAlreadySupersededError(
+                    f"Fact {old_fact_id} in guild {guild_id} was not superseded: it does "
+                    "not exist, does not belong to that guild, or is already superseded "
+                    "(possibly by a concurrent call)."
+                )
+        except BaseException:
+            await conn.rollback()
+            raise
+
+        await conn.commit()
+
+
+async def get_fact_by_id(conn: aiosqlite.Connection, *, guild_id: int, fact_id: int) -> Fact | None:
+    """Return the fact with fact_id in guild_id, or None if no such fact exists there.
+
+    Scoped by guild_id, not just fact_id, so a moderator in one guild can
+    never reference (or learn anything about) another guild's fact by
+    guessing its numeric ID -- the same isolation get_active_facts and
+    get_linked_facts already give every other read path.
+    """
+    async with connection_lock(conn):
+        async with conn.execute(
+            f"SELECT {_FACT_COLUMNS} FROM facts WHERE id = ? AND guild_id = ?",
+            (fact_id, guild_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if row is None:
+        return None
+    return _row_to_fact(row)
 
 
 async def link_facts(conn: aiosqlite.Connection, fact_id_1: int, fact_id_2: int) -> None:

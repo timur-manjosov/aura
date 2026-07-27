@@ -17,12 +17,16 @@ from aura.db.repository import (
     FactAlreadySupersededError,
     FactNotFoundError,
     SelfLinkError,
+    SelfSupersessionError,
+    SuccessorNotActiveError,
     create_fact,
     get_active_facts,
+    get_fact_by_id,
     get_linked_facts,
     init_schema,
     link_facts,
     supersede_fact,
+    supersede_fact_with_existing_successor,
 )
 
 GUILD_A = 100000000000000001
@@ -600,3 +604,204 @@ class TestGetLinkedFacts:
         self, conn: aiosqlite.Connection
     ) -> None:
         assert await get_linked_facts(conn, 999999) == []
+
+
+class TestGetFactById:
+    async def test_returns_the_matching_fact(self, conn: aiosqlite.Connection) -> None:
+        created = await _make_fact(conn, content="the fact")
+        fetched = await get_fact_by_id(conn, guild_id=GUILD_A, fact_id=created.id)
+        assert fetched is not None
+        assert fetched.id == created.id
+        assert fetched.content == "the fact"
+
+    async def test_nonexistent_fact_id_returns_none(self, conn: aiosqlite.Connection) -> None:
+        assert await get_fact_by_id(conn, guild_id=GUILD_A, fact_id=999999) is None
+
+    async def test_wrong_guild_returns_none_not_the_other_guilds_fact(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        fact = await _make_fact(conn, guild_id=GUILD_A)
+        assert await get_fact_by_id(conn, guild_id=GUILD_B, fact_id=fact.id) is None
+
+    async def test_superseded_fact_is_still_returned_not_hidden(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # Unlike get_active_facts, get_fact_by_id must still surface a
+        # superseded fact -- the supersede command needs to detect and
+        # reject "old fact is already superseded" by reading it back, not by
+        # having it silently disappear.
+        old = await _make_fact(conn, content="old")
+        await supersede_fact(
+            conn,
+            old_fact_id=old.id,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=2,
+            content="new",
+            embedding=_FAKE_EMBEDDING,
+        )
+        fetched = await get_fact_by_id(conn, guild_id=GUILD_A, fact_id=old.id)
+        assert fetched is not None
+        assert fetched.status == FactStatus.SUPERSEDED
+
+
+class TestSupersedeFactWithExistingSuccessor:
+    """Manual supersession (/aura-supersede's data-layer operation): link two already-existing facts."""
+
+    async def test_links_old_to_new_without_creating_any_new_row(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        old = await _make_fact(conn, content="old content")
+        new = await _make_fact(conn, content="new content")
+
+        await supersede_fact_with_existing_successor(
+            conn, old_fact_id=old.id, new_fact_id=new.id, guild_id=GUILD_A
+        )
+
+        active = await get_active_facts(conn, GUILD_A)
+        # Exactly the pre-existing new fact remains active -- no duplicate
+        # inserted, unlike naively reusing supersede_fact would produce.
+        assert [f.id for f in active] == [new.id]
+
+        old_readback = await get_fact_by_id(conn, guild_id=GUILD_A, fact_id=old.id)
+        assert old_readback is not None
+        assert old_readback.status == FactStatus.SUPERSEDED
+        assert old_readback.superseded_by_id == new.id
+        assert old_readback.superseded_at is not None
+
+        new_readback = await get_fact_by_id(conn, guild_id=GUILD_A, fact_id=new.id)
+        assert new_readback is not None
+        assert new_readback.status == FactStatus.ACTIVE
+        assert new_readback.content == "new content"  # untouched, not duplicated
+
+    async def test_self_supersession_is_rejected_and_nothing_changes(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        fact = await _make_fact(conn)
+        with pytest.raises(SelfSupersessionError):
+            await supersede_fact_with_existing_successor(
+                conn, old_fact_id=fact.id, new_fact_id=fact.id, guild_id=GUILD_A
+            )
+        [still_active] = await get_active_facts(conn, GUILD_A)
+        assert still_active.id == fact.id
+        assert still_active.status == FactStatus.ACTIVE
+
+    async def test_already_superseded_old_fact_is_rejected(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        old = await _make_fact(conn, content="old")
+        first_new = await _make_fact(conn, content="first new")
+        await supersede_fact_with_existing_successor(
+            conn, old_fact_id=old.id, new_fact_id=first_new.id, guild_id=GUILD_A
+        )
+
+        second_new = await _make_fact(conn, content="second new")
+        with pytest.raises(FactAlreadySupersededError):
+            await supersede_fact_with_existing_successor(
+                conn, old_fact_id=old.id, new_fact_id=second_new.id, guild_id=GUILD_A
+            )
+
+        old_readback = await get_fact_by_id(conn, guild_id=GUILD_A, fact_id=old.id)
+        assert old_readback is not None
+        # The original chain must survive untouched -- the second call must
+        # not have overwritten superseded_by_id.
+        assert old_readback.superseded_by_id == first_new.id
+
+    async def test_nonexistent_old_fact_id_is_rejected(self, conn: aiosqlite.Connection) -> None:
+        new = await _make_fact(conn)
+        with pytest.raises(FactAlreadySupersededError):
+            await supersede_fact_with_existing_successor(
+                conn, old_fact_id=999999, new_fact_id=new.id, guild_id=GUILD_A
+            )
+
+    async def test_nonexistent_new_fact_id_is_rejected_and_old_stays_active(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        old = await _make_fact(conn)
+        with pytest.raises(SuccessorNotActiveError):
+            await supersede_fact_with_existing_successor(
+                conn, old_fact_id=old.id, new_fact_id=999999, guild_id=GUILD_A
+            )
+        [still_active] = await get_active_facts(conn, GUILD_A)
+        assert still_active.id == old.id
+
+    async def test_already_superseded_new_fact_cannot_be_a_successor(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # A fact that isn't itself current can't retire something else --
+        # chaining onto a dead end would leave old_fact's chain unresolved.
+        original = await _make_fact(conn, content="original")
+        replaced = await supersede_fact(
+            conn,
+            old_fact_id=original.id,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=2,
+            content="replaced but itself now superseded",
+            embedding=_FAKE_EMBEDDING,
+        )
+        await supersede_fact(
+            conn,
+            old_fact_id=replaced.id,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=3,
+            content="current",
+            embedding=_FAKE_EMBEDDING,
+        )
+        # `replaced` is now itself superseded -- it must not be usable as a successor.
+        other_old = await _make_fact(conn, content="unrelated old fact")
+        with pytest.raises(SuccessorNotActiveError):
+            await supersede_fact_with_existing_successor(
+                conn, old_fact_id=other_old.id, new_fact_id=replaced.id, guild_id=GUILD_A
+            )
+
+    async def test_cross_guild_old_fact_is_rejected(self, conn: aiosqlite.Connection) -> None:
+        old = await _make_fact(conn, guild_id=GUILD_A)
+        new = await _make_fact(conn, guild_id=GUILD_B)
+        with pytest.raises((FactAlreadySupersededError, SuccessorNotActiveError)):
+            await supersede_fact_with_existing_successor(
+                conn, old_fact_id=old.id, new_fact_id=new.id, guild_id=GUILD_A
+            )
+        [still_active] = await get_active_facts(conn, GUILD_A)
+        assert still_active.id == old.id
+
+    async def test_cross_guild_new_fact_is_rejected_even_when_old_fact_is_valid(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        old = await _make_fact(conn, guild_id=GUILD_A, content="old")
+        cross_guild_new = await _make_fact(conn, guild_id=GUILD_B, content="wrong guild")
+        with pytest.raises(SuccessorNotActiveError):
+            await supersede_fact_with_existing_successor(
+                conn, old_fact_id=old.id, new_fact_id=cross_guild_new.id, guild_id=GUILD_A
+            )
+        old_readback = await get_fact_by_id(conn, guild_id=GUILD_A, fact_id=old.id)
+        assert old_readback is not None
+        assert old_readback.status == FactStatus.ACTIVE
+
+    async def test_two_concurrent_supersessions_of_the_same_old_fact_exactly_one_wins(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        old = await _make_fact(conn, content="original")
+        successor_a = await _make_fact(conn, content="successor A")
+        successor_b = await _make_fact(conn, content="successor B")
+
+        async def attempt(new_fact_id: int) -> None:
+            await supersede_fact_with_existing_successor(
+                conn, old_fact_id=old.id, new_fact_id=new_fact_id, guild_id=GUILD_A
+            )
+
+        results = await asyncio.gather(
+            attempt(successor_a.id), attempt(successor_b.id), return_exceptions=True
+        )
+
+        successes = [r for r in results if r is None]
+        failures = [r for r in results if isinstance(r, BaseException)]
+        assert len(successes) == 1
+        assert len(failures) == 1
+        assert isinstance(failures[0], FactAlreadySupersededError)
+
+        old_readback = await get_fact_by_id(conn, guild_id=GUILD_A, fact_id=old.id)
+        assert old_readback is not None
+        # Exactly one successor id stuck -- not a corrupted mix of both calls.
+        assert old_readback.superseded_by_id in (successor_a.id, successor_b.id)

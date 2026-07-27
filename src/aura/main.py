@@ -15,6 +15,7 @@ from aura.commands import (
     register_config_command,
     register_fact_commands,
     register_proactive_commands,
+    register_supersede_command,
 )
 from aura.config import ConfigurationError, ModelComponent, Settings, load_settings
 from aura.db import init_schema
@@ -111,6 +112,7 @@ class AuraClient(discord.Client):
         register_ask_command(self.tree)
         register_proactive_commands(self.tree)
         register_config_command(self.tree)
+        register_supersede_command(self.tree)
 
         # Global sync; Discord can take up to an hour to propagate new or
         # changed commands globally. Sync to a specific guild instead

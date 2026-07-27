@@ -46,5 +46,21 @@
     "debug_signals_empty": "No question signals have been recorded for this server yet.",
     "debug_signals_jump": "Jump to message",
     "debug_signals_footer": "Diagnostic view of Aura's proactive pipeline — this command itself never posts and is only visible to you.",
-    "debug_signals_permission_error": "You need the Manage Server permission to do that."
+    "debug_signals_permission_error": "You need the Manage Server permission to do that.",
+    "supersede_permission_error": "You need the Manage Server permission to do that.",
+    "supersede_self_error": "A fact can't supersede itself.",
+    "supersede_fact_not_found": "Fact #{fact_id} doesn't exist in this server.",
+    "supersede_old_already_superseded": "Fact #{fact_id} is already superseded, so it can't be superseded again.",
+    "supersede_new_not_active": "Fact #{fact_id} isn't currently active, so it can't be the successor of another fact.",
+    "supersede_confirm_title": "Confirm Fact Supersession",
+    "supersede_confirm_old_label": "Being superseded (#{fact_id})",
+    "supersede_confirm_new_label": "Replacement (#{fact_id})",
+    "supersede_confirm_button": "Confirm",
+    "supersede_cancel_button": "Cancel",
+    "supersede_success": "Fact #{old_fact_id} is now superseded by fact #{new_fact_id}.",
+    "supersede_cancelled": "Cancelled. Nothing was changed.",
+    "supersede_expired": "Confirmation timed out. Nothing was changed.",
+    "supersede_wrong_user_error": "Only the moderator who ran this command can confirm it.",
+    "supersede_old_race_error": "Fact #{fact_id} was already superseded by someone else just now. Nothing was changed.",
+    "supersede_new_race_error": "Fact #{fact_id} is no longer active (it may have just been superseded itself). Nothing was changed."
 }
