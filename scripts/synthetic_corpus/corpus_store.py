@@ -25,6 +25,7 @@ from aura.db.connection import connection_lock
 from aura.db.repository import create_fact
 from aura.embeddings import EMBEDDING_DTYPE, embed_texts
 from synthetic_corpus.corpus_model import SyntheticCorpus, synthetic_message_id
+from synthetic_corpus.scenarios import SCENARIOS
 
 # All synthetic facts for one guild land in a single synthetic channel. Aura's
 # retrieval is guild-scoped, so the channel only matters for the permalink a
@@ -164,6 +165,34 @@ def assert_corpus_matches_database(
             f"{len(in_corpus)} facts (e.g. {example}). The --corpus file and the "
             "--db file come from different generation runs; re-run "
             "generate_synthetic_corpus.py or point both at the same run."
+        )
+
+
+def assert_corpus_matches_scenario_grid(corpus: SyntheticCorpus) -> None:
+    """Refuse to simulate a corpus that covers fewer guilds than the full grid.
+
+    `generate_synthetic_corpus.py --limit N` and `write_corpus` both write to
+    the same fixed default path a full run uses, with no distinct name and no
+    check for an existing, larger file already there -- a small run (a
+    developer smoke-testing the generator, say) silently overwrites the real
+    corpus with one that is completely well-formed and self-consistent, just
+    scoped to fewer guilds. Neither `read_corpus`'s schema/referential checks
+    nor `assert_corpus_matches_database` catch this: a smaller corpus is still
+    internally valid and can still pair correctly with a scratch database built
+    from that same smaller run. This is the one check that actually compares
+    the loaded corpus against what a full run is supposed to contain.
+    """
+    expected = {scenario.key for scenario in SCENARIOS}
+    actual = {guild.key for guild in corpus.guilds}
+    missing = expected - actual
+    if missing:
+        raise CorpusLoadError(
+            f"the corpus is missing {len(missing)} of the {len(expected)} guilds "
+            f"in the full scenario grid (e.g. {sorted(missing)[:5]}). This looks "
+            "like a partial run (e.g. generate_synthetic_corpus.py --limit N) "
+            "that overwrote a full corpus at the default path. Re-run "
+            "generate_synthetic_corpus.py for the full grid, or pass --corpus "
+            "to point at the intended file explicitly."
         )
 
 

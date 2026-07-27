@@ -59,6 +59,7 @@ from synthetic_corpus.corpus_model import (  # noqa: E402
 )
 from synthetic_corpus.corpus_store import (  # noqa: E402
     assert_corpus_matches_database,
+    assert_corpus_matches_scenario_grid,
     read_corpus,
     read_fact_key_map,
 )
@@ -348,6 +349,7 @@ async def main() -> int:
             return 1
 
     corpus = read_corpus(args.corpus)
+    assert_corpus_matches_scenario_grid(corpus)
     print(f"corpus: {len(corpus.messages)} messages across {len(corpus.guilds)} guilds")
     model = TextEmbedding(settings.embedding_model)
     detector = await QuestionDetector.create(model)

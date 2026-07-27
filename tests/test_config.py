@@ -76,20 +76,31 @@ class TestDefaults:
         assert settings.log_level == "INFO"
 
     def test_proactive_defaults(self) -> None:
+        # Phase 2b-3 recalibration -- see config.py for the per-field
+        # evidence from the phase-2b-2 synthetic-corpus simulation.
         settings = _settings(discord_token="valid-token")
-        assert settings.proactive_question_threshold == -0.08
-        assert settings.proactive_similarity_threshold == 0.45
-        assert settings.proactive_confidence_gap == 0.15
+        assert settings.proactive_question_threshold == -0.15
+        assert settings.proactive_similarity_threshold == 0.30
+        assert settings.proactive_confidence_gap == 0.05
         assert settings.proactive_cooldown_seconds == 900.0
-        assert settings.proactive_daily_cap == 20
+        assert settings.proactive_daily_cap == 60
 
-    def test_the_proactive_bar_is_stricter_than_the_direct_query_bar(self) -> None:
-        # The invariant behind having two thresholds at all: a wrong direct
-        # answer is seen only by whoever asked, while a wrong proactive one
-        # interrupts everybody. If a retuning ever inverted these, proactive
-        # relief would be the *loosest* path in the system.
+    def test_the_proactive_gate_bar_may_now_be_looser_than_the_direct_query_bar(self) -> None:
+        # Phase 2b-3 deliberately inverted the ordering this test asserted
+        # through Phase 2b-2: proactive_similarity_threshold (0.30) is now
+        # BELOW similarity_threshold (0.4). That is safe, not a regression,
+        # because the two thresholds serve different purposes and always
+        # have: proactive_similarity_threshold is only the gate's "is this
+        # worth attempting" bar (aura.proactive.gate), while the content
+        # actually handed to the LLM is independently re-filtered by
+        # similarity_threshold in aura.proactive.responder.respond_with_
+        # synthesis, regardless of how loose the gate is -- see
+        # test_proactive_responder.py::test_a_fact_between_the_gate_bar_and_
+        # the_direct_query_bar_still_never_synthesizes for the proof. This
+        # test just pins the new, intentional ordering so a future change
+        # doesn't silently drift back without a decision behind it.
         settings = _settings(discord_token="valid-token")
-        assert settings.proactive_similarity_threshold > settings.similarity_threshold
+        assert settings.proactive_similarity_threshold < settings.similarity_threshold
 
     def test_overrides_are_respected(self) -> None:
         settings = _settings(

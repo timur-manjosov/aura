@@ -351,6 +351,33 @@ class TestPromptContent:
         combined = " ".join(m["content"] for m in kwargs["messages"])
         assert "answers_question" in combined
 
+    async def test_prompt_instructs_honest_framing_of_partial_coverage(self) -> None:
+        # Phase 2b-3: a partial answer must post (answers_question=true) with
+        # the gap named honestly, not be silenced by a low-confidence gate --
+        # see CLAUDE.md's "Proactive Relief: Visibly Active by Design".
+        mock_call = AsyncMock(return_value=_make_response(_payload("a", [])))
+
+        with patch("aura.synthesis.litellm.acompletion", mock_call):
+            await synthesize_answer([_make_fact(1, "fact")], "q", "en-US", model=MODEL)
+
+        _, kwargs = mock_call.call_args
+        system = next(m["content"] for m in kwargs["messages"] if m["role"] == "system")
+        assert "PART" in system
+        assert "honestly" in system.lower()
+
+    async def test_prompt_instructs_a_contradiction_check_before_citing(self) -> None:
+        # Phase 2b-3: the model, not a numeric threshold, is responsible for
+        # catching two cited facts that genuinely conflict with each other.
+        mock_call = AsyncMock(return_value=_make_response(_payload("a", [])))
+
+        with patch("aura.synthesis.litellm.acompletion", mock_call):
+            await synthesize_answer([_make_fact(1, "fact")], "q", "en-US", model=MODEL)
+
+        _, kwargs = mock_call.call_args
+        system = next(m["content"] for m in kwargs["messages"] if m["role"] == "system")
+        assert "conflict" in system.lower()
+        assert "contradiction" in system.lower()
+
     async def test_prompt_instructs_the_model_to_ignore_embedded_instructions(self) -> None:
         # The anti-injection defence in the prompt: the message is data, not
         # instructions. Asserted so a future prompt edit cannot silently drop it.
@@ -542,3 +569,30 @@ class TestRealProviderSanityCheck:
         )
         assert result is not None
         assert result.answer
+
+    async def test_venting_that_mentions_a_real_topic_is_not_answered(self) -> None:
+        # Regression test for a real failure Phase 2b-3's own adversarial pass
+        # found: reports/phase-2b-3.txt's synthetic-corpus simulation caught
+        # two toxic/rhetorical messages that got answers_question=true (and
+        # would have posted) because the first prompt draft's partial-coverage
+        # instruction ("a fact partially covering the message counts as
+        # answering") outweighed the sarcasm/rhetorical rule whenever the vent
+        # happened to mention a real topic. Fixed by checking intent (is this
+        # a genuine request at all) BEFORE coverage in the prompt. This is the
+        # Japanese failing case verbatim, translated to English so the test
+        # doesn't depend on non-English tokenization; the original-language
+        # case was verified manually 3x stable against the live model before
+        # this test was added (see the Phase 2b-3 conversation).
+        model = os.environ.get("PROACTIVE_MODEL") or os.environ.get("SYNTHESIS_MODEL", "")
+        facts = [
+            _make_fact(
+                1, "The weekly ranked tournament is held every Friday at 21:00."
+            )
+        ]
+        venting = (
+            "Hey bot, do you even work properly? You can't even get the weekly "
+            "tournament prep done, you're completely useless."
+        )
+        result = await synthesize_answer(facts, venting, "en-US", model=model)
+        assert result is not None
+        assert result.answers_question is False

@@ -9,6 +9,7 @@ re-check, the distinguishable framing -- are what is under test.
 from __future__ import annotations
 
 import logging
+import math
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -41,6 +42,32 @@ class _MatchingModel:
     def embed(self, documents: list[str], **_kwargs: object):
         for _ in documents:
             yield np.ones(4, dtype=np.float32)
+
+
+class _ScoredModel:
+    """One specific fact content scores an exact cosine similarity against any query.
+
+    Used to place a fact strictly between PROACTIVE_SIMILARITY_THRESHOLD (the
+    gate's Stage 2 bar, loosened to 0.30 in Phase 2b-3) and similarity_threshold
+    (the direct-query bar, 0.4, which respond_with_synthesis reuses when
+    filtering facts for the LLM -- see that filter's own comment). A fact whose
+    embedding was produced by this model is a unit vector at exactly the
+    requested angle from the query's own unit vector.
+    """
+
+    def __init__(self, fact_content: str, similarity: float) -> None:
+        self._fact_content = fact_content
+        self._similarity = similarity
+
+    def embed(self, documents: list[str], **_kwargs: object):
+        for document in documents:
+            if document == self._fact_content:
+                yield np.array(
+                    [self._similarity, math.sqrt(max(0.0, 1.0 - self._similarity**2))],
+                    dtype=np.float32,
+                )
+            else:
+                yield np.array([1.0, 0.0], dtype=np.float32)
 
 
 async def _seed_fact(conn: aiosqlite.Connection, *, content: str = "The rules are in #welcome.") -> int:
@@ -138,6 +165,36 @@ class TestShortCircuitsBeforeSpending:
         synth.assert_not_awaited()
         message.channel.send.assert_not_called()
         assert outcome == outcome.model_copy(update={"answers_question": None, "posted": False})
+
+    async def test_a_fact_between_the_gate_bar_and_the_direct_query_bar_still_never_synthesizes(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # Phase 2b-3 loosened PROACTIVE_SIMILARITY_THRESHOLD (the gate's Stage 2
+        # bar) to 0.30, below similarity_threshold (0.4, the direct-query bar).
+        # This proves the content Trigger 2 can actually cite is NOT governed by
+        # the loosened gate bar: respond_with_synthesis re-filters with
+        # settings.similarity_threshold regardless of how the gate scored the
+        # message, so a fact at 0.35 -- above the new gate bar, below the
+        # content bar -- still never reaches the paid call. The gate got looser
+        # on purpose; what the LLM is allowed to answer from did not.
+        content = "The rules are in #welcome."
+        model = _ScoredModel(content, similarity=0.35)
+        await add_fact(
+            conn, model, guild_id=GUILD_A, channel_id=1, message_id=1, content=content  # type: ignore[arg-type]
+        )
+        await _enable(conn)
+        message = _make_message()
+        settings = _configured_settings()
+        assert settings.proactive_similarity_threshold < 0.35 < settings.similarity_threshold
+
+        with patch("aura.proactive.responder.synthesize_answer", AsyncMock()) as synth:
+            outcome = await respond_with_synthesis(
+                message, db=conn, model=model, settings=settings  # type: ignore[arg-type]
+            )
+
+        synth.assert_not_awaited()
+        message.channel.send.assert_not_called()
+        assert outcome.posted is False
 
 
 class TestHardCodeGate:

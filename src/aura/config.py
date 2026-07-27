@@ -100,22 +100,33 @@ class Settings(BaseSettings):
     #
     # Measured on a 27-question / 27-statement held-out set across all nine
     # locales: accuracy peaks at -0.03 (94.4%, recall 0.93), and full recall
-    # needs -0.07 or below (specificity 0.67). Chosen -0.08 -- looser than the
-    # accuracy optimum, deliberately -- because the two errors are not
-    # symmetric here. A false negative at Stage 1 is permanent silence: the
-    # message is never considered again, and Aura fails at the one job it has.
-    # A false positive costs one Stage 2 evaluation, which is local CPU work
-    # and free, and Stage 2's own bar is what actually keeps noise out. -0.08
-    # also keeps a small margin below the lowest-scoring real question
-    # observed (-0.064) rather than sitting exactly on it, which would be
-    # fitting the threshold to one sentence.
+    # needs -0.07 or below (specificity 0.67). Phase 2a-3 chose -0.08 --
+    # looser than the accuracy optimum, deliberately -- because the two
+    # errors are not symmetric here. A false negative at Stage 1 is permanent
+    # silence: the message is never considered again, and Aura fails at the
+    # one job it has. A false positive costs one Stage 2 evaluation, which is
+    # local CPU work and free, and Stage 2's own bar is what actually keeps
+    # noise out.
     #
     # For context on why this is contrastive at all: the one-sided score it
     # replaces measured 66% on Phase 2a-1's own held-out set, below a naive
     # "contains a question mark" baseline. The contrastive score above beats
     # that baseline (94% vs 78% on the set measured here).
+    #
+    # RECALIBRATED for Phase 2b-3, -0.08 -> -0.15, against the real 580-message
+    # synthetic corpus (reports/phase-2b-2.txt Section 5): at -0.15, recall on
+    # genuine information requests is 0.982 (up from 0.903 at -0.08) -- roughly
+    # 30 fewer real questions silently and permanently dropped before Stage 2
+    # ever sees them, at negligible extra cost, since a Stage 1 pass only buys
+    # one free local Stage 2 check. Not pushed further to -0.22, where accuracy
+    # actually peaks on this corpus: that buys only 0.018 more recall (0.982 ->
+    # 1.000) for a much larger drop in specificity (0.150 -> 0.033) -- far more
+    # non-question traffic reaching Stage 2 for essentially no recall benefit.
+    # This is the numeric half of the Phase 2b-3 product decision documented in
+    # CLAUDE.md's "Proactive Relief: Visibly Active by Design" section: Aura is
+    # now tuned to let real questions through rather than drop them silently.
     proactive_question_threshold: float = Field(
-        default=-0.08, gt=-2.0, le=2.0, allow_inf_nan=False
+        default=-0.15, gt=-2.0, le=2.0, allow_inf_nan=False
     )
 
     # Stage 2: minimum cosine similarity between the message and the best
@@ -135,17 +146,32 @@ class Settings(BaseSettings):
     # answering them scored 0.53-0.78 (median 0.63); only one of eight cleared
     # 0.75. Unrelated messages in the same measurement scored 0.19-0.26.
     #
-    # 0.45 clears all eight measured true matches (the lowest was 0.53, leaving
+    # 0.45 cleared all eight measured true matches (the lowest was 0.53, leaving
     # ~0.08 of margin below it -- the same "don't sit exactly on the lowest
     # real observation" reasoning proactive_question_threshold uses) while
-    # staying well above the 0.19-0.26 unrelated band. It is deliberately at
-    # the low end of the 0.45-0.5 band the data points to: Stage 2 is no longer
-    # the last line of defence now that synthesis posts, because the LLM's own
-    # answers_question self-assessment and the confidence gap below both have
-    # to agree before anything is sent, so a slightly permissive similarity
-    # bar here is backstopped rather than load-bearing on its own.
+    # staying well above the 0.19-0.26 unrelated band. It was deliberately at
+    # the low end of the 0.45-0.5 band that data pointed to: Stage 2 is no
+    # longer the last line of defence now that synthesis posts, because the
+    # LLM's own answers_question self-assessment and the confidence gap below
+    # both have to agree before anything is sent, so a somewhat permissive
+    # similarity bar here is backstopped rather than load-bearing on its own.
+    #
+    # RECALIBRATED for Phase 2b-3, 0.45 -> 0.30, together with
+    # proactive_confidence_gap (0.15 -> 0.05) below -- these two move as a
+    # pair, per reports/phase-2b-2.txt Section 7's similarity x gap sweep.
+    # At (0.30, 0.05) recall on genuinely answerable questions is 0.69 at
+    # specificity 0.37 -- roughly three times the real answer rate the old
+    # (0.45, 0.15) pair produced (16 of 80 answerable repeats reached
+    # synthesis end-to-end; Section 12), while still correctly holding back
+    # over a third of cases that should not escalate at all. This is a real
+    # cost lever now, not a free one: a materially larger share of eligible
+    # messages reaches paid Stage 3 synthesis than before. That trade is the
+    # explicit Phase 2b-3 product decision (see CLAUDE.md) -- Timur accepted
+    # the cost increase in exchange for Aura being genuinely, visibly active,
+    # bounded by proactive_daily_cap below, at a server count small enough
+    # that the worst case is still cheap in absolute terms.
     proactive_similarity_threshold: float = Field(
-        default=0.45, ge=-1.0, le=1.0, allow_inf_nan=False
+        default=0.30, ge=-1.0, le=1.0, allow_inf_nan=False
     )
 
     # Stage 2: how far ahead of the runner-up the best fact must be. Guards
@@ -153,13 +179,30 @@ class Settings(BaseSettings):
     # a near-duplicate, or a contradiction that was never superseded -- where
     # answering from whichever happened to rank first is a coin flip.
     #
-    # Measured: true repeat questions beat their runner-up by 0.31-0.52,
-    # while a deliberately ambiguous pair (the same fact before and after a
-    # schedule change, both active) differed by only 0.14. 0.15 therefore
-    # blocks the ambiguous case with every genuine match still clearing it by
-    # at least double.
+    # Measured (Phase 2a-2): true repeat questions beat their runner-up by
+    # 0.31-0.52, while a deliberately ambiguous pair (the same fact before and
+    # after a schedule change, both active) differed by only 0.14. 0.15
+    # blocked that ambiguous case with every genuine match still clearing it
+    # by at least double.
+    #
+    # RECALIBRATED for Phase 2b-3, 0.15 -> 0.05, paired with
+    # proactive_similarity_threshold above -- see that field's comment for the
+    # (0.30, 0.05) sweep result. This threshold was NOT used as the lever for
+    # the partial-answer/contradiction risk that its Phase 2a-2 framing might
+    # suggest: reports/phase-2b-2.txt's full corpus shows median confidence
+    # gaps are nearly identical across answered_question (0.075),
+    # partial_answer (0.069), and contradictory_facts (0.075) -- a gap
+    # threshold cannot separate "genuinely risky" from "fine" among those
+    # three, and a value high enough to hold back contradictions would have
+    # silenced roughly half of all three categories indiscriminately. That
+    # correctness risk is deliberately handled elsewhere instead: the
+    # synthesis prompt (see aura.synthesis) now explicitly asks the model to
+    # check cited facts for mutual contradiction and refuse to answer
+    # (answers_question=false) when it finds one -- the model's judgment, not
+    # a numeric proxy. This threshold's only job is keeping the ambiguous-pair
+    # case above from slipping through at the loosened similarity bar.
     proactive_confidence_gap: float = Field(
-        default=0.15, ge=0.0, le=2.0, allow_inf_nan=False
+        default=0.05, ge=0.0, le=2.0, allow_inf_nan=False
     )
 
     # Per-channel cooldown, in seconds, on becoming eligible for synthesis.
@@ -188,7 +231,23 @@ class Settings(BaseSettings):
     # Upper bound mirrors MAX_DAILY_CAP in aura.db.proactive_state: the value
     # is bound into SQL, and sqlite3 refuses an int that does not fit a signed
     # 64-bit integer.
-    proactive_daily_cap: int = Field(default=20, ge=0, le=1_000_000)
+    #
+    # RECALIBRATED for Phase 2b-3, 20 -> 60. Not chosen from a sweep like the
+    # three thresholds above -- it is a deliberate ceiling raise to match them:
+    # at the loosened Stage 1/2 settings, a genuinely active server could
+    # plausibly exceed the old cap of 20 on a busy day, which would silently
+    # reintroduce the exact "quiet by accident" problem this phase exists to
+    # fix, just relocated from Stage 1/2 to the daily cap. 60/day at Haiku's
+    # measured ~$0.001-0.003 per Stage 3 call (see reports/model-bakeoff.txt)
+    # bounds worst-case cost at roughly $2-5 per guild per month even at full
+    # utilization every single day -- negligible at the handful of test and
+    # community servers Aura realistically runs on right now, and explicitly
+    # accepted by Timur as the cost of visible activity (see CLAUDE.md). This
+    # is a value to revisit before any large multi-guild rollout: the math
+    # here is per-guild and changes once many guilds share one operator key
+    # (see CLAUDE.md's Open Items on a cross-guild shared budget), even though
+    # it doesn't change yet.
+    proactive_daily_cap: int = Field(default=60, ge=0, le=1_000_000)
 
     # Phase 2b-1: how long Aura waits, after a message becomes eligible for
     # paid synthesis, before actually calling the LLM -- giving a human the

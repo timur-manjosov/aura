@@ -829,6 +829,90 @@ class TestCorpusDatabaseConsistency:
         assert_corpus_matches_database(corpus, {1: ("g1", "rules")})
 
 
+class TestCorpusScenarioGridGuard:
+    """A corpus scoped to fewer guilds than the full grid must not pass silently.
+
+    This is the actual gap the Phase 2b-3 corpus-corruption investigation
+    found: `generate_synthetic_corpus.py --limit N` writes a completely
+    well-formed, self-consistent, but partial corpus to the same fixed default
+    path a full run uses. Neither `read_corpus`'s schema/referential checks nor
+    `assert_corpus_matches_database` notice, because a partial run's corpus and
+    scratch database still agree with *each other*.
+    """
+
+    @staticmethod
+    def _guild(key: str) -> SyntheticGuild:
+        return SyntheticGuild(
+            key=key,
+            index=1,
+            name="n",
+            community_type="hobby_gaming",
+            size="small",
+            locale="en-US",
+            member_count=10,
+            facts=[],
+        )
+
+    def test_rejects_a_corpus_missing_most_of_the_grid(self) -> None:
+        from synthetic_corpus.corpus_store import (
+            CorpusLoadError,
+            assert_corpus_matches_scenario_grid,
+        )
+
+        corpus = SyntheticCorpus(
+            generated_at="2026-07-25T00:00:00+00:00",
+            generator_model="g",
+            reviewer_model="r",
+            guilds=[self._guild(SCENARIOS[0].key)],
+            messages=[],
+        )
+        with pytest.raises(CorpusLoadError, match="partial run"):
+            assert_corpus_matches_scenario_grid(corpus)
+
+    def test_accepts_a_corpus_covering_the_full_grid(self) -> None:
+        from synthetic_corpus.corpus_store import assert_corpus_matches_scenario_grid
+
+        corpus = SyntheticCorpus(
+            generated_at="2026-07-25T00:00:00+00:00",
+            generator_model="g",
+            reviewer_model="r",
+            guilds=[self._guild(scenario.key) for scenario in SCENARIOS],
+            messages=[],
+        )
+        assert_corpus_matches_scenario_grid(corpus)
+
+    def test_end_to_end_a_limit_scoped_file_on_disk_is_rejected_at_load(
+        self, tmp_path: Path
+    ) -> None:
+        """Reproduces the actual failure: write a `--limit`-sized file, then load it.
+
+        This is the deliberately-corrupted-file proof the investigation asked
+        for: a real `write_corpus` / `read_corpus` round trip through the exact
+        default path, standing in for a stale small run silently sitting where
+        the full corpus is expected.
+        """
+        from synthetic_corpus.corpus_store import (
+            CorpusLoadError,
+            assert_corpus_matches_scenario_grid,
+            read_corpus,
+            write_corpus,
+        )
+
+        partial = SyntheticCorpus(
+            generated_at="2026-07-25T00:00:00+00:00",
+            generator_model="g",
+            reviewer_model="r",
+            guilds=[self._guild(SCENARIOS[0].key), self._guild(SCENARIOS[1].key)],
+            messages=[],
+        )
+        corpus_path = tmp_path / "corpus.json"
+        write_corpus(partial, corpus_path)
+
+        reloaded = read_corpus(corpus_path)
+        with pytest.raises(CorpusLoadError, match="partial run"):
+            assert_corpus_matches_scenario_grid(reloaded)
+
+
 class TestScenarioGrid:
     """The corpus's diversity claims are structural, so they can be asserted."""
 

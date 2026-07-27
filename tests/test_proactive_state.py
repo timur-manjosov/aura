@@ -43,7 +43,11 @@ CHANNEL_2 = 5552
 
 NOON = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
 COOLDOWN = 900.0
-CAP = 20
+# Mirrors PROACTIVE_DAILY_CAP's production default (raised 20 -> 60 in
+# Phase 2b-3; see config.py), so the restart-durability tests below that use
+# this as their implicit cap (e.g. test_the_daily_count_survives_a_restart_
+# mid_day) actually re-verify the guarantee at the cap value that ships.
+CAP = 60
 
 
 @pytest.fixture
@@ -556,6 +560,27 @@ class TestConcurrency:
         assert sum(attempt.granted for attempt in results) == 7
         async with conn.execute("SELECT COUNT(*) FROM proactive_escalations") as cursor:
             assert await cursor.fetchone() == (7,)
+
+    async def test_the_cap_is_never_overshot_at_the_production_default_of_sixty(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # Phase 2b-3 raised PROACTIVE_DAILY_CAP 20 -> 60 (see config.py). The
+        # atomic-write guarantee this whole file exists to prove does not
+        # depend on the specific cap value, but a higher cap does mean more
+        # slots can plausibly be claimed concurrently during a real burst, so
+        # this re-runs the same race at the exact value that now ships rather
+        # than trusting it holds by extrapolation. 100 simultaneous claimants
+        # against a cap of 60 (CAP) leaves the boundary itself contested.
+        results = await asyncio.gather(
+            *(
+                _acquire(conn, channel_id=9000 + index, message_id=index, daily_cap=CAP)
+                for index in range(100)
+            )
+        )
+
+        assert sum(attempt.granted for attempt in results) == CAP
+        async with conn.execute("SELECT COUNT(*) FROM proactive_escalations") as cursor:
+            assert await cursor.fetchone() == (CAP,)
 
     async def test_no_granted_attempt_reports_a_count_above_the_cap(
         self, conn: aiosqlite.Connection
