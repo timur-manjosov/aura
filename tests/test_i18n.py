@@ -1,14 +1,57 @@
-"""Tests for aura.i18n: translation loading and key resolution."""
+"""Tests for aura.i18n: translation loading and key resolution.
+
+Content-fix note (reports/i18n-content-fix.txt has the full writeup): until this
+fix, all eight non-English locale files under src/aura/i18n/locales/ were
+byte-identical copies of en-US.json. TestRealShippedLocales's original content
+check only ever asserted `ping_response`, which is a deliberately untranslated
+key (see NEVER_TRANSLATED_KEYS below) — so it passed throughout, and nothing
+in this file distinguished "translated to something that happens to read the
+same" from "never translated at all." TestTranslationContentDiffersFromEnglish
+and TestPlaceholderParity close that gap: they check every locale/key pair
+directly, not a sample.
+"""
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from aura.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES, get_translator, t
 from aura.i18n.translator import Translator, TranslationLoadError
+
+_LOCALES_DIR = Path(__file__).resolve().parent.parent / "src" / "aura" / "i18n" / "locales"
+_PLACEHOLDER_RE = re.compile(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}")
+
+# Keys that are deliberately identical across every locale, and why:
+#
+# - ping_response ("Pong! 🏓"): paired with the "/ping" command name, which is
+#   also never translated (see below). "Ping"/"Pong" is standard, untranslated
+#   network-debug jargon in every one of these languages' tech communities;
+#   translating only the reply while the command stays "/ping" would read as
+#   inconsistent rather than more localized.
+# - ping_command_name ("ping"): a Discord slash-command identifier. main.py
+#   registers it via `translator.t("ping_command_name", DEFAULT_LOCALE)` —
+#   always DEFAULT_LOCALE, never the invoking user's locale — so a translated
+#   value here would never actually reach Discord under the current
+#   registration code (no name_localizations wiring exists yet). Command
+#   identifiers are also conventionally kept in English across Discord bots
+#   for cross-server discoverability.
+NEVER_TRANSLATED_KEYS = frozenset({"ping_response", "ping_command_name"})
+
+# (locale, key) pairs where the correct, idiomatic translation is spelled
+# identically to English — a genuine cognate, not a missed translation.
+# Verified individually: French "Sources" is the standard French word for
+# this UI context (same spelling as English), not a copy-paste leftover.
+KNOWN_COGNATE_EXCEPTIONS = frozenset({
+    ("fr", "ask_sources_label"),
+})
+
+
+def _load_locale_json(locale: str) -> dict[str, str]:
+    return json.loads((_LOCALES_DIR / f"{locale}.json").read_text(encoding="utf-8"))
 
 
 def _write_locale(directory: Path, locale: str, content: object) -> None:
@@ -31,6 +74,62 @@ class TestRealShippedLocales:
 
     def test_get_translator_returns_the_same_cached_instance(self) -> None:
         assert get_translator() is get_translator()
+
+
+class TestTranslationContentDiffersFromEnglish:
+    """Guards against a locale file that loads fine but was never actually translated.
+
+    This is the check that was missing: TestRealShippedLocales confirms the files
+    *load*, this confirms their *content* is real translation work, key by key,
+    locale by locale — not a sample.
+    """
+
+    _EN = _load_locale_json(DEFAULT_LOCALE)
+    _NON_ENGLISH_LOCALES = sorted(SUPPORTED_LOCALES - {DEFAULT_LOCALE})
+
+    @pytest.mark.parametrize("locale", _NON_ENGLISH_LOCALES)
+    def test_locale_has_same_key_set_as_english(self, locale: str) -> None:
+        data = _load_locale_json(locale)
+        assert set(data.keys()) == set(self._EN.keys())
+
+    @pytest.mark.parametrize("locale", _NON_ENGLISH_LOCALES)
+    def test_every_translatable_key_differs_from_english(self, locale: str) -> None:
+        data = _load_locale_json(locale)
+        untranslated = [
+            key
+            for key, en_value in self._EN.items()
+            if key not in NEVER_TRANSLATED_KEYS
+            and (locale, key) not in KNOWN_COGNATE_EXCEPTIONS
+            and data.get(key) == en_value
+        ]
+        assert not untranslated, (
+            f"{locale}.json has keys identical to en-US.json that aren't in "
+            f"NEVER_TRANSLATED_KEYS or KNOWN_COGNATE_EXCEPTIONS: {untranslated}"
+        )
+
+
+class TestPlaceholderParity:
+    """Every {placeholder} in an English string must appear, verbatim, in every
+    translation of that string — a renamed or dropped placeholder is a silent
+    KeyError at format time, not at load time, so this has to be checked by content
+    inspection rather than by the loader succeeding."""
+
+    _EN = _load_locale_json(DEFAULT_LOCALE)
+    _NON_ENGLISH_LOCALES = sorted(SUPPORTED_LOCALES - {DEFAULT_LOCALE})
+
+    @pytest.mark.parametrize("locale", _NON_ENGLISH_LOCALES)
+    def test_placeholders_match_english_exactly(self, locale: str) -> None:
+        data = _load_locale_json(locale)
+        mismatches = {}
+        for key, en_value in self._EN.items():
+            en_placeholders = set(_PLACEHOLDER_RE.findall(en_value))
+            locale_placeholders = set(_PLACEHOLDER_RE.findall(data.get(key, "")))
+            if en_placeholders != locale_placeholders:
+                mismatches[key] = {
+                    "expected": en_placeholders,
+                    "got": locale_placeholders,
+                }
+        assert not mismatches, f"{locale}.json placeholder mismatches: {mismatches}"
 
 
 class TestFallbackBehavior:

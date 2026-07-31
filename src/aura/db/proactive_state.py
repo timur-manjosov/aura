@@ -58,14 +58,18 @@ predictable, uniform window matters and the exact wall-clock moment does not.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import StrEnum
 from math import isfinite
 
 import aiosqlite
 from pydantic import BaseModel
 
-from aura.db.connection import connection_lock, utc_iso
+# utc_day moved to aura.db.connection once a second daily ledger (extraction's)
+# needed the same day boundary; it is re-exported here because this module is
+# where it was first defined and where the reasoning for choosing UTC lives, so
+# existing importers keep working and keep landing next to that reasoning.
+from aura.db.connection import connection_lock, utc_day, utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -157,24 +161,6 @@ class EscalationAttempt(BaseModel):
     def granted(self) -> bool:
         """Whether this attempt actually took a slot from the budget."""
         return self.outcome is EscalationOutcome.GRANTED
-
-
-def utc_day(moment: datetime) -> str:
-    """Return the UTC calendar day (YYYY-MM-DD) a timezone-aware moment falls in.
-
-    Converts to UTC first rather than reading the date off whatever offset it
-    arrived with: a moment written as 01:30+05:30 is still the previous UTC
-    day, and taking .date() without converting would file it under the wrong
-    day and hand the guild a second daily budget.
-
-    Rejects a naive datetime instead of assuming UTC, because that assumption
-    is wrong exactly when it matters -- datetime.now() on a host set to
-    Europe/Berlin is two hours ahead of UTC in summer, which would move the
-    reset boundary and, for two hours a day, file escalations under tomorrow.
-    """
-    if moment.tzinfo is None:
-        raise ValueError(f"utc_day requires a timezone-aware datetime, got {moment!r}")
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d")
 
 
 async def count_escalations_on(conn: aiosqlite.Connection, *, guild_id: int, day: str) -> int:

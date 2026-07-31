@@ -181,3 +181,227 @@ CREATE TABLE IF NOT EXISTS proactive_channel_config (
 
 CREATE INDEX IF NOT EXISTS idx_proactive_channel_config_guild
     ON proactive_channel_config(guild_id);
+
+-- Per-channel on/off switch for automatic fact extraction (Phase 3a), set by a
+-- moderator via /aura-config. Deliberately its OWN table, not a second column
+-- read off proactive_channel_config: extraction and proactive relief are two
+-- independent mechanisms that happen to both hang off on_message, and
+-- reports/phase-3-pre-analysis.md Section 1c found a real collision risk in
+-- reusing proactive relief's gate for extraction -- a channel a moderator
+-- opted into *answering* questions in is not necessarily one they want every
+-- message *read for facts*, and the reverse holds just as much. One shared
+-- gate would silently couple two decisions CLAUDE.md treats as separate.
+--
+-- Same invariant as proactive_channel_config for the same reason: a channel
+-- with NO row is OFF. Phase 3a-1 ships only the local, free first filter,
+-- unwired from any live path (see aura.extraction) -- but the gate that will
+-- eventually guard it is built now, opt-in by default, consistent with every
+-- other Aura mechanism that posts or reads at volume.
+CREATE TABLE IF NOT EXISTS extraction_channel_config (
+    channel_id INTEGER PRIMARY KEY,
+    guild_id INTEGER NOT NULL,
+    extraction_enabled INTEGER NOT NULL CHECK (extraction_enabled IN (0, 1)),
+    updated_by_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_extraction_channel_config_guild
+    ON extraction_channel_config(guild_id);
+
+-- Phase 3a-2's batch collector: candidate messages waiting for their channel's
+-- batch window to close (see aura.extraction.pipeline).
+--
+-- WHY THIS TABLE HOLDS RAW MESSAGE TEXT, when proactive_signals deliberately
+-- does not and a Fact deliberately stores a distilled sentence instead of a
+-- copy. This is the one place in Aura that keeps a verbatim message, and it is
+-- a bounded, deliberate exception rather than a lapse:
+--
+--   * The batch MUST survive a container restart -- the same durability bar
+--     the escalation ledger is held to -- so it cannot live in a Python dict.
+--   * The alternative, storing only IDs and re-fetching each message from
+--     Discord when the batch closes, trades one LLM call's worth of work for N
+--     HTTP round trips, makes flushing depend on the gateway being healthy,
+--     and re-reads content Aura already had in hand.
+--   * The row's life is one batch window (minutes), and it is deleted the
+--     moment the batch is distilled -- or earlier, if the message is edited or
+--     deleted first. Nothing here is a record; it is a buffer.
+--
+-- The primary key is (channel_id, message_id) rather than a surrogate id, so a
+-- redelivered gateway event cannot enqueue the same message twice and pay to
+-- distill it twice within one batch.
+--
+-- enqueued_at is Aura's own clock; message_created_at is Discord's timestamp
+-- for the message itself. Both are kept because they answer different
+-- questions: the first decides when this channel's window closes, the second
+-- is context the distillation model is actually shown (see the phase brief's
+-- "channel context" decision).
+CREATE TABLE IF NOT EXISTS extraction_queue (
+    channel_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    guild_id INTEGER NOT NULL,
+    channel_name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    message_created_at TEXT NOT NULL,
+    enqueued_at TEXT NOT NULL,
+    PRIMARY KEY (channel_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_extraction_queue_enqueued
+    ON extraction_queue(enqueued_at);
+
+-- Phase 3a-2's staging area: fact CANDIDATES produced by the distillation
+-- model, before any human has confirmed them.
+--
+-- WHY A SEPARATE TABLE RATHER THAN A THIRD `facts.status` VALUE. Both were on
+-- the table; this is the reasoning, recorded because the choice is not obvious
+-- either way:
+--
+--   1. Every read path over `facts` today filters on status = 'active' and
+--      nothing else. Adding a 'pending' status would make each of those a
+--      place where forgetting one predicate silently leaks an unconfirmed,
+--      machine-written sentence into a cited public answer -- across
+--      get_active_facts, find_similar_facts, /aura-facts, /aura-supersede and
+--      both synthesis triggers. A separate table cannot be read by accident:
+--      no existing query names it. That asymmetry is the whole argument.
+--   2. A candidate carries fields a real fact must never have -- the model's
+--      category, the possible-predecessor hint and its score, who resolved it
+--      and when. On `facts` those are columns that are NULL for every genuine
+--      row, and their presence invites the question of whether a fact might
+--      legitimately have one.
+--   3. CLAUDE.md admits exactly four things into the knowledge model. A
+--      sentence no human has confirmed is not a fact yet; it is extraction
+--      scaffolding, the same category as the two Phase 2 tables above, and it
+--      belongs on this side of the line drawn at the top of this file.
+--
+-- Confirming a candidate creates an ordinary row in `facts` through the
+-- ordinary insert path, so there stays exactly one way a fact comes into
+-- existence. confirmed_fact_id records which one, so the trail from an
+-- automatic fact back to the message and the model output that produced it
+-- stays walkable.
+--
+-- Resolved candidates are kept rather than deleted, mirroring how a superseded
+-- fact is kept: "the model proposed this and a moderator rejected it" is the
+-- only evidence a later phase has for whether extraction is worth its cost.
+--
+-- The UNIQUE constraint makes staging idempotent. A batch re-distilled after a
+-- crash (see aura.extraction.pipeline) produces the same sentences from the
+-- same messages, and those must land as the same candidates, not as duplicates
+-- a moderator has to reject one by one. It is deliberately (channel, message,
+-- content) and not (channel, message): one message can legitimately assert two
+-- separate things.
+CREATE TABLE IF NOT EXISTS pending_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    -- The DISTILLED sentence the model wrote, never a copy of the source
+    -- message. Whether that is actually true of a given row is a property of
+    -- the prompt, measured in reports/phase-3a-2.txt, not something this
+    -- schema can enforce.
+    content TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    category TEXT NOT NULL CHECK (
+        category IN (
+            'announcement', 'rule', 'decision', 'event', 'status_change', 'milestone'
+        )
+    ),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'confirmed', 'discarded'))
+        DEFAULT 'pending',
+    -- The possible predecessor this candidate may restate, and how similar it
+    -- scored. Advisory: it is shown to the confirming moderator and decides
+    -- nothing.
+    similar_fact_id INTEGER REFERENCES facts(id),
+    similar_fact_score REAL,
+    -- Phase 3a-3: what a model judged that similarity to actually MEAN, and the
+    -- one sentence it gave for why. Filled in at staging time, and only for a
+    -- candidate whose similar_fact_id above is set -- the judgment call fires
+    -- for nothing else, which is what keeps it a small slice of extraction's
+    -- volume.
+    --
+    -- STILL ADVISORY, and this is the property the whole sub-phase rests on: a
+    -- 'supersession' here is a PROPOSAL a moderator reads, never an action.
+    -- Nothing in this codebase supersedes a fact from these columns; the only
+    -- caller of supersede_fact is /aura-supersede, run by a human. Storing a
+    -- judgment beside the candidate rather than acting on it is the entire
+    -- design.
+    --
+    -- Both NULL means "never judged", which is an ordinary, expected state with
+    -- three causes: the candidate was never flagged for dedup at all, the daily
+    -- cap refused the call, or the call failed. All three fall back to Phase
+    -- 3a-2's plain similarity hint rather than blocking the review.
+    relationship TEXT CHECK (
+        relationship IN (
+            'supersession', 'complementary', 'contradiction', 'independent'
+        )
+    ),
+    -- The model's own reasoning sentence, written in the candidate's language
+    -- (see aura.extraction.supersession) and shown to the moderator as the
+    -- model's words rather than as Aura's conclusion.
+    relationship_reasoning TEXT,
+    -- The real fact a confirmation produced, NULL until then.
+    confirmed_fact_id INTEGER REFERENCES facts(id),
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    resolved_by_id INTEGER,
+    UNIQUE (channel_id, message_id, content)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_facts_guild_status
+    ON pending_facts(guild_id, status, id);
+
+-- The distillation call's spend ledger: one row per paid call, per guild, per
+-- UTC day. A deliberate structural twin of proactive_escalations above -- same
+-- append-only shape, same stored UTC day key, same "written before the work it
+-- authorizes, never refunded" rule -- so the two spend limits behave
+-- identically and neither can be reasoned about in isolation from the other.
+--
+-- Two differences from proactive_escalations, both intentional:
+--
+--   * No cooldown column and no cooldown concept. The batch window already
+--     bounds how often one channel can produce a call (at most one per
+--     window), which is what a cooldown would have been for. Adding a second,
+--     overlapping rate limit would mean two numbers that have to be kept
+--     consistent with each other to mean anything.
+--   * No UNIQUE (channel_id, message_id) idempotency key. There is no gateway
+--     redelivery to absorb here: calls originate from Aura's own sweeper, not
+--     from a Discord event. A crash between claiming a slot and finishing the
+--     batch therefore spends the slot and re-does the work, which is the same
+--     conservative direction proactive_escalations chose for the same reason:
+--     for a spend limit, erring toward "already spent" is the only safe way to
+--     err. Duplicate CANDIDATES from that retry are prevented by
+--     pending_facts' own UNIQUE constraint instead.
+CREATE TABLE IF NOT EXISTS extraction_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    message_count INTEGER NOT NULL,
+    called_at TEXT NOT NULL,
+    call_day TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_extraction_calls_guild_day
+    ON extraction_calls(guild_id, call_day);
+
+-- Phase 3a-3's spend ledger: one row per paid supersession-judgment call, per
+-- guild, per UTC day. The third instance of the same shape as the two ledgers
+-- above, and deliberately a third BUDGET rather than a share of extraction's:
+-- two call sites drawing on one number would leave neither with a bound of its
+-- own, and a burst of dedup-flagged candidates would eat the extraction budget
+-- that produces them.
+--
+-- pending_fact_id, where extraction_calls carries message_count: this call
+-- judges exactly one staged candidate, so the ledger can point at it, which
+-- makes "what did this spend actually buy?" answerable by a join rather than by
+-- correlating timestamps. The candidate is always staged before its slot is
+-- claimed, so the reference is never dangling -- and candidates are never
+-- deleted (see pending_facts above), so it stays resolvable forever.
+CREATE TABLE IF NOT EXISTS supersession_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    pending_fact_id INTEGER NOT NULL REFERENCES pending_facts(id),
+    called_at TEXT NOT NULL,
+    call_day TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_supersession_calls_guild_day
+    ON supersession_calls(guild_id, call_day);

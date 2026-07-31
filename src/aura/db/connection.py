@@ -84,6 +84,32 @@ def utc_iso(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
 
 
+def utc_day(moment: datetime) -> str:
+    """Return the UTC calendar day (YYYY-MM-DD) a timezone-aware moment falls in.
+
+    Converts to UTC first rather than reading the date off whatever offset it
+    arrived with: a moment written as 01:30+05:30 is still the previous UTC
+    day, and taking .date() without converting would file it under the wrong
+    day and hand a guild a second daily budget.
+
+    Rejects a naive datetime instead of assuming UTC, because that assumption
+    is wrong exactly when it matters -- datetime.now() on a host set to
+    Europe/Berlin is two hours ahead of UTC in summer, which would move the
+    reset boundary and, for two hours a day, file rows under tomorrow.
+
+    Lives here beside utc_iso rather than in the module that first needed it
+    (aura.db.proactive_state), because both daily spend ledgers key on it now
+    -- the proactive one and the extraction one -- and a day boundary defined
+    twice is a day boundary that can disagree with itself. The full reasoning
+    for why the boundary is UTC at all, rather than any local zone, is in
+    aura.db.proactive_state's module docstring, where the trade-off it makes
+    is felt.
+    """
+    if moment.tzinfo is None:
+        raise ValueError(f"utc_day requires a timezone-aware datetime, got {moment!r}")
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+
 def utc_now() -> datetime:
     """Current time as a timezone-aware UTC datetime.
 

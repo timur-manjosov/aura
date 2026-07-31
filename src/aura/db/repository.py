@@ -23,6 +23,11 @@ _FACT_COLUMNS = (
     "superseded_by_id, created_at, superseded_at"
 )
 
+_INSERT_FACT_SQL = """
+INSERT INTO facts (guild_id, channel_id, message_id, content, embedding, status, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+"""
+
 
 class RepositoryError(Exception):
     """Base class for knowledge-model data-access errors."""
@@ -115,7 +120,7 @@ async def init_schema(conn: aiosqlite.Connection) -> None:
     await conn.commit()
 
 
-async def create_fact(
+async def insert_fact_within_transaction(
     conn: aiosqlite.Connection,
     *,
     guild_id: int,
@@ -123,28 +128,32 @@ async def create_fact(
     message_id: int,
     content: str,
     embedding: bytes,
+    created_at: str,
 ) -> Fact:
-    """Insert a new active fact and return it.
+    """Insert one active fact. THE CALLER MUST ALREADY HOLD THE CONNECTION LOCK.
 
-    embedding is required, not optional: every fact this schema can produce
-    must carry one from the moment it's written, or find_similar_facts (see
-    aura.embeddings) has a silent invariant violation waiting to happen the
-    first time it scans a fact with none. Callers must compute it before
-    calling this function -- see aura.facts_service.add_fact for why the
-    computation itself belongs there, one call site, not here.
+    The single statement that brings a fact into existence, factored out so
+    there is exactly one of it in the codebase rather than one per operation
+    that has to compose a fact insert into a larger transaction. Three callers
+    need that today -- create_fact, supersede_fact, and confirming a staged
+    extraction candidate (aura.db.pending_facts) -- and a fourth would otherwise
+    mean a fourth chance for one copy to drift out of step with the schema.
+
+    Neither locks nor commits, on purpose: every caller is mid-transaction and
+    owns both. Calling it without the lock held is a transaction-integrity bug
+    of exactly the kind aura.db.connection's docstring describes, and calling it
+    from a coroutine that already holds the lock through connection_lock is
+    fine -- it simply does not take it again.
+
+    Takes created_at rather than reading the clock, so a caller writing several
+    rows in one transaction can timestamp them from one instant.
     """
-    created_at = utc_now_iso()
-    async with connection_lock(conn):
-        cursor = await conn.execute(
-            """
-            INSERT INTO facts (guild_id, channel_id, message_id, content, embedding, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (guild_id, channel_id, message_id, content, embedding, FactStatus.ACTIVE, created_at),
-        )
-        await conn.commit()
-        fact_id = cursor.lastrowid
-        assert fact_id is not None  # guaranteed by sqlite after a successful INSERT
+    cursor = await conn.execute(
+        _INSERT_FACT_SQL,
+        (guild_id, channel_id, message_id, content, embedding, FactStatus.ACTIVE, created_at),
+    )
+    fact_id = cursor.lastrowid
+    assert fact_id is not None  # guaranteed by sqlite after a successful INSERT
 
     return Fact(
         id=fact_id,
@@ -158,6 +167,38 @@ async def create_fact(
         created_at=datetime.fromisoformat(created_at),
         superseded_at=None,
     )
+
+
+async def create_fact(
+    conn: aiosqlite.Connection,
+    *,
+    guild_id: int,
+    channel_id: int,
+    message_id: int,
+    content: str,
+    embedding: bytes,
+) -> Fact:
+    """Insert a new active fact in its own transaction and return it.
+
+    embedding is required, not optional: every fact this schema can produce
+    must carry one from the moment it's written, or find_similar_facts (see
+    aura.embeddings) has a silent invariant violation waiting to happen the
+    first time it scans a fact with none. Callers must compute it before
+    calling this function -- see aura.facts_service.add_fact for why the
+    computation itself belongs there, one call site, not here.
+    """
+    async with connection_lock(conn):
+        fact = await insert_fact_within_transaction(
+            conn,
+            guild_id=guild_id,
+            channel_id=channel_id,
+            message_id=message_id,
+            content=content,
+            embedding=embedding,
+            created_at=utc_now_iso(),
+        )
+        await conn.commit()
+    return fact
 
 
 async def supersede_fact(
@@ -186,15 +227,16 @@ async def supersede_fact(
     now = utc_now_iso()
     async with connection_lock(conn):
         try:
-            cursor = await conn.execute(
-                """
-                INSERT INTO facts (guild_id, channel_id, message_id, content, embedding, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (guild_id, channel_id, message_id, content, embedding, FactStatus.ACTIVE, now),
+            new_fact = await insert_fact_within_transaction(
+                conn,
+                guild_id=guild_id,
+                channel_id=channel_id,
+                message_id=message_id,
+                content=content,
+                embedding=embedding,
+                created_at=now,
             )
-            new_fact_id = cursor.lastrowid
-            assert new_fact_id is not None
+            new_fact_id = new_fact.id
 
             update_cursor = await conn.execute(
                 """
@@ -217,18 +259,7 @@ async def supersede_fact(
 
         await conn.commit()
 
-    return Fact(
-        id=new_fact_id,
-        guild_id=guild_id,
-        channel_id=channel_id,
-        message_id=message_id,
-        content=content,
-        embedding=embedding,
-        status=FactStatus.ACTIVE,
-        superseded_by_id=None,
-        created_at=datetime.fromisoformat(now),
-        superseded_at=None,
-    )
+    return new_fact
 
 
 async def supersede_fact_with_existing_successor(

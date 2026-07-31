@@ -23,6 +23,8 @@ class ModelComponent(StrEnum):
 
     SYNTHESIS = "synthesis"
     PROACTIVE = "proactive"
+    EXTRACTION = "extraction"
+    SUPERSESSION = "supersession"
 
 
 class ConfigurationError(Exception):
@@ -74,6 +76,71 @@ class Settings(BaseSettings):
     # the same model as synthesis, which is why the fallback above is a
     # convenience rather than the decision itself.
     proactive_model: str | None = None
+    # Automatic fact extraction's own model (Phase 3a-2's distillation call),
+    # resolved through the same seam as the two above. Falls back to
+    # synthesis_model when unset, for the same reason proactive_model does: a
+    # deployment that configures one model should still have a working third
+    # call site rather than a silently dead one.
+    #
+    # SHIPPED VALUE: claude-haiku-4.5, and this is an ASSUMPTION CARRIED OVER
+    # FROM PHASE 2, not a bake-off of its own -- stated plainly here because the
+    # two other models in this file were chosen by measurement and a reader
+    # would otherwise reasonably assume this one was too. Phase 2's bake-off
+    # (reports/model-bakeoff.txt) measured a similarly-shaped task -- strict
+    # JSON out, a judgement about whether text genuinely supports a claim,
+    # across nine locales -- and found Haiku at the judgement ceiling (12/12,
+    # and 6/6 on the two cases that specifically separate a calibrated model
+    # from an optimistic one) with the two cheaper candidates losing on
+    # calibration rather than on format or language. Distillation asks for the
+    # same trait in the same shape: decide whether a message really asserts
+    # something checkable, and refuse when it only looks like it does.
+    #
+    # Where the transfer is weakest, since a carried assumption should say
+    # where it might break: distillation is a *generative* task (write a new
+    # distilled sentence) as well as a judgement one, at far higher volume,
+    # over raw chat rather than over already-distilled facts. Nothing in Phase
+    # 2's evidence speaks to generation quality or to bulk-volume cost. Revisit
+    # with a real bake-off if live usage shows distillation quality problems a
+    # better model would plausibly fix -- see reports/phase-3a-2.txt, which
+    # measures this model's actual behaviour on the cases this phase cares
+    # about but does not compare it against alternatives.
+    extraction_model: str | None = None
+    # The supersession-judgment call's own model (Phase 3a-3): given an existing
+    # active fact and a freshly distilled candidate that scored above
+    # EXTRACTION_DEDUP_SIMILARITY_THRESHOLD against it, decide what the
+    # relationship actually is -- supersession, complementary, contradiction, or
+    # an embedding false positive. Resolved through the same seam as the three
+    # above, and falling back to synthesis_model for the same reason.
+    #
+    # SHIPPED VALUE: claude-haiku-4.5, and unlike extraction_model above this
+    # one WAS chosen by a bake-off of its own -- 120 real calls over 32
+    # hand-written fact pairs across three candidates, written up in
+    # reports/supersession-model-bakeoff.txt.
+    #
+    # THE DECIDING FINDING, in short, because it is not the number a reader
+    # would expect: raw accuracy did not decide this. Sonnet 4.5, Haiku 4.5 and
+    # Gemini 3.1 Flash Lite scored 92% / 92% / 95% -- a three-way near-tie, with
+    # the cheapest-but-one nominally ahead. What separated them was the
+    # DIRECTION of their mistakes. An over-confident judgement actively misleads
+    # the moderator who reads it toward acting on a pair that is not actually
+    # settled; an over-cautious one costs an extra manual look at something they
+    # were already going to review. Haiku was the only candidate with zero
+    # mistakes in the dangerous direction (0 dangerous / 3 conservative, against
+    # Sonnet's 1/2 and Gemini's 2/0), and it was alone in getting the single
+    # most important case right: two facts stating different numbers for the
+    # same rule with NO transition language between them, which Sonnet and
+    # Gemini both proposed as a confident supersession and Haiku correctly
+    # escalated as a contradiction. That is precisely the failure this call
+    # exists to avoid, so the cheaper model won on merit rather than on price --
+    # the same trait ("fails toward the safe answer under ambiguity, reliably")
+    # reports/model-bakeoff.txt found when choosing PROACTIVE_MODEL, observed
+    # again here on a structurally different task.
+    #
+    # Cost is deliberately NOT the primary axis here, unlike extraction_model:
+    # the dedup threshold already narrows this call to a small, advisory-only
+    # slice of extraction's volume, and supersession_daily_cap below bounds the
+    # worst case regardless.
+    supersession_model: str | None = None
     database_path: str = "data/aura.db"
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     # Phase 1d's own test data showed related content scoring around 0.98
@@ -276,6 +343,227 @@ class Settings(BaseSettings):
         default=90.0, ge=0.0, le=24 * 60 * 60.0, allow_inf_nan=False
     )
 
+    # --- Automatic fact extraction (CLAUDE.md's Phase 3a, first filter only) --
+    # Minimum contrastive fact-worthiness score (fact-worthy-exemplar similarity
+    # minus not-fact-worthy-exemplar similarity; see
+    # aura.extraction.fact_worthiness) for a message to be worth extraction's
+    # attention at all. Same scale and same reasoning shape as
+    # proactive_question_threshold above: a difference of two cosine
+    # similarities, so the useful range sits well inside [-2, 2] rather than
+    # spanning it.
+    #
+    # Not yet read by any live code path: Phase 3a-1 ships the filter
+    # calibrated but unwired (see aura.extraction and
+    # reports/phase-3a-1.txt), the same "value before wiring" order Settings
+    # has followed for every threshold since Phase 2a-1. Phase 3a-1b
+    # (reports/phase-3a-1b.txt) re-calibrated this value against a larger
+    # corpus without wiring anything -- still a PLACEHOLDER pending real
+    # usage data, the same as every synthetic-corpus-derived threshold in
+    # this project regardless of corpus size.
+    #
+    # CALIBRATED for Phase 3a-1b against a 2,127-message synthetic corpus (9
+    # locales, 25 fact-worthy cases per locale, ~10.6% fact-worthy / 89.4%
+    # ordinary+hard-negative chat by construction; see reports/phase-3a-1b.txt
+    # and scripts/extraction_corpus/). This supersedes Phase 3a-1's 443-message
+    # corpus (5 fact-worthy/locale), which its own report flagged as too small
+    # to trust the exact threshold position or any single locale's number.
+    #
+    # -0.02 is the F1-maximising point of the full precision/recall sweep
+    # (P=0.609, R=0.707, specificity=0.946, F1=0.654) and stays the optimum
+    # whether or not the 37 label-audit-disputed cases are excluded (F1=0.665
+    # excluding them, P=0.605, R=0.739) -- both views were swept independently
+    # and happened to agree, the same cross-check 3a-1 ran. The optimum moved
+    # by 0.01 from 3a-1's -0.03 -- a real shift, reported rather than held for
+    # continuity, though within the noise either corpus's own resampling would
+    # produce.
+    #
+    # Deliberately NOT pushed looser to chase recall the way
+    # proactive_question_threshold was: that threshold only gates one more
+    # free local check (Stage 2), so a false negative there is cheap to
+    # tolerate and a missed real question is a permanent silence. Here a
+    # message that clears this bar is headed for Phase 3a-2's paid,
+    # per-message LLM extraction call -- CLAUDE.md's own LLM Usage section
+    # names automatic extraction as running "on every incoming message across
+    # every connected server," the highest-volume, most cost-sensitive call
+    # site in the whole project. A false negative here just means one
+    # real fact is not captured automatically this one time (manual entry via
+    # the "Add as Aura Fact" context menu still exists); a false positive
+    # spends a paid call on ordinary chat, at extraction's volume. That
+    # asymmetry is the opposite of Stage 1's, so this threshold sits at the
+    # precision-favouring optimum rather than being loosened past it.
+    #
+    # Honest limitations, not smoothed over: the two hard-negative categories
+    # (hedged speculation -- "I think the event might be Saturday"; rule-shaped
+    # jokes, quotes and hypotheticals) still score measurably closer to real
+    # facts than ordinary chat does at this threshold (hedged_speculation
+    # false-positive rate 7.5%, adversarial_noise 12.9%, vs. 2.6% against
+    # ordinary chat) -- improved from 3a-1's combined 14.2%, but not resolved,
+    # and this filter was never meant to resolve that ambiguity alone, the same
+    # way PROACTIVE_SIMILARITY_THRESHOLD was never meant to resolve a
+    # stale-vs-complementary conflict alone (see aura.proactive.gate); a future
+    # Phase 3a-2 extraction call is where that judgement belongs.
+    #
+    # Per-locale performance at n=25 positive/locale ranges from F1=0.784 (tr)
+    # down to F1=0.432 (en-US) -- real spread, but NOT the same spread 3a-1
+    # reported at n=5 (there: ja best at F1=1.000, pl worst at F1=0.250). At
+    # 5x the sample, ja fell to mid-pack (F1=0.627) and pl rose to
+    # second-best (F1=0.755): 3a-1's own caveat that its per-locale spread was
+    # "dominated by small-sample noise rather than proof of a real per-locale
+    # gap" is borne out directly by watching the ranking scramble, not just
+    # asserted. en-US's weak showing here is new and specific: 11/40 (27.5%)
+    # of its hedged-speculation cases score above this threshold, the worst
+    # hedge leakage of any locale -- see reports/phase-3a-1b.txt.
+    extraction_fact_worthiness_threshold: float = Field(
+        default=-0.02, gt=-2.0, le=2.0, allow_inf_nan=False
+    )
+
+    # How long candidate messages accumulate in one channel before being sent
+    # to the distillation model as a single batch (see aura.extraction.pipeline).
+    #
+    # Batching at all is the point: nobody is waiting on an automatically
+    # extracted fact -- unlike Trigger 1, where a user watches a deferred
+    # interaction, and unlike Trigger 2, where a channel is mid-conversation --
+    # so extraction can trade latency it does not need for a call count it does.
+    # Ten messages batched into one call is one call instead of ten, over
+    # roughly the same tokens, at the project's most cost-sensitive call site.
+    #
+    # 300s (5 minutes) is the low end of the 5-10 minute range the phase brief
+    # proposed, and low deliberately: the batch window is also the window in
+    # which an edit or a deletion can still withdraw a message before anything
+    # is distilled from it (see aura.extraction.pipeline), and a longer window
+    # holds raw message text in extraction_queue for longer. Both argue for the
+    # short end; only call-count efficiency argues for the long end, and it
+    # keeps almost all of its benefit at five minutes on any channel busy
+    # enough for batching to matter at all.
+    extraction_batch_window_seconds: float = Field(
+        default=300.0, ge=0.0, le=24 * 60 * 60.0, allow_inf_nan=False
+    )
+
+    # Hard ceiling on how many messages go into one distillation call.
+    #
+    # A bound on the worst case, not a target: the window above says "wait five
+    # minutes", and a channel that receives four hundred fact-worthy-looking
+    # messages in those five minutes would otherwise produce one enormous
+    # prompt. With per-message truncation in the prompt builder (see
+    # aura.extraction.distiller), 20 messages is a worst case of roughly 20k
+    # characters -- a few cents at the shipped model's pricing -- rather than an
+    # unbounded one. Anything over the limit simply waits for the next sweep,
+    # where it is already past its window and flushes immediately; it is not
+    # dropped.
+    extraction_batch_max_messages: int = Field(default=20, ge=1, le=1000)
+
+    # Per-guild, per-UTC-day ceiling on DISTILLATION CALLS, mirroring
+    # proactive_daily_cap exactly (same ledger shape, same atomic acquisition,
+    # same durability across restarts -- see aura.db.extraction_state).
+    #
+    # Counts calls rather than extracted facts, for the same reason the
+    # proactive cap counts eligibility rather than answers: a reliably-failing
+    # model must not earn unlimited retries. 0 is valid and disables automatic
+    # extraction entirely while leaving the rest of the pipeline configured.
+    #
+    # 50 is chosen against measured pricing rather than by feel, and against
+    # what a call actually costs at this batch size: at the shipped model's
+    # $1/$5 per Mtok, a full 20-message batch measures at roughly 6k input and
+    # under 1k output tokens, about $0.011 -- so 50 calls a day is a worst case
+    # near $16 per guild per month IF every single call were a maximum-size
+    # batch every day, and realistically a small fraction of that, since a real
+    # batch is a handful of messages rather than twenty. It is deliberately a
+    # tighter bound in call terms than proactive_daily_cap's 60 despite
+    # extraction being the higher-volume trigger: batching means one call here
+    # covers many messages, so 50 calls a day is a great deal more coverage
+    # than 60 escalations a day is. Revisit alongside proactive_daily_cap
+    # before any multi-guild rollout -- CLAUDE.md's Open Items note about a
+    # cross-guild shared budget applies to this cap identically.
+    extraction_daily_cap: int = Field(default=50, ge=0, le=1_000_000)
+
+    # Similarity at or above which a freshly distilled candidate is flagged as
+    # possibly restating an existing active fact (see aura.extraction.pipeline).
+    # Since Phase 3a-3 this flag also gates a paid judgement call
+    # (aura.extraction.supersession), so "advisory only" no longer means "no
+    # calibration needed" -- a false positive now spends a real, if small and
+    # capped, judgement slot. reports/extraction-dedup-threshold-calibration.txt
+    # is that calibration: 105 hand-written pairs across all nine locales
+    # (25+ each of duplicate/paraphrase, genuine supersession, genuine
+    # contradiction -- all three "should mark" -- plus 15 thematically-similar-
+    # but-different-subject pairs and 15 genuinely unrelated pairs, both
+    # "should not mark"), scored through the real, shipped fastembed model.
+    #
+    # THE HONEST HEADLINE FINDING: no single threshold cleanly separates a
+    # weakly-worded genuine restatement from a strongly-worded false positive,
+    # because their score distributions substantially overlap (should-mark:
+    # 0.260-0.991; thematically-similar-but-unrelated: 0.497-0.924, nearly the
+    # same median). This is the same shape as the retired
+    # PROACTIVE_CONFIDENCE_GAP finding, one call site earlier: a status-change
+    # supersession that keeps almost none of the predecessor's wording (a
+    # channel closed, a role handed over) can score LOWER than an unrelated
+    # pair that merely shares a sentence template. Neither raw F1 sweep is
+    # usable as a result because of it: the full-corpus optimum (0.25) is
+    # dominated by the trivially-separable unrelated pairs and marks 100% of
+    # the thematically-similar ones; the sweep restricted to should-mark vs.
+    # that one hard category degenerates further, to "mark everything", since
+    # should-mark outnumbers it 5:1 and F1 rewards recall almost
+    # unconditionally at that ratio. The report picks a value off the
+    # resulting precision/recall Pareto frontier by hand instead, the same
+    # "the optimum is a data point, not an instruction" stance every threshold
+    # in this file already takes.
+    #
+    # 0.60, down from the unmeasured 0.70 placeholder, because the cost
+    # asymmetry here is the OPPOSITE of Stage 1's fact-worthiness filter: a
+    # false positive no longer buys a full extraction call, only a ~$0.001
+    # judgement call bounded by SUPERSESSION_DAILY_CAP and -- per
+    # reports/phase-3a-3.txt's own re-verification -- one the shipped judge
+    # resolves correctly as "independent" on exactly this report's hardest
+    # false-positive shapes, while a false negative silently drops the one
+    # thing this call exists to catch, with no compensating signal at all. At
+    # 0.70 the corpus's genuine supersessions were caught only 36% of the time
+    # (9/25) -- a status change or a name/role handover routinely scores below
+    # a strict paraphrase bar -- against 76% (19/25) at 0.60, while duplicates
+    # and contradictions stay 90%+ caught at both. The cost: marking the one
+    # hard false-positive category (thematically similar, different subject)
+    # rises from 67% to 87%, including one of the two named Phase 3a-3 attack
+    # cases (independent-upload-limit-different-channel, score 0.698, sits
+    # right at the old bar) -- accepted rather than overlooked, on the same
+    # reasoning: that exact case is the one this project already measured the
+    # judge getting right. Both attack cases stay held back well above 0.70,
+    # so raising this value instead would cost nothing on them specifically --
+    # it is the supersession recall above that the higher bar was actually
+    # giving up.
+    extraction_dedup_similarity_threshold: float = Field(
+        default=0.60, ge=-1.0, le=1.0, allow_inf_nan=False
+    )
+
+    # Per-guild, per-UTC-day ceiling on SUPERSESSION-JUDGMENT CALLS (Phase
+    # 3a-3), the third daily cap in this file and a structural twin of the two
+    # above it -- same append-only ledger, same guarded INSERT, same "claimed
+    # before the call it authorizes, never refunded" rule (see
+    # aura.db.supersession_state).
+    #
+    # It gets its own independent number rather than sharing
+    # extraction_daily_cap, even though it can only fire downstream of a
+    # distillation call that already spent one of those slots. Every paid call
+    # site in this project carries its own cost safety net, and two call sites
+    # sharing one budget would mean neither has a bound of its own: a burst of
+    # dedup-flagged candidates would eat the extraction budget that produces
+    # them, silently turning a judgment ceiling into an extraction outage.
+    #
+    # 50 is chosen against the same measured pricing as the two caps above. One
+    # judgment call is small and fixed in size -- two sentences in, a category
+    # and one sentence of reasoning out -- roughly 700 input and 80 output
+    # tokens, about $0.001 at claude-haiku-4.5's $1/$5 per Mtok. 50 a day is
+    # therefore a worst case near $1.50 per guild per month, and only if every
+    # slot were spent every day, which the dedup threshold makes unlikely: this
+    # call fires only for a candidate that scored above 0.70 against an existing
+    # active fact, a small minority of what extraction produces. When the cap
+    # does bind, nothing breaks and nothing is lost -- the candidate is still
+    # staged and still reviewed, it simply carries Phase 3a-2's plain similarity
+    # hint instead of a judgment. 0 is valid and disables the judgment call
+    # entirely while leaving the rest of extraction working.
+    #
+    # Revisit alongside the other two before any multi-guild rollout;
+    # CLAUDE.md's Open Items note on a cross-guild shared budget applies here
+    # identically.
+    supersession_daily_cap: int = Field(default=50, ge=0, le=1_000_000)
+
     log_level: str = "INFO"
 
     @field_validator("discord_token")
@@ -297,17 +585,22 @@ class Settings(BaseSettings):
         code changes" principle from CLAUDE.md's Scalability section, applied
         per task).
 
-        PROACTIVE falls back to the synthesis model when its own is unset: its
-        model is its own config value (CLAUDE.md forbids assuming one model
-        fits every task) but is deliberately NOT assumed to differ from
-        synthesis by default, so a deployment that configures a single model
-        still has a working second trigger.
+        PROACTIVE, EXTRACTION and SUPERSESSION all fall back to the synthesis
+        model when their own is unset: each has its own config value (CLAUDE.md
+        forbids assuming one model fits every task) but none is assumed to
+        differ from synthesis by default, so a deployment that configures a
+        single model still has every call site working rather than some that
+        silently never run.
         """
         match component:
             case ModelComponent.SYNTHESIS:
                 return self.synthesis_model
             case ModelComponent.PROACTIVE:
                 return self.proactive_model or self.synthesis_model
+            case ModelComponent.EXTRACTION:
+                return self.extraction_model or self.synthesis_model
+            case ModelComponent.SUPERSESSION:
+                return self.supersession_model or self.synthesis_model
 
     def is_llm_configured(self, component: ModelComponent) -> bool:
         """Whether enough is present to actually call the LLM for component.

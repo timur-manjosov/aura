@@ -3,6 +3,12 @@
 Command callback, permission check and error handler invoked directly against
 mocked discord objects and a real in-memory database, matching how the other
 moderator-gated commands are tested. No live gateway connection.
+
+Since Phase 3a-1 the command carries two independent optional switches
+(proactive, extraction) instead of one required one -- see TestBothSwitches
+and TestNoOptionsGiven for the behaviour that added, on top of the original
+proactive-only coverage below (now exercised by passing extraction=None
+explicitly, which is what an unset slash-command option looks like).
 """
 from __future__ import annotations
 
@@ -15,6 +21,7 @@ import pytest
 from discord import app_commands
 
 from aura.commands.config import _handle_config_command_error, config_command
+from aura.db.extraction_channel_config import is_extraction_enabled
 from aura.db.proactive_channel_config import is_channel_enabled
 from aura.db.repository import init_schema
 from aura.i18n import SUPPORTED_LOCALES, t
@@ -61,8 +68,13 @@ def _make_channel(channel_id: int = 555) -> MagicMock:
     return channel
 
 
-async def _invoke(interaction: discord.Interaction, channel: MagicMock, proactive: bool) -> None:
-    await config_command.callback(interaction, channel, proactive)  # pyright: ignore[reportCallIssue, reportArgumentType]
+async def _invoke(
+    interaction: discord.Interaction,
+    channel: MagicMock,
+    proactive: bool | None,
+    extraction: bool | None = None,
+) -> None:
+    await config_command.callback(interaction, channel, proactive, extraction)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
 class TestPermissionCheck:
@@ -167,6 +179,81 @@ class TestPersistence:
         assert on_text != off_text
 
 
+class TestNoOptionsGiven:
+    async def test_neither_option_is_rejected_without_touching_the_database(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        interaction = _make_interaction(db=conn)
+        await _invoke(interaction, _make_channel(555), proactive=None, extraction=None)
+
+        assert await is_channel_enabled(conn, channel_id=555) is False
+        assert await is_extraction_enabled(conn, channel_id=555) is False
+        interaction.response.send_message.assert_awaited_once()
+        args, kwargs = interaction.response.send_message.call_args
+        assert kwargs.get("ephemeral") is True
+        assert "proactive" in args[0] or "extraction" in args[0]
+
+    async def test_neither_option_never_reads_client_db(self) -> None:
+        # interaction.client.db is None here; if the handler tried to use it
+        # before the early return, this would raise instead of replying.
+        interaction = _make_interaction(db=None)
+        await _invoke(interaction, _make_channel(555), proactive=None, extraction=None)
+        interaction.response.send_message.assert_awaited_once()
+
+
+class TestExtractionSwitch:
+    async def test_enabling_extraction_persists_and_confirms(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        interaction = _make_interaction(db=conn)
+        channel = _make_channel(555)
+
+        await _invoke(interaction, channel, proactive=None, extraction=True)
+
+        assert await is_extraction_enabled(conn, channel_id=555) is True
+        assert await is_channel_enabled(conn, channel_id=555) is False  # untouched
+        args, kwargs = interaction.response.send_message.call_args
+        assert kwargs.get("ephemeral") is True
+        assert channel.mention in args[0]
+
+    async def test_disabling_extraction_persists_and_confirms(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        interaction = _make_interaction(db=conn)
+        channel = _make_channel(555)
+
+        await _invoke(interaction, channel, proactive=None, extraction=True)
+        await _invoke(interaction, channel, proactive=None, extraction=False)
+
+        assert await is_extraction_enabled(conn, channel_id=555) is False
+
+    async def test_setting_extraction_does_not_touch_proactive(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        interaction = _make_interaction(db=conn)
+        channel = _make_channel(555)
+
+        await _invoke(interaction, channel, proactive=True, extraction=None)
+        await _invoke(interaction, channel, proactive=None, extraction=True)
+
+        assert await is_channel_enabled(conn, channel_id=555) is True
+        assert await is_extraction_enabled(conn, channel_id=555) is True
+
+    async def test_both_switches_in_one_call_are_both_persisted_and_confirmed(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        interaction = _make_interaction(db=conn)
+        channel = _make_channel(555)
+
+        await _invoke(interaction, channel, proactive=True, extraction=False)
+
+        assert await is_channel_enabled(conn, channel_id=555) is True
+        assert await is_extraction_enabled(conn, channel_id=555) is False
+        message = interaction.response.send_message.call_args[0][0]
+        # Both confirmations appear, distinctly worded, in the one reply.
+        assert message.count(channel.mention) == 2
+
+
 class TestLocalization:
     @pytest.mark.parametrize("locale", sorted(SUPPORTED_LOCALES) + ["xx-INVALID"])
     async def test_any_locale_including_an_unsupported_one_replies_without_crashing(
@@ -181,5 +268,15 @@ class TestLocalization:
 
     def test_the_confirmation_keys_exist_in_every_locale(self) -> None:
         for locale in SUPPORTED_LOCALES:
-            for key in ("config_proactive_enabled", "config_proactive_disabled", "config_permission_error"):
+            for key in (
+                "config_proactive_enabled",
+                "config_proactive_disabled",
+                "config_extraction_enabled",
+                "config_extraction_disabled",
+                "config_permission_error",
+            ):
                 assert t(key, locale, channel="#x") != f"[{key}]", f"{key} missing for {locale}"
+
+    def test_the_no_options_key_exists_in_every_locale(self) -> None:
+        for locale in SUPPORTED_LOCALES:
+            assert t("config_no_options_error", locale) != "[config_no_options_error]"

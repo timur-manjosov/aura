@@ -85,6 +85,35 @@ class TestDefaults:
         assert settings.proactive_cooldown_seconds == 900.0
         assert settings.proactive_daily_cap == 60
 
+    def test_extraction_default(self) -> None:
+        # Phase 3a-1b calibration (supersedes 3a-1's -0.03) -- see config.py
+        # for the full sweep evidence.
+        settings = _settings(discord_token="valid-token")
+        assert settings.extraction_fact_worthiness_threshold == -0.02
+
+    def test_extraction_pipeline_defaults(self) -> None:
+        # Phase 3a-2's knobs. Pinned here so a change to any of them is a
+        # decision someone made rather than a drift nobody noticed -- these
+        # bound real spending.
+        settings = _settings(discord_token="valid-token")
+        assert settings.extraction_batch_window_seconds == 300.0
+        assert settings.extraction_batch_max_messages == 20
+        assert settings.extraction_daily_cap == 50
+        # Extraction-dedup-threshold-calibration report: 0.60, down from 0.70,
+        # see config.py for the full sweep evidence.
+        assert settings.extraction_dedup_similarity_threshold == 0.60
+        # Unset by default, like every other model: a hardcoded model with no
+        # key would look configured in code while failing on every call.
+        assert settings.extraction_model is None
+
+    def test_supersession_defaults(self) -> None:
+        # Phase 3a-3's own budget, deliberately independent of extraction's so
+        # that spending every judgement cannot consume the extraction calls that
+        # produce candidates in the first place.
+        settings = _settings(discord_token="valid-token")
+        assert settings.supersession_daily_cap == 50
+        assert settings.supersession_model is None
+
     def test_the_proactive_gate_bar_may_now_be_looser_than_the_direct_query_bar(self) -> None:
         # Phase 2b-3 deliberately inverted the ordering this test asserted
         # through Phase 2b-2: proactive_similarity_threshold (0.30) is now
@@ -135,6 +164,9 @@ class TestProactiveSettingsValidation:
             # comparison, it would remove the daily limit entirely.
             ("PROACTIVE_DAILY_CAP", "-1"),
             ("PROACTIVE_DAILY_CAP", "1.5"),
+            ("EXTRACTION_FACT_WORTHINESS_THRESHOLD", "-2.0"),
+            ("EXTRACTION_FACT_WORTHINESS_THRESHOLD", "2.5"),
+            ("EXTRACTION_FACT_WORTHINESS_THRESHOLD", "not-a-number"),
         ],
     )
     def test_an_out_of_range_value_is_refused_with_a_readable_error(
@@ -158,6 +190,12 @@ class TestProactiveSettingsValidation:
             # misconfiguration, so it has to be accepted.
             ("PROACTIVE_DAILY_CAP", "0", "proactive_daily_cap", 0),
             ("PROACTIVE_DAILY_CAP", "500", "proactive_daily_cap", 500),
+            (
+                "EXTRACTION_FACT_WORTHINESS_THRESHOLD",
+                "0.1",
+                "extraction_fact_worthiness_threshold",
+                0.1,
+            ),
         ],
     )
     def test_a_valid_override_is_read_from_the_environment(
@@ -244,10 +282,85 @@ class TestResolveModel:
         monkeypatch.setenv("PROACTIVE_MODEL", "openrouter/some/model")
         assert load_settings().proactive_model == "openrouter/some/model"
 
-    def test_both_unset_resolves_to_none_for_both_components(self) -> None:
+    def test_extraction_uses_its_own_model_when_set(self) -> None:
+        settings = _settings(
+            discord_token="valid-token", synthesis_model="a/b", extraction_model="e/f"
+        )
+        assert settings.resolve_model(ModelComponent.EXTRACTION) == "e/f"
+
+    def test_extraction_falls_back_to_the_synthesis_model_when_unset(self) -> None:
+        settings = _settings(discord_token="valid-token", synthesis_model="a/b")
+        assert settings.extraction_model is None
+        assert settings.resolve_model(ModelComponent.EXTRACTION) == "a/b"
+
+    def test_extraction_model_env_override_is_read(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DISCORD_TOKEN", "valid-token")
+        monkeypatch.setenv("EXTRACTION_MODEL", "openrouter/some/extractor")
+        assert load_settings().extraction_model == "openrouter/some/extractor"
+
+    def test_extraction_is_configured_off_synthesis_model_alone(self) -> None:
+        settings = _settings(
+            discord_token="valid-token",
+            llm_api_key="sk-fake",
+            synthesis_model="openrouter/foo/bar",
+        )
+        assert settings.is_llm_configured(ModelComponent.EXTRACTION) is True
+
+    def test_extraction_needs_the_api_key_like_the_others(self) -> None:
+        settings = _settings(discord_token="valid-token", extraction_model="openrouter/foo/bar")
+        assert settings.is_llm_configured(ModelComponent.EXTRACTION) is False
+
+    def test_supersession_uses_its_own_model_when_set(self) -> None:
+        settings = _settings(
+            discord_token="valid-token", synthesis_model="a/b", supersession_model="s/j"
+        )
+        assert settings.resolve_model(ModelComponent.SUPERSESSION) == "s/j"
+
+    def test_supersession_does_not_inherit_the_extraction_model(self) -> None:
+        # Two separate call sites with two separate bake-off answers behind
+        # them: EXTRACTION_MODEL carries Phase 2's result as an admitted
+        # assumption, while SUPERSESSION_MODEL was measured for its own task.
+        # Chaining one to the other would re-point a measured choice whenever
+        # the assumed one changed.
+        settings = _settings(
+            discord_token="valid-token", synthesis_model="a/b", extraction_model="e/f"
+        )
+        assert settings.resolve_model(ModelComponent.SUPERSESSION) == "a/b"
+
+    def test_supersession_falls_back_to_the_synthesis_model_when_unset(self) -> None:
+        settings = _settings(discord_token="valid-token", synthesis_model="a/b")
+        assert settings.supersession_model is None
+        assert settings.resolve_model(ModelComponent.SUPERSESSION) == "a/b"
+
+    def test_supersession_model_env_override_is_read(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DISCORD_TOKEN", "valid-token")
+        monkeypatch.setenv("SUPERSESSION_MODEL", "openrouter/some/judge")
+        assert load_settings().supersession_model == "openrouter/some/judge"
+
+    def test_supersession_needs_the_api_key_like_the_others(self) -> None:
+        settings = _settings(
+            discord_token="valid-token", supersession_model="openrouter/foo/bar"
+        )
+        assert settings.is_llm_configured(ModelComponent.SUPERSESSION) is False
+
+    def test_every_component_is_resolvable(self) -> None:
+        # resolve_model's match statement has no default arm, so a member added
+        # to ModelComponent without one silently returns None instead of
+        # failing -- and a component whose model resolves to None never runs.
+        settings = _settings(discord_token="valid-token", synthesis_model="a/b")
+        for component in ModelComponent:
+            assert settings.resolve_model(component) == "a/b"
+
+    def test_all_unset_resolves_to_none_for_every_component(self) -> None:
         settings = _settings(discord_token="valid-token")
-        assert settings.resolve_model(ModelComponent.SYNTHESIS) is None
-        assert settings.resolve_model(ModelComponent.PROACTIVE) is None
+        for component in ModelComponent:
+            assert settings.resolve_model(component) is None
 
 
 class TestLoadSettings:

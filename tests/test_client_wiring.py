@@ -52,7 +52,13 @@ class TestIntents:
         assert build_intents().message_content is True
 
 
-_STARTUP_ATTRIBUTES = ("db", "question_detector", "embedding_model", "gate_config")
+_STARTUP_ATTRIBUTES = (
+    "db",
+    "question_detector",
+    "fact_worthiness_detector",
+    "embedding_model",
+    "gate_config",
+)
 
 
 def _started_client() -> AuraClient:
@@ -60,6 +66,7 @@ def _started_client() -> AuraClient:
     client = _client()
     client.db = MagicMock()
     client.question_detector = MagicMock()
+    client.fact_worthiness_detector = MagicMock()
     client.embedding_model = MagicMock()
     client.gate_config = MagicMock()
     return client
@@ -72,8 +79,9 @@ class TestOnMessage:
         client = _started_client()
         message = _make_message()
 
-        with patch("aura.main.handle_message", AsyncMock()) as handler:
-            await client.on_message(message)
+        with patch("aura.main.handle_extraction_message", AsyncMock()):
+            with patch("aura.main.handle_message", AsyncMock()) as handler:
+                await client.on_message(message)
 
         handler.assert_awaited_once()
         args, kwargs = handler.call_args
@@ -90,6 +98,30 @@ class TestOnMessage:
         # actually carries across messages.
         assert kwargs["grace_registry"] is client.grace_registry
 
+    async def test_the_same_message_also_reaches_the_extraction_path_independently(
+        self,
+    ) -> None:
+        # Phase 3a-2: both passive paths see the same raw message, as siblings
+        # rather than as a chain. The dependencies each receives are what proves
+        # they are genuinely separate -- extraction gets the fact-worthiness
+        # detector and never the question detector, so neither path's gate can
+        # be silently reused for the other's decision (the collision
+        # reports/phase-3-pre-analysis.md Section 1c warned about).
+        client = _started_client()
+        message = _make_message()
+
+        with patch("aura.main.handle_message", AsyncMock()):
+            with patch("aura.main.handle_extraction_message", AsyncMock()) as extractor:
+                await client.on_message(message)
+
+        extractor.assert_awaited_once()
+        args, kwargs = extractor.call_args
+        assert args[0] is message
+        assert kwargs["db"] is client.db
+        assert kwargs["detector"] is client.fact_worthiness_detector
+        assert kwargs["detector"] is not client.question_detector
+        assert kwargs["settings"] is client.settings
+
     @pytest.mark.parametrize("missing", _STARTUP_ATTRIBUTES)
     async def test_a_message_arriving_before_startup_finishes_is_skipped_not_crashed(
         self, missing: str, caplog: pytest.LogCaptureFixture
@@ -97,16 +129,18 @@ class TestOnMessage:
         # Unreachable in production (setup_hook completes before the gateway
         # delivers anything), so the cost of being wrong about that would be
         # an AttributeError on every single message. Parametrized over every
-        # dependency, because a guard that checks three of four is a guard
-        # that fails on the fourth.
+        # dependency, because a guard that checks four of five is a guard
+        # that fails on the fifth -- and Phase 3a-2 added the fifth.
         client = _started_client()
         setattr(client, missing, None)
 
-        with patch("aura.main.handle_message", AsyncMock()) as handler:
-            with caplog.at_level(logging.WARNING):
-                await client.on_message(_make_message())
+        with patch("aura.main.handle_extraction_message", AsyncMock()) as extractor:
+            with patch("aura.main.handle_message", AsyncMock()) as handler:
+                with caplog.at_level(logging.WARNING):
+                    await client.on_message(_make_message())
 
         handler.assert_not_awaited()
+        extractor.assert_not_awaited()
         assert any(record.levelno >= logging.WARNING for record in caplog.records)
 
     @pytest.mark.parametrize("attribute", _STARTUP_ATTRIBUTES)
@@ -122,29 +156,41 @@ class TestOnMessage:
 
 
 class TestMessageDeleteAndEdit:
-    """Phase 2b-1: a deleted or edited message must stand down its own grace period."""
+    """A deleted or edited message must stand down BOTH passive paths.
 
-    async def test_a_deleted_message_notifies_the_grace_registry(self) -> None:
+    Phase 2b-1 needed it to cancel a pending grace period; Phase 3a-2 needs it
+    to withdraw the message from its pending extraction batch as well. Each
+    test below asserts both, because the failure worth catching is one of the
+    two being wired and the other quietly not.
+    """
+
+    async def test_a_deleted_message_notifies_both_passive_paths(self) -> None:
         client = _started_client()
         message = _make_message()
 
-        with patch.object(client.grace_registry, "notice_message_gone") as notice:
-            await client.on_message_delete(message)
+        with patch("aura.main.withdraw_message", AsyncMock()) as withdraw:
+            with patch.object(client.grace_registry, "notice_message_gone") as notice:
+                await client.on_message_delete(message)
 
         notice.assert_called_once_with(channel_id=message.channel.id, message_id=message.id)
+        withdraw.assert_awaited_once_with(
+            client.db, channel_id=message.channel.id, message_id=message.id
+        )
 
-    async def test_an_uncached_raw_deletion_also_notifies_the_grace_registry(self) -> None:
+    async def test_an_uncached_raw_deletion_also_notifies_both_passive_paths(self) -> None:
         client = _started_client()
         payload = MagicMock(spec=discord.RawMessageDeleteEvent)
         payload.channel_id = 5
         payload.message_id = 9
 
-        with patch.object(client.grace_registry, "notice_message_gone") as notice:
-            await client.on_raw_message_delete(payload)
+        with patch("aura.main.withdraw_message", AsyncMock()) as withdraw:
+            with patch.object(client.grace_registry, "notice_message_gone") as notice:
+                await client.on_raw_message_delete(payload)
 
         notice.assert_called_once_with(channel_id=5, message_id=9)
+        withdraw.assert_awaited_once_with(client.db, channel_id=5, message_id=9)
 
-    async def test_an_edited_message_notifies_the_grace_registry_using_the_after_state(
+    async def test_an_edited_message_notifies_both_passive_paths_using_the_after_state(
         self,
     ) -> None:
         client = _started_client()
@@ -152,10 +198,26 @@ class TestMessageDeleteAndEdit:
         after = _make_message()
         after.content = "a different question now"
 
-        with patch.object(client.grace_registry, "notice_message_gone") as notice:
-            await client.on_message_edit(before, after)
+        with patch("aura.main.withdraw_message", AsyncMock()) as withdraw:
+            with patch.object(client.grace_registry, "notice_message_gone") as notice:
+                await client.on_message_edit(before, after)
 
         notice.assert_called_once_with(channel_id=after.channel.id, message_id=after.id)
+        withdraw.assert_awaited_once_with(
+            client.db, channel_id=after.channel.id, message_id=after.id
+        )
+
+    async def test_a_deletion_before_startup_finishes_does_not_crash(self) -> None:
+        # on_message_delete can fire before setup_hook has installed the
+        # database (a gateway event racing startup), and an unguarded call
+        # would be an AttributeError on a connection that is still None. The
+        # grace registry exists from __init__ and is still notified.
+        client = _client()
+
+        with patch.object(client.grace_registry, "notice_message_gone") as notice:
+            await client.on_message_delete(_make_message())
+
+        notice.assert_called_once()
 
 
 class TestGateConfiguration:

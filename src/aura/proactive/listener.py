@@ -32,6 +32,7 @@ connection, per CLAUDE.md's testing principle.
 from __future__ import annotations
 
 import logging
+import unicodedata
 
 import aiosqlite
 import discord
@@ -60,6 +61,39 @@ logger = logging.getLogger(__name__)
 _CLASSIFIABLE_MESSAGE_TYPES = frozenset(
     {discord.MessageType.default, discord.MessageType.reply}
 )
+
+# Unicode general categories that render as nothing. Cf is the one that
+# matters in practice (zero-width space/joiner, bidi marks, BOM); Cc and the
+# three separator categories are included because they are equally invisible
+# and equally cheap to exclude. Kept as a duplicate of
+# aura.extraction.pipeline._INVISIBLE_CATEGORIES rather than a shared
+# constant -- see should_classify's docstring for why the two paths do not
+# share code.
+_INVISIBLE_CATEGORIES = frozenset({"Cf", "Cc", "Zs", "Zl", "Zp"})
+
+
+def _has_visible_content(content: str) -> bool:
+    """Whether content contains at least one character a human could actually read.
+
+    str.strip() is not enough: it removes whitespace as Python defines it,
+    which does NOT include the Unicode format characters (category Cf) a
+    Discord message can be composed entirely of -- zero-width space,
+    zero-width joiner, the bidi marks, the byte-order mark.
+    `"\\u200b\\u200b".strip()` is still truthy, so a message nobody can see
+    would otherwise reach the question detector.
+
+    Identical in behaviour and reasoning to
+    aura.extraction.pipeline._has_visible_content, found and fixed there in
+    Phase 3a-2's adversarial pass (reports/phase-3a-2.txt Section 10), which
+    flagged this exact gap here as real but out of that sub-phase's scope.
+    Duplicated rather than imported for the same reason should_classify as a
+    whole is a duplicate of should_extract -- see should_classify's
+    docstring.
+    """
+    return any(
+        not character.isspace() and unicodedata.category(character) not in _INVISIBLE_CATEGORIES
+        for character in content
+    )
 
 
 def should_classify(message: discord.Message) -> bool:
@@ -90,8 +124,10 @@ def should_classify(message: discord.Message) -> bool:
         return False
 
     # Attachment-only, sticker-only, or embed-only messages carry no text to
-    # score. Whitespace-only content is the same case wearing a disguise.
-    return bool(message.content.strip())
+    # score. Whitespace-only content is the same case wearing a disguise --
+    # and so, per _has_visible_content, is content built entirely from
+    # Unicode format characters that render as nothing.
+    return _has_visible_content(message.content)
 
 
 def _log_reference(message: discord.Message) -> str:

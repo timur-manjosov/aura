@@ -296,12 +296,36 @@ class TestShouldClassify:
         # whitespace in every language Aura supports.
         assert should_classify(_make_message(content=content)) is False
 
-    def test_zero_width_only_content_is_not_excluded_but_also_does_not_crash(self) -> None:
-        # A zero-width space is not whitespace by Python's definition, so it
-        # survives the filter and reaches the detector -- which handles it
-        # (see test_question_detector.py). Asserted so the behaviour is
-        # deliberate rather than accidental.
-        assert should_classify(_make_message(content="​")) is True
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param("​​​", id="zero-width-space"),
+            pytest.param("‍‏﻿", id="joiner-bidi-bom"),
+            pytest.param("⁠" * 20, id="word-joiner"),
+            pytest.param("​ \n‍\t", id="mixed-with-real-whitespace"),
+        ],
+    )
+    def test_a_message_of_only_invisible_characters_is_excluded(self, content: str) -> None:
+        # str.strip() does not remove Unicode format characters, so
+        # "​​".strip() is still truthy and a message nobody can see would
+        # otherwise reach the question detector. Identical gap to the one
+        # found and fixed in should_extract (reports/phase-3a-2.txt Section
+        # 10), fixed here the same way and covered with the same cases.
+        assert should_classify(_make_message(content=content)) is False
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param("​where can I find the rules?​", id="wrapped-in-zero-width"),
+            pytest.param("\U0001F1F0\U0001F1F7 공지 어디야?", id="emoji-and-hangul"),
+            pytest.param("‏أين القواعد؟‏", id="rtl-marked-arabic"),
+        ],
+    )
+    def test_invisible_characters_around_real_text_still_qualify(self, content: str) -> None:
+        # The fix must reject only genuinely empty messages, never strip a
+        # locale's real content along the way -- nine languages and four
+        # scripts make that a live risk rather than a theoretical one.
+        assert should_classify(_make_message(content=content)) is True
 
     def test_the_predicate_has_no_side_effects_on_the_message(self) -> None:
         message = _make_message()
