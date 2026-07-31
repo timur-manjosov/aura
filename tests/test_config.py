@@ -86,10 +86,16 @@ class TestDefaults:
         assert settings.proactive_daily_cap == 60
 
     def test_extraction_default(self) -> None:
-        # Phase 3a-1b calibration (supersedes 3a-1's -0.03) -- see config.py
-        # for the full sweep evidence.
+        # Phase 3a-1b calibrated -0.02 (supersedes 3a-1's -0.03) -- see
+        # config.py for the full sweep evidence. Currently overridden to
+        # -0.04 for the single-member testing phase (same sweep, a
+        # different, more recall-friendly row); see config.py's
+        # extraction_fact_worthiness_threshold comment and
+        # reports/testing-threshold-note.txt. Revert this assertion to
+        # -0.02 alongside config.py and .env.example when that override is
+        # reverted.
         settings = _settings(discord_token="valid-token")
-        assert settings.extraction_fact_worthiness_threshold == -0.02
+        assert settings.extraction_fact_worthiness_threshold == -0.04
 
     def test_extraction_pipeline_defaults(self) -> None:
         # Phase 3a-2's knobs. Pinned here so a change to any of them is a

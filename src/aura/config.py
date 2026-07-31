@@ -413,8 +413,25 @@ class Settings(BaseSettings):
     # asserted. en-US's weak showing here is new and specific: 11/40 (27.5%)
     # of its hedged-speculation cases score above this threshold, the worst
     # hedge leakage of any locale -- see reports/phase-3a-1b.txt.
+    #
+    # TESTING-PHASE OVERRIDE (2026-07-31): -0.02 above remains the calibrated,
+    # precision-favouring value this whole comment block justifies, and that
+    # reasoning is unchanged -- it assumed extraction running at real,
+    # full-traffic volume across a community server (reports/phase-3a-2.txt
+    # Section 8's cost math: up to ~$16/guild/month worst case at full daily-
+    # cap utilization). Aura is currently running on a single-member test
+    # server, where that cost model is close to moot and a precision-favouring
+    # bar mostly just means fewer facts to look at while testing. -0.04 is
+    # used here instead, taken directly from the same phase-3a-1b.txt sweep
+    # (Section 6) rather than any new calibration: P=0.553, R=0.787,
+    # specificity=0.925, F1=0.650 -- a real recall gain over -0.02's R=0.707,
+    # at essentially the same F1, and deliberately short of -0.05 (P=0.495,
+    # already below half) and -0.06 (P=0.474, F1=0.608, worse than -0.02's),
+    # where the sweep tips into flagging more noise than signal. REVERT to
+    # -0.02 before any real multi-member community rollout, when the
+    # full-volume cost math above becomes load-bearing again.
     extraction_fact_worthiness_threshold: float = Field(
-        default=-0.02, gt=-2.0, le=2.0, allow_inf_nan=False
+        default=-0.04, gt=-2.0, le=2.0, allow_inf_nan=False
     )
 
     # How long candidate messages accumulate in one channel before being sent
