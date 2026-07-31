@@ -339,8 +339,23 @@ class Settings(BaseSettings):
     # to stay safe if an operator sets grace_period_seconds so long that a
     # second message in the same channel clears cooldown and escalates before
     # the first one's grace period even ends.
+    #
+    # TESTING-PHASE OVERRIDE (2026-07-31): 90 -> 13. The 60-120s placeholder
+    # above was sized for the collision this phase exists to avoid -- Aura and
+    # a human both answering the same question -- which needs real
+    # multi-member channel activity to actually happen. Aura is currently
+    # running on a single-member test server, where that collision risk is
+    # close to meaningless, and 90s of silence before an eligible message gets
+    # its proactive answer just reads as slow. 13s keeps a wait long enough to
+    # be a real grace period rather than none at all, while making the
+    # pipeline feel responsive during testing. Not a calibration -- no sweep,
+    # no corpus, same treatment as EXTRACTION_FACT_WORTHINESS_THRESHOLD's
+    # 2026-07-31 override, see reports/testing-threshold-note.txt. REVERT to
+    # a value in the original 60-120s range before real multi-member
+    # operation, when the collision risk this placeholder was sized for
+    # becomes real again.
     proactive_grace_period_seconds: float = Field(
-        default=90.0, ge=0.0, le=24 * 60 * 60.0, allow_inf_nan=False
+        default=13.0, ge=0.0, le=24 * 60 * 60.0, allow_inf_nan=False
     )
 
     # --- Automatic fact extraction (CLAUDE.md's Phase 3a, first filter only) --
