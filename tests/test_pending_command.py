@@ -13,8 +13,9 @@ the command surfaces that decision instead of claiming success anyway.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
 import discord
@@ -61,12 +62,16 @@ def _make_interaction(
     locale: str = "en-US",
     guild_id: int = GUILD_A,
     user_id: int = MOD_A,
+    embedding_model: TextEmbedding | None = None,
 ) -> MagicMock:
     interaction = MagicMock(spec=discord.Interaction)
     interaction.locale = locale
     interaction.guild_id = guild_id
     interaction.client = MagicMock()
     interaction.client.db = db
+    interaction.client.embedding_model = (
+        embedding_model if embedding_model is not None else MagicMock()
+    )
     interaction.user = MagicMock()
     interaction.user.id = user_id
     interaction.response = MagicMock()
@@ -107,9 +112,22 @@ async def _stage(
     return staged
 
 
-def _view(conn: aiosqlite.Connection, candidate, *, invoker_id: int = MOD_A):
+def _view(
+    conn: aiosqlite.Connection,
+    candidate,
+    *,
+    invoker_id: int = MOD_A,
+    model: TextEmbedding | None = None,
+):
     return PendingReviewView(
         db=conn,
+        # Most tests here never exercise variant generation (only confirm()
+        # does, and it schedules that as a fire-and-forget background task
+        # that immediately no-ops without a configured audit model) -- a
+        # plain MagicMock stands in exactly the way interaction.client's other
+        # attributes already do throughout this file, unless a test passes
+        # the real fixture explicitly to assert on how it was used.
+        model=model if model is not None else MagicMock(),
         guild_id=GUILD_A,
         candidate=candidate,
         locale="en-US",
@@ -672,3 +690,61 @@ class TestPermissions:
                 interaction, app_commands.AppCommandError("something else")
             )
         assert any(record.levelname == "ERROR" for record in caplog.records)
+
+
+class TestVariantGenerationWiring:
+    """Multi-Representation Indexing Part 1's automatic-path half.
+
+    /aura-pending's confirm button must call aura.facts_service.confirm_fact
+    (which schedules variant generation) rather than
+    aura.db.pending_facts.confirm_pending_fact directly -- the two-call-site
+    drift this design explicitly rules out. These tests exercise that wiring
+    end to end through the real command and view, mocking only the LLM layer
+    two levels down, never confirm_fact itself.
+    """
+
+    async def test_the_command_passes_the_real_embedding_model_into_the_view(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        await _stage(conn)
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model)
+        await pending_command.callback(interaction)
+
+        view = interaction.response.send_message.call_args.kwargs["view"]
+        assert view._model is embedding_model
+
+    async def test_confirming_schedules_variant_generation_via_facts_service(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        candidate = await _stage(conn)
+        view = _view(conn, candidate, model=embedding_model)
+        interaction = _make_interaction(db=conn)
+
+        with patch(
+            "aura.facts_service.generate_variants_for_fact", AsyncMock(return_value=[])
+        ) as generate:
+            await view.confirm.callback(interaction)
+            await asyncio.sleep(0)
+
+        active = await get_active_facts(conn, GUILD_A)
+        assert len(active) == 1
+        generate.assert_awaited_once_with(conn, embedding_model, active[0])
+
+    async def test_confirming_still_produces_exactly_one_fact_with_variants_mocked(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        # A regression guard on the manual/automatic path split this wrapper
+        # introduces: routing through facts_service.confirm_fact must not
+        # change what confirming a candidate produces, only add the
+        # background hook.
+        candidate = await _stage(conn, content="Uploads in #trading are capped at 5MB.")
+        view = _view(conn, candidate, model=embedding_model)
+        interaction = _make_interaction(db=conn)
+
+        with patch("aura.facts_service.generate_variants_for_fact", AsyncMock(return_value=[])):
+            await view.confirm.callback(interaction)
+            await asyncio.sleep(0)
+
+        [fact] = await get_active_facts(conn, GUILD_A)
+        assert fact.content == candidate.content
+        assert fact.embedding == candidate.embedding

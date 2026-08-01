@@ -25,6 +25,8 @@ class ModelComponent(StrEnum):
     PROACTIVE = "proactive"
     EXTRACTION = "extraction"
     SUPERSESSION = "supersession"
+    VARIANT = "variant"
+    VARIANT_AUDIT = "variant_audit"
 
 
 class ConfigurationError(Exception):
@@ -596,6 +598,81 @@ class Settings(BaseSettings):
     # identically.
     supersession_daily_cap: int = Field(default=50, ge=0, le=1_000_000)
 
+    # --- Multi-representation indexing: variant generation (Part 1) --------
+    # The paraphrase generator (see aura.variants_service): given one already-
+    # active fact's canonical sentence, write several differently-worded
+    # sentences that mean exactly the same thing, for later use as extra
+    # embedding vectors over the same fact (Part 2, not this sub-phase).
+    # Resolved through the same seam as every component above, falling back to
+    # SYNTHESIS_MODEL when unset for the same reason EXTRACTION_MODEL does.
+    #
+    # SHIPPED VALUE: claude-haiku-4.5, and -- like EXTRACTION_MODEL -- this is
+    # a CARRIED-OVER ASSUMPTION, not a bake-off of its own, stated plainly for
+    # the same reason. What makes that acceptable here specifically: this call
+    # is pure rewording with no asymmetric-cost judgement attached to it, the
+    # way supersession's "which reading is safe to guess" has. Correctness is
+    # enforced downstream by VARIANT_AUDIT_MODEL, not by this model's own
+    # judgement, so a first choice that transfers a measured trait (strong
+    # structured output, multilingual competence) is a reasonable starting
+    # point rather than a gap. Revisit with a real bake-off if the audit below
+    # shows this model systematically dropping qualifiers or generalising
+    # scope -- see reports/variant-indexing-part1.txt.
+    variant_model: str | None = None
+
+    # The independent fidelity check every generated variant must pass before
+    # it is stored (see aura.variants_service): a SEPARATE model from a
+    # DIFFERENT vendor than VARIANT_MODEL, verifying a variant preserves the
+    # canonical fact's meaning exactly -- no dropped exception or qualifier, no
+    # scope over-generalisation (a channel-specific rule reworded as if it
+    # applied everywhere). Same principle as the label audit in
+    # reports/phase-3a-1b.txt: a model does not reliably catch its own
+    # meaning-drift, so a second, differently-trained model checks it instead.
+    #
+    # DELIBERATELY has NO fallback to synthesis_model, unlike every other model
+    # field in this file. Falling back would defeat the one property this
+    # field exists to guarantee: an unconfigured deployment would silently
+    # have its "independent" audit collapse onto the same model family as the
+    # generator (both resolving to synthesis_model), auditing its own output
+    # under the appearance of independence. Left unset, no variant is ever
+    # stored rather than one stored on a silently-compromised check -- the
+    # same "no grey areas" reasoning CLAUDE.md states as this project's
+    # non-negotiable principle, applied to a config default instead of a code
+    # path. See resolve_model's VARIANT_AUDIT arm for where this is enforced.
+    variant_audit_model: str | None = None
+
+    # How many paraphrased variants to attempt generating per newly active
+    # fact. Not a promise: the independent fidelity audit above can and does
+    # reject some, and this sub-phase deliberately does not regenerate to make
+    # up the shortfall (see reports/variant-indexing-part1.txt) -- a smaller
+    # stored set is an accepted, documented outcome, not a bug.
+    #
+    # 6 sits in the middle of the phase brief's 5-8 range: enough that a later
+    # similarity search taking the maximum score over all of a fact's variants
+    # gets real coverage benefit over a single canonical embedding, without
+    # turning one fact into an unbounded generation-plus-audit prompt.
+    variant_count: int = Field(default=6, ge=1, le=20)
+
+    # Per-guild, per-UTC-day ceiling on variant-generation EPISODES (one
+    # fact's generation call plus its audit call, always spent together -- see
+    # aura.variants_service), the fourth independent spend ledger in this
+    # project, built as the same durable, race-safe twin as the three above.
+    #
+    # Sized differently from the other three on purpose. Facts are created at
+    # HUMAN speed, not message speed: every fact requires either a moderator
+    # clicking "Add as Aura Fact" or a moderator confirming a candidate
+    # through /aura-pending, one at a time (see aura.commands.pending's
+    # module docstring, "deliberately one candidate at a time"). There is no
+    # path that creates facts anywhere near the volume extraction or
+    # proactive relief see, so the natural ceiling on how often this can fire
+    # is already a human's click rate, not a message flood. A cap is still
+    # added -- every paid call site in this project carries its own
+    # independent cost safety net, per the pattern set by the three ledgers
+    # above -- but it is set generously rather than swept from a corpus, since
+    # there is no realistic scenario at today's usage where it binds. Revisit
+    # alongside the other three before any multi-guild rollout; CLAUDE.md's
+    # Open Items note on a cross-guild shared budget applies here identically.
+    variant_daily_cap: int = Field(default=200, ge=0, le=1_000_000)
+
     log_level: str = "INFO"
 
     @field_validator("discord_token")
@@ -617,12 +694,19 @@ class Settings(BaseSettings):
         code changes" principle from CLAUDE.md's Scalability section, applied
         per task).
 
-        PROACTIVE, EXTRACTION and SUPERSESSION all fall back to the synthesis
-        model when their own is unset: each has its own config value (CLAUDE.md
-        forbids assuming one model fits every task) but none is assumed to
-        differ from synthesis by default, so a deployment that configures a
-        single model still has every call site working rather than some that
-        silently never run.
+        PROACTIVE, EXTRACTION, SUPERSESSION and VARIANT all fall back to the
+        synthesis model when their own is unset: each has its own config value
+        (CLAUDE.md forbids assuming one model fits every task) but none is
+        assumed to differ from synthesis by default, so a deployment that
+        configures a single model still has every call site working rather
+        than some that silently never run.
+
+        VARIANT_AUDIT is the one deliberate exception to that convention: it
+        has no fallback at all, because falling back to synthesis_model could
+        silently collapse it onto the same model family VARIANT resolves to
+        when both are left unset, defeating the independence the whole check
+        exists for. See variant_audit_model's own comment for the full
+        reasoning.
         """
         match component:
             case ModelComponent.SYNTHESIS:
@@ -633,6 +717,10 @@ class Settings(BaseSettings):
                 return self.extraction_model or self.synthesis_model
             case ModelComponent.SUPERSESSION:
                 return self.supersession_model or self.synthesis_model
+            case ModelComponent.VARIANT:
+                return self.variant_model or self.synthesis_model
+            case ModelComponent.VARIANT_AUDIT:
+                return self.variant_audit_model
 
     def is_llm_configured(self, component: ModelComponent) -> bool:
         """Whether enough is present to actually call the LLM for component.

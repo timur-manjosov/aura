@@ -41,18 +41,19 @@ from typing import TYPE_CHECKING
 import aiosqlite
 import discord
 from discord import app_commands
+from fastembed import TextEmbedding
 
 from aura.db.pending_facts import (
     PendingFact,
     PendingFactAlreadyResolvedError,
     PendingFactNotFoundError,
     SupersessionRelationship,
-    confirm_pending_fact,
     count_pending_facts,
     discard_pending_fact,
     get_pending_facts,
 )
 from aura.db.repository import get_fact_by_id
+from aura.facts_service import confirm_fact
 from aura.i18n import t
 
 if TYPE_CHECKING:
@@ -241,6 +242,7 @@ class PendingReviewView(discord.ui.View):
         self,
         *,
         db: aiosqlite.Connection,
+        model: TextEmbedding,
         guild_id: int,
         candidate: PendingFact,
         locale: str,
@@ -248,6 +250,7 @@ class PendingReviewView(discord.ui.View):
     ) -> None:
         super().__init__(timeout=_CONFIRMATION_TIMEOUT_SECONDS)
         self._db = db
+        self._model = model
         self._guild_id = guild_id
         self._candidate = candidate
         self._locale = locale
@@ -281,8 +284,9 @@ class PendingReviewView(discord.ui.View):
         self._resolved = True
 
         try:
-            fact = await confirm_pending_fact(
+            fact = await confirm_fact(
                 self._db,
+                self._model,
                 guild_id=self._guild_id,
                 pending_id=self._candidate.id,
                 resolved_by_id=interaction.user.id,
@@ -398,6 +402,8 @@ async def pending_command(interaction: discord.Interaction[AuraClient]) -> None:
 
     db = interaction.client.db
     assert db is not None  # setup_hook always finishes before commands go live
+    model = interaction.client.embedding_model
+    assert model is not None  # setup_hook always finishes before commands go live
 
     candidates = await get_pending_facts(db, guild_id=interaction.guild_id, limit=1)
     if not candidates:
@@ -410,6 +416,7 @@ async def pending_command(interaction: discord.Interaction[AuraClient]) -> None:
 
     view = PendingReviewView(
         db=db,
+        model=model,
         guild_id=interaction.guild_id,
         candidate=candidate,
         locale=locale,

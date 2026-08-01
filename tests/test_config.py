@@ -25,6 +25,10 @@ _ENV_KEYS = (
     "PROACTIVE_CONFIDENCE_GAP",
     "PROACTIVE_COOLDOWN_SECONDS",
     "PROACTIVE_DAILY_CAP",
+    "VARIANT_MODEL",
+    "VARIANT_AUDIT_MODEL",
+    "VARIANT_COUNT",
+    "VARIANT_DAILY_CAP",
     "DATABASE_PATH",
     "EMBEDDING_MODEL",
     "LOG_LEVEL",
@@ -359,14 +363,120 @@ class TestResolveModel:
         # resolve_model's match statement has no default arm, so a member added
         # to ModelComponent without one silently returns None instead of
         # failing -- and a component whose model resolves to None never runs.
+        # VARIANT_AUDIT is excluded on purpose: it is the one deliberate
+        # exception to "falls back to synthesis_model", covered on its own in
+        # TestVariantModelResolution below.
         settings = _settings(discord_token="valid-token", synthesis_model="a/b")
         for component in ModelComponent:
+            if component is ModelComponent.VARIANT_AUDIT:
+                continue
             assert settings.resolve_model(component) == "a/b"
 
     def test_all_unset_resolves_to_none_for_every_component(self) -> None:
         settings = _settings(discord_token="valid-token")
         for component in ModelComponent:
             assert settings.resolve_model(component) is None
+
+
+class TestVariantModelResolution:
+    """VARIANT falls back to synthesis like every other component; VARIANT_AUDIT never does."""
+
+    def test_variant_uses_its_own_model_when_set(self) -> None:
+        settings = _settings(
+            discord_token="valid-token", synthesis_model="a/b", variant_model="v/g"
+        )
+        assert settings.resolve_model(ModelComponent.VARIANT) == "v/g"
+
+    def test_variant_falls_back_to_the_synthesis_model_when_unset(self) -> None:
+        settings = _settings(discord_token="valid-token", synthesis_model="a/b")
+        assert settings.variant_model is None
+        assert settings.resolve_model(ModelComponent.VARIANT) == "a/b"
+
+    def test_variant_model_env_override_is_read(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DISCORD_TOKEN", "valid-token")
+        monkeypatch.setenv("VARIANT_MODEL", "openrouter/some/generator")
+        assert load_settings().variant_model == "openrouter/some/generator"
+
+    def test_variant_audit_never_falls_back_to_synthesis(self) -> None:
+        # The one field in this file that deliberately breaks the
+        # "falls back to synthesis_model" convention: falling back would let
+        # an unconfigured deployment silently audit the generator with a
+        # model from the same family, defeating the independence the whole
+        # check exists for.
+        settings = _settings(
+            discord_token="valid-token", synthesis_model="a/b", variant_model="a/b"
+        )
+        assert settings.variant_audit_model is None
+        assert settings.resolve_model(ModelComponent.VARIANT_AUDIT) is None
+
+    def test_variant_audit_uses_its_own_model_when_set(self) -> None:
+        settings = _settings(
+            discord_token="valid-token",
+            synthesis_model="a/b",
+            variant_audit_model="different/vendor",
+        )
+        assert settings.resolve_model(ModelComponent.VARIANT_AUDIT) == "different/vendor"
+
+    def test_variant_audit_model_env_override_is_read(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DISCORD_TOKEN", "valid-token")
+        monkeypatch.setenv("VARIANT_AUDIT_MODEL", "openrouter/some/auditor")
+        assert load_settings().variant_audit_model == "openrouter/some/auditor"
+
+    def test_variant_is_configured_off_synthesis_model_alone(self) -> None:
+        settings = _settings(
+            discord_token="valid-token",
+            llm_api_key="sk-fake",
+            synthesis_model="openrouter/foo/bar",
+        )
+        assert settings.is_llm_configured(ModelComponent.VARIANT) is True
+
+    def test_variant_audit_is_not_configured_off_synthesis_model_alone(self) -> None:
+        # The behavioural consequence of the no-fallback rule above: setting
+        # only SYNTHESIS_MODEL configures every other component but leaves the
+        # independent audit off, so no variant can ever be stored until an
+        # operator explicitly picks a different-vendor auditor.
+        settings = _settings(
+            discord_token="valid-token",
+            llm_api_key="sk-fake",
+            synthesis_model="openrouter/foo/bar",
+        )
+        assert settings.is_llm_configured(ModelComponent.VARIANT_AUDIT) is False
+
+    def test_variant_audit_needs_the_api_key_like_the_others(self) -> None:
+        settings = _settings(
+            discord_token="valid-token", variant_audit_model="openrouter/foo/bar"
+        )
+        assert settings.is_llm_configured(ModelComponent.VARIANT_AUDIT) is False
+
+    def test_variant_count_default(self) -> None:
+        settings = _settings(discord_token="valid-token")
+        assert settings.variant_count == 6
+
+    def test_variant_daily_cap_default(self) -> None:
+        settings = _settings(discord_token="valid-token")
+        assert settings.variant_daily_cap == 200
+
+    def test_variant_count_env_override_is_read(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DISCORD_TOKEN", "valid-token")
+        monkeypatch.setenv("VARIANT_COUNT", "3")
+        assert load_settings().variant_count == 3
+
+    def test_variant_count_rejects_zero(self) -> None:
+        with pytest.raises(Exception):
+            _settings(discord_token="valid-token", variant_count="0")
+
+    def test_variant_daily_cap_rejects_negative(self) -> None:
+        with pytest.raises(Exception):
+            _settings(discord_token="valid-token", variant_daily_cap="-1")
 
 
 class TestLoadSettings:

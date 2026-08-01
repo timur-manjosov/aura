@@ -405,3 +405,70 @@ CREATE TABLE IF NOT EXISTS supersession_calls (
 
 CREATE INDEX IF NOT EXISTS idx_supersession_calls_guild_day
     ON supersession_calls(guild_id, call_day);
+
+-- Multi-representation indexing, Part 1 (see aura.variants_service): extra,
+-- differently-worded phrasings of an already-active fact's canonical sentence,
+-- generated once per fact and never shown to a user -- the user always sees
+-- the one distilled sentence CLAUDE.md's Fact component describes. This is
+-- NOT a fifth knowledge-model component alongside fact/timestamp/status/link.
+-- It is an internal indexing aid over `facts.content`, the same role
+-- `facts.embedding` already plays, split into several rows instead of one
+-- column only because there are several variants per fact rather than one.
+-- CLAUDE.md's own words for embedding apply here unchanged: nothing about
+-- what a variant says is new information -- every variant is required (by the
+-- fidelity audit below) to mean exactly what the canonical fact already
+-- means, never more and never less.
+--
+-- fact_id has no UNIQUE constraint of its own: one fact legitimately produces
+-- several variant rows, unlike fact_links' one-row-per-pair shape.
+--
+-- WHY THIS TABLE HAS NO STATUS COLUMN OF ITS OWN, unlike facts and
+-- pending_facts. A variant has no independent lifecycle -- it is retired
+-- exactly when, and only when, the fact it paraphrases is, which is already
+-- recorded once on that fact's own `status`. Duplicating that onto every
+-- variant row would create N places a supersession could be applied
+-- inconsistently instead of one. A plain join against `facts` where
+-- `status = 'active'` is what Part 2's later similarity search is designed to
+-- use, and it costs nothing extra: a superseded fact's variants simply stop
+-- surfacing the moment the fact itself does, with no second write required at
+-- supersession time. See aura.db.fact_variants.get_active_fact_variants for
+-- that join in code.
+CREATE TABLE IF NOT EXISTS fact_variants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fact_id INTEGER NOT NULL REFERENCES facts(id),
+    -- The paraphrased sentence a generation model wrote and an independent,
+    -- different-vendor audit model then confirmed preserves the canonical
+    -- fact's meaning exactly (see aura.variants_service). A variant that
+    -- failed that audit is discarded before it ever reaches this table --
+    -- there is no "unaudited" or "rejected" row here, on the same "no grey
+    -- areas" reasoning pending_facts documents for its own confirmation gate.
+    content TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_variants_fact_id ON fact_variants(fact_id);
+
+-- Part 1's spend ledger: one row per paid variant-generation EPISODE (one
+-- fact's generation call plus its audit call, always spent together -- see
+-- aura.variants_service), per guild, per UTC day. The fourth instance of the
+-- same append-only, guarded-INSERT shape as extraction_calls and
+-- supersession_calls above, for the same reason: every paid call site in this
+-- project carries its own independent cost safety net, and a shared number
+-- would leave none of them bounded on their own.
+--
+-- fact_id, mirroring supersession_calls' pending_fact_id: this episode always
+-- concerns exactly one fact, so the ledger can point at it directly. A fact is
+-- always already committed and active before its slot is claimed (see
+-- aura.facts_service), so the reference is never dangling, and facts are never
+-- deleted, so it stays resolvable for as long as the trail is worth having.
+CREATE TABLE IF NOT EXISTS variant_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    fact_id INTEGER NOT NULL REFERENCES facts(id),
+    called_at TEXT NOT NULL,
+    call_day TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_variant_calls_guild_day
+    ON variant_calls(guild_id, call_day);
