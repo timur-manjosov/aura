@@ -16,13 +16,16 @@ import numpy as np
 import pytest
 from fastembed import TextEmbedding
 
-from aura.db.repository import init_schema
+from aura.db.fact_variants import get_active_fact_variants, store_fact_variants
+from aura.db.repository import init_schema, supersede_fact
 from aura.embeddings import (
     EMBEDDING_DTYPE,
+    best_similarity,
     cosine_similarity,
     embed_text,
     embed_texts,
     find_similar_facts,
+    group_variants_by_fact,
 )
 from aura.facts_service import add_fact
 
@@ -308,3 +311,219 @@ class TestFindSimilarFacts:
             fact, score = results[0]
             assert fact.content == content
             assert score == pytest.approx(1.0, abs=1e-4)
+
+
+async def _store_variant(
+    conn: aiosqlite.Connection, embedding_model: TextEmbedding, *, fact_id: int, content: str
+) -> None:
+    """Store one real-embedded variant directly, bypassing the LLM generation/audit call.
+
+    aura.variants_service is tested on its own (with litellm mocked); what
+    Part 2 needs here is a variant that already passed that pipeline and is
+    sitting in fact_variants with a real embedding, so this writes straight to
+    storage the way generate_variants_for_fact would have after a successful
+    generation and audit.
+    """
+    [embedding] = await embed_texts(embedding_model, [content])
+    await store_fact_variants(
+        conn,
+        fact_id=fact_id,
+        contents=[content],
+        embeddings=[embedding.astype(EMBEDDING_DTYPE, copy=False).tobytes()],
+    )
+
+
+class TestBestSimilarity:
+    """Unit tests for the Part 2 max-over-variants helper, isolated from the DB."""
+
+    async def test_with_no_variants_argument_falls_back_to_the_canonical_vector_alone(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        fact = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            content="the sky is blue",
+        )
+        query_embedding = await embed_text(embedding_model, "the sky is blue")
+        assert best_similarity(query_embedding, fact) == pytest.approx(
+            cosine_similarity(
+                query_embedding, np.frombuffer(fact.embedding, dtype=EMBEDDING_DTYPE)
+            )
+        )
+
+    async def test_a_variant_that_matches_better_than_canonical_wins_the_max(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        fact = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            content="the sky is blue",
+        )
+        await _store_variant(
+            conn, embedding_model, fact_id=fact.id, content="the exact query text"
+        )
+        variants_by_fact = group_variants_by_fact(
+            await get_active_fact_variants(conn, GUILD_A)
+        )
+        query_embedding = await embed_text(embedding_model, "the exact query text")
+
+        canonical_only = best_similarity(query_embedding, fact)
+        with_variant = best_similarity(query_embedding, fact, variants_by_fact)
+
+        assert with_variant > canonical_only
+        assert with_variant == pytest.approx(1.0, abs=1e-4)
+
+    def test_non_finite_canonical_vector_is_skipped_not_allowed_to_win(self) -> None:
+        from datetime import datetime, timezone
+
+        from aura.db.models import Fact, FactStatus
+
+        nan_bytes = np.full(4, np.nan, dtype=EMBEDDING_DTYPE).tobytes()
+        fact = Fact(
+            id=1, guild_id=GUILD_A, channel_id=1, message_id=1, content="x",
+            embedding=nan_bytes, status=FactStatus.ACTIVE, superseded_by_id=None,
+            created_at=datetime.now(timezone.utc), superseded_at=None,
+        )
+        query_embedding = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        result = best_similarity(query_embedding, fact)
+        assert np.isnan(result)
+
+    def test_a_non_finite_variant_does_not_poison_a_finite_canonical_score(self) -> None:
+        from datetime import datetime, timezone
+
+        from aura.db.fact_variants import FactVariant
+        from aura.db.models import Fact, FactStatus
+
+        good = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        nan_bytes = np.full(4, np.nan, dtype=EMBEDDING_DTYPE).tobytes()
+        fact = Fact(
+            id=1, guild_id=GUILD_A, channel_id=1, message_id=1, content="x",
+            embedding=good.tobytes(), status=FactStatus.ACTIVE, superseded_by_id=None,
+            created_at=datetime.now(timezone.utc), superseded_at=None,
+        )
+        variant = FactVariant(
+            id=1, fact_id=1, content="bad variant", embedding=nan_bytes,
+            created_at=datetime.now(timezone.utc),
+        )
+        result = best_similarity(good, fact, {1: [variant]})
+        assert result == pytest.approx(1.0)
+
+
+class TestFindSimilarFactsWithVariants:
+    """Multi-Representation Indexing Part 2: find_similar_facts via a fact's variants.
+
+    Real before/after comparisons throughout, not just an assertion about the
+    end state -- the same content is scored twice, once before any variant is
+    stored and once after, so a genuine ranking flip is what proves the wiring
+    rather than a claim about it.
+    """
+
+    # A clause-rich exception fact, the shape reports/variant-indexing-part1.txt
+    # Section 4 found variants help most on (a value, a channel and a day
+    # qualifier -- plenty of structural room to reword), unlike a bare,
+    # minimal statement.
+    _CANONICAL = (
+        "The #trading channel enforces a 5MB upload limit, except on "
+        "Saturdays when the limit is lifted."
+    )
+    _VARIANT = (
+        "Every day but Saturday, files posted in #trading may not exceed "
+        "5MB; on Saturdays that cap does not apply."
+    )
+    _DISTRACTOR = "Saturday is when #trading sees the most messages and the most new members."
+    _QUERY = "Can I post bigger files in trading on Saturday without the size cap?"
+
+    async def test_a_query_unreachable_via_canonical_wording_is_found_via_its_variant(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        target = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            content=self._CANONICAL,
+        )
+        distractor = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=2,
+            content=self._DISTRACTOR,
+        )
+
+        # BEFORE: only the canonical vector exists. The topically-adjacent
+        # distractor (shares "Saturday" and "#trading") outranks the fact that
+        # actually answers the question, because the canonical wording and the
+        # query wording share little vocabulary.
+        before = await find_similar_facts(
+            conn, embedding_model, guild_id=GUILD_A, query=self._QUERY, top_k=10
+        )
+        before_scores = {fact.id: score for fact, score in before}
+        assert before[0][0].id == distractor.id
+        assert before_scores[target.id] < before_scores[distractor.id]
+
+        # AFTER: store the audited variant that happens to phrase the same
+        # fact closer to how the query phrases its question.
+        await _store_variant(conn, embedding_model, fact_id=target.id, content=self._VARIANT)
+
+        after = await find_similar_facts(
+            conn, embedding_model, guild_id=GUILD_A, query=self._QUERY, top_k=10
+        )
+        after_scores = {fact.id: score for fact, score in after}
+
+        # The fact that actually answers the question now wins, and its score
+        # strictly improved -- this is not noise, it is the variant's vector.
+        assert after[0][0].id == target.id
+        assert after_scores[target.id] > before_scores[target.id]
+        assert after_scores[target.id] > after_scores[distractor.id]
+
+        # CLAUDE.md's Fact component: what gets shown is always the one
+        # distilled canonical sentence, never the variant that won the match.
+        assert after[0][0].content == self._CANONICAL
+
+    async def test_a_retired_facts_variant_does_not_surface_it(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        old = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            content=self._CANONICAL,
+        )
+        await _store_variant(conn, embedding_model, fact_id=old.id, content=self._VARIANT)
+
+        replacement_embedding = await embed_text(
+            embedding_model, "The #trading channel now has no upload limit on any day."
+        )
+        await supersede_fact(
+            conn,
+            old_fact_id=old.id,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=2,
+            content="The #trading channel now has no upload limit on any day.",
+            embedding=replacement_embedding.astype(EMBEDDING_DTYPE, copy=False).tobytes(),
+        )
+
+        # Querying with wording that matches the RETIRED fact's variant almost
+        # exactly must not surface the retired fact -- the join against
+        # facts.status='active' (aura.db.fact_variants.get_active_fact_variants)
+        # has to actually exclude it here, not just be schema-possible.
+        results = await find_similar_facts(
+            conn, embedding_model, guild_id=GUILD_A, query=self._VARIANT, top_k=10
+        )
+        assert all(fact.id != old.id for fact, _ in results)
+
+    async def test_top_k_ranking_with_variants_is_stable_and_deterministic(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        # Regression check: with no variants stored anywhere, behaviour is
+        # byte-for-byte what it was before Part 2 -- this is the same
+        # assertion test_results_are_sorted_descending_by_score above already
+        # makes, repeated here explicitly under the new code path so a
+        # regression in the shared helper's zero-variant fallback fails loudly
+        # in this class rather than only in the older one.
+        for i in range(5):
+            await add_fact(
+                conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=i,
+                content=f"distinct fact number {i} about server topic {i}",
+            )
+        first = await find_similar_facts(
+            conn, embedding_model, guild_id=GUILD_A, query="distinct fact", top_k=10
+        )
+        second = await find_similar_facts(
+            conn, embedding_model, guild_id=GUILD_A, query="distinct fact", top_k=10
+        )
+        assert [f.id for f, _ in first] == [f.id for f, _ in second]
+        scores = [score for _, score in first]
+        assert scores == sorted(scores, reverse=True)

@@ -29,10 +29,11 @@ from fastembed import TextEmbedding
 from pydantic import ValidationError
 
 from aura.config import Settings
+from aura.db.fact_variants import store_fact_variants
 from aura.db.proactive_signals import GateVerdict
 from aura.db.proactive_state import EscalationOutcome, count_escalations_on
 from aura.db.repository import init_schema
-from aura.embeddings import EMBEDDING_DTYPE
+from aura.embeddings import EMBEDDING_DTYPE, embed_texts
 from aura.facts_service import add_fact
 from aura.proactive.gate import (
     _ESCALATION_VERDICTS,
@@ -674,6 +675,55 @@ class TestWithTheRealModel:
         assert decision.stage2_gap is not None
         assert decision.stage2_gap > 0.0
         assert decision.verdict is GateVerdict.ELIGIBLE
+
+    async def test_a_message_ineligible_via_canonical_wording_becomes_eligible_via_its_variant(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        # Multi-Representation Indexing Part 2, Stage 2's own real before/after,
+        # with the same clause-rich exception fact and audited-style variant
+        # used in test_embeddings.py's TestFindSimilarFactsWithVariants and
+        # test_extraction_pipeline.py's TestDedupHintWithVariants. This
+        # query's own measured numbers against the real embedding model
+        # (0.346 canonical / 0.619 variant, real QuestionDetector score
+        # +0.018) straddle both CONFIG.similarity_threshold (0.5) and
+        # CONFIG.question_threshold (0.0) on the intended sides.
+        canonical = (
+            "The #trading channel enforces a 5MB upload limit, except on "
+            "Saturdays when the limit is lifted."
+        )
+        variant = (
+            "Every day but Saturday, files posted in #trading may not exceed "
+            "5MB; on Saturdays that cap does not apply."
+        )
+        query = "Is there no file size cap in trading today?"
+
+        fact = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=CHANNEL_1, message_id=900,
+            content=canonical,
+        )
+        detector = await QuestionDetector.create(embedding_model)
+
+        # BEFORE: only the canonical vector exists, and it falls short of
+        # CONFIG.similarity_threshold (0.5) -- no fact is confident enough to
+        # spend a budget slot on.
+        before = await _evaluate(conn, embedding_model, detector, content=query, message_id=1)
+        assert before.stage2_top_score is not None
+        assert before.stage2_top_score < CONFIG.similarity_threshold
+        assert before.verdict is not GateVerdict.ELIGIBLE
+        assert await count_escalations_on(conn, guild_id=GUILD_A, day="2026-07-24") == 0
+
+        # AFTER: store the audited variant on the same fact.
+        [variant_embedding] = await embed_texts(embedding_model, [variant])
+        await store_fact_variants(
+            conn, fact_id=fact.id, contents=[variant],
+            embeddings=[variant_embedding.astype(EMBEDDING_DTYPE, copy=False).tobytes()],
+        )
+
+        after = await _evaluate(conn, embedding_model, detector, content=query, message_id=2)
+        assert after.stage2_top_score is not None
+        assert after.stage2_top_score > before.stage2_top_score
+        assert after.stage2_top_score >= CONFIG.similarity_threshold
+        assert after.verdict is GateVerdict.ELIGIBLE
 
     async def test_real_chatter_with_facts_present_stays_silent(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding

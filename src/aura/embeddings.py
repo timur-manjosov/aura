@@ -14,6 +14,7 @@ import aiosqlite
 import numpy as np
 from fastembed import TextEmbedding
 
+from aura.db.fact_variants import FactVariant, get_active_fact_variants
 from aura.db.models import Fact
 from aura.db.repository import get_active_facts
 
@@ -127,6 +128,71 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a64 / norm_a, b64 / norm_b))
 
 
+def group_variants_by_fact(variants: Sequence[FactVariant]) -> dict[int, list[FactVariant]]:
+    """Group a flat list of variants by the fact_id each one paraphrases.
+
+    A plain lookup table, built once per search rather than once per fact
+    scored: every caller here fetches all of a guild's active variants in one
+    query (see aura.db.fact_variants.get_active_fact_variants) and then needs
+    O(1) access to "this fact's variants" per fact in the scoring loop, not a
+    fresh scan of the flat list for every one of them.
+    """
+    grouped: dict[int, list[FactVariant]] = {}
+    for variant in variants:
+        grouped.setdefault(variant.fact_id, []).append(variant)
+    return grouped
+
+
+def best_similarity(
+    query_embedding: np.ndarray,
+    fact: Fact,
+    variants_by_fact: dict[int, list[FactVariant]] | None = None,
+) -> float:
+    """Max cosine similarity between query_embedding and fact's canonical sentence OR any of its variants.
+
+    Multi-Representation Indexing Part 2 (see aura.variants_service and
+    reports/variant-indexing-part1.txt): a fact is findable through any of its
+    audited, meaning-preserving paraphrasings, not only through its one
+    canonical vector. This is the one place that "maximum over candidate
+    vectors" logic lives -- every similarity search in this project (direct
+    query, proactive gate/responder, extraction dedup) calls through here
+    rather than each re-implementing its own max, which is exactly the kind of
+    drift CLAUDE.md's PROACTIVE_SIMILARITY_THRESHOLD/SIMILARITY_THRESHOLD split
+    already showed this project one duplicated constant can cause.
+
+    Which vector wins never changes what a caller shows or cites: every caller
+    still reads `fact.content`, the canonical sentence, off the returned Fact
+    -- a variant is only ever the reason a fact was found, never the text
+    displayed.
+
+    variants_by_fact is optional so a caller that has not fetched any variants
+    (or a fact with none stored) degrades cleanly to comparing against the
+    canonical vector alone, the exact pre-Part-2 behaviour.
+
+    A vector whose stored bytes decode to a non-finite score (a corrupted
+    embedding) is skipped rather than allowed to win or silently poison the
+    max -- one bad variant must not sink a fact that is otherwise perfectly
+    findable through its canonical sentence or its other variants. Returns
+    NaN, matching cosine_similarity's non-finite passthrough, only if every
+    candidate vector for this fact -- canonical included -- is unusable;
+    callers that already guard against a non-finite score (e.g.
+    aura.extraction.pipeline._best_matching_fact) see the same signal they did
+    before this helper existed.
+    """
+    candidates = [np.frombuffer(fact.embedding, dtype=EMBEDDING_DTYPE)]
+    if variants_by_fact:
+        candidates.extend(
+            np.frombuffer(variant.embedding, dtype=EMBEDDING_DTYPE)
+            for variant in variants_by_fact.get(fact.id, ())
+        )
+
+    scores = [cosine_similarity(query_embedding, candidate) for candidate in candidates]
+    finite_scores = [score for score in scores if np.isfinite(score)]
+    if not finite_scores:
+        return float("nan")
+    return max(finite_scores)
+
+
 async def find_similar_facts(
     conn: aiosqlite.Connection,
     model: TextEmbedding,
@@ -140,7 +206,12 @@ async def find_similar_facts(
     A linear scan over every active fact in the guild is the correct design
     at this project's data volume, not a placeholder for a future vector
     database -- CLAUDE.md's Performance section already rules that out as
-    infrastructure sized for a scale problem Aura doesn't have.
+    infrastructure sized for a scale problem Aura doesn't have. Each fact now
+    scores against 1 (canonical only) to ~7 (canonical + up to
+    VARIANT_COUNT audited variants) vectors instead of 1 -- see
+    reports/variant-indexing-part2.txt Section on performance for why that
+    stays negligible at this project's realistically-anticipated fact counts
+    (hundreds, not thousands) and is worth revisiting only if that changes.
 
     Never errors on sparse data: an empty guild, or a top_k larger than the
     number of active facts, both just return however many results actually
@@ -160,15 +231,10 @@ async def find_similar_facts(
     """
     query_embedding = await embed_text(model, query)
     facts = await get_active_facts(conn, guild_id)
+    variants_by_fact = group_variants_by_fact(await get_active_fact_variants(conn, guild_id))
 
     scored = [
-        (
-            fact,
-            cosine_similarity(
-                query_embedding, np.frombuffer(fact.embedding, dtype=EMBEDDING_DTYPE)
-            ),
-        )
-        for fact in facts
+        (fact, best_similarity(query_embedding, fact, variants_by_fact)) for fact in facts
     ]
     scored.sort(key=lambda pair: (-pair[1], pair[0].id))
     return scored[:top_k]

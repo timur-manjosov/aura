@@ -25,6 +25,7 @@ from aura.db.extraction_channel_config import set_extraction_enabled
 from aura.db.extraction_queue import count_queued, enqueue_message
 from aura.db.extraction_state import count_extraction_calls_on
 from aura.db.connection import utc_day, utc_now
+from aura.db.fact_variants import store_fact_variants
 from aura.db.models import FactStatus
 from aura.db.pending_facts import (
     FactCategory,
@@ -33,8 +34,9 @@ from aura.db.pending_facts import (
     get_pending_facts,
 )
 from aura.db.proactive_channel_config import set_channel_enabled
-from aura.db.repository import get_active_facts, init_schema
+from aura.db.repository import get_active_facts, init_schema, supersede_fact
 from aura.db.supersession_state import count_supersession_calls_on
+from aura.embeddings import EMBEDDING_DTYPE, embed_text, embed_texts
 from aura.extraction.distiller import DistilledFact
 from aura.extraction.supersession import RelationshipJudgement
 from aura.extraction.pipeline import (
@@ -759,6 +761,130 @@ class TestDedupHint:
 
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         assert staged[0].similar_fact_id is None
+
+
+class TestDedupHintWithVariants:
+    """Multi-Representation Indexing Part 2: the dedup hint via an existing fact's variants.
+
+    Real before/after, like test_embeddings.py's TestFindSimilarFactsWithVariants:
+    the same candidate is distilled twice, once before any variant exists for
+    the predecessor and once after, so a genuine flip from "not flagged" to
+    "flagged" is what proves the wiring.
+
+    Design clarified by the phase brief: a freshly distilled CANDIDATE never
+    has variants of its own (those are only generated once a candidate is
+    confirmed into a real, active fact) -- so every case here stores the
+    variant on the EXISTING fact and leaves the candidate's own embedding as
+    the single vector on that side of the comparison.
+    """
+
+    # Same clause-rich exception fact and audited-style variant as
+    # test_embeddings.py's TestFindSimilarFactsWithVariants, reused so the
+    # part1 diversity finding (variants help most on clause-rich facts) is
+    # demonstrated consistently across both search paths.
+    _CANONICAL = (
+        "The #trading channel enforces a 5MB upload limit, except on "
+        "Saturdays when the limit is lifted."
+    )
+    _VARIANT = (
+        "Every day but Saturday, files posted in #trading may not exceed "
+        "5MB; on Saturdays that cap does not apply."
+    )
+    _CANDIDATE_CONTENT = "Can I post bigger files in trading on Saturday without the size cap?"
+
+    async def test_a_candidate_matching_only_a_predecessors_variant_is_now_flagged(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        existing = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=CHANNEL_A, message_id=900,
+            content=self._CANONICAL,
+        )
+
+        # BEFORE: no variant stored. The candidate's wording is distant enough
+        # from the canonical sentence (~0.43 cosine, measured against this
+        # project's real embedding model) to fall under
+        # extraction_dedup_similarity_threshold's 0.60 default, so the dedup
+        # hint stays unset.
+        await _queue(conn, message_id=1, content="trigger")
+        distilled = [
+            DistilledFact(
+                message_id=1, content=self._CANDIDATE_CONTENT, category=FactCategory.RULE
+            )
+        ]
+        with patch(
+            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
+        ):
+            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW)
+
+        before = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
+        assert before[0].similar_fact_id is None
+        assert before[0].similar_fact_score is None
+
+        # AFTER: store the audited variant on the EXISTING fact (never on the
+        # candidate -- see this class's docstring), then distill the exact
+        # same candidate content a second time.
+        [variant_embedding] = await embed_texts(embedding_model, [self._VARIANT])
+        await store_fact_variants(
+            conn, fact_id=existing.id, contents=[self._VARIANT],
+            embeddings=[variant_embedding.astype(EMBEDDING_DTYPE, copy=False).tobytes()],
+        )
+
+        await _queue(conn, message_id=2, content="trigger again")
+        distilled_again = [
+            DistilledFact(
+                message_id=2, content=self._CANDIDATE_CONTENT, category=FactCategory.RULE
+            )
+        ]
+        with patch(
+            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled_again)
+        ):
+            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW)
+
+        after = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
+        flagged = next(p for p in after if p.channel_id == CHANNEL_A and p.message_id == 2)
+        assert flagged.similar_fact_id == existing.id
+        assert flagged.similar_fact_score is not None
+        assert flagged.similar_fact_score >= 0.60
+
+    async def test_a_retired_predecessors_variant_never_flags_a_candidate(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        old = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=CHANNEL_A, message_id=900,
+            content=self._CANONICAL,
+        )
+        [variant_embedding] = await embed_texts(embedding_model, [self._VARIANT])
+        await store_fact_variants(
+            conn, fact_id=old.id, contents=[self._VARIANT],
+            embeddings=[variant_embedding.astype(EMBEDDING_DTYPE, copy=False).tobytes()],
+        )
+
+        replacement_embedding = await embed_text(
+            embedding_model, "The #trading channel now has no upload limit on any day."
+        )
+        await supersede_fact(
+            conn, old_fact_id=old.id, guild_id=GUILD_A, channel_id=CHANNEL_A, message_id=901,
+            content="The #trading channel now has no upload limit on any day.",
+            embedding=replacement_embedding.astype(EMBEDDING_DTYPE, copy=False).tobytes(),
+        )
+
+        # This candidate would have matched old.id's variant well above
+        # threshold (see the test above); the join against
+        # facts.status='active' must exclude it now that old.id is retired.
+        await _queue(conn, message_id=1, content="trigger")
+        distilled = [
+            DistilledFact(
+                message_id=1, content=self._CANDIDATE_CONTENT, category=FactCategory.RULE
+            )
+        ]
+        with patch(
+            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
+        ):
+            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW)
+
+        staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
+        candidate = next(p for p in staged if p.message_id == 1)
+        assert candidate.similar_fact_id != old.id
 
 
 class TestSupersessionJudgement:

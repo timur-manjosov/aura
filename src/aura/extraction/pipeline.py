@@ -65,6 +65,7 @@ from aura.db.extraction_queue import (
     remove_queued_message,
 )
 from aura.db.extraction_state import try_acquire_extraction_call_slot
+from aura.db.fact_variants import FactVariant, get_active_fact_variants
 from aura.db.models import Fact
 from aura.db.pending_facts import (
     PendingFact,
@@ -73,7 +74,7 @@ from aura.db.pending_facts import (
 )
 from aura.db.repository import get_active_facts
 from aura.db.supersession_state import try_acquire_supersession_call_slot
-from aura.embeddings import EMBEDDING_DTYPE, cosine_similarity, embed_texts
+from aura.embeddings import EMBEDDING_DTYPE, best_similarity, embed_texts, group_variants_by_fact
 from aura.extraction.distiller import DistilledFact, distill_facts
 from aura.extraction.supersession import judge_relationship
 from aura.proactive.question_detector import QuestionDetector
@@ -489,6 +490,15 @@ async def _stage_distilled(
     contents = [candidate.content for candidate in distilled]
     embeddings = await embed_texts(model, contents)
     active_facts = await get_active_facts(db, guild_id)
+    # A freshly distilled candidate has no variants of its own yet -- those
+    # only get generated once it is confirmed into a real, active fact (see
+    # aura.facts_service) -- so this dedup check compares the candidate's
+    # single embedding against each EXISTING active fact's canonical sentence
+    # and its variants, never the reverse. Fetched once for the whole batch,
+    # like active_facts above, not once per candidate.
+    active_variants_by_fact = group_variants_by_fact(
+        await get_active_fact_variants(db, guild_id)
+    )
 
     for candidate, embedding in zip(distilled, embeddings, strict=True):
         source = by_message_id.get(candidate.message_id)
@@ -503,7 +513,9 @@ async def _stage_distilled(
             )
             continue
 
-        similar_fact, similar_score = _best_matching_fact(embedding, active_facts)
+        similar_fact, similar_score = _best_matching_fact(
+            embedding, active_facts, active_variants_by_fact
+        )
         above_threshold = (
             similar_fact is not None
             and similar_score >= settings.extraction_dedup_similarity_threshold
@@ -640,26 +652,28 @@ async def _judge_staged_candidate(
 
 
 def _best_matching_fact(
-    embedding: np.ndarray, facts: list[Fact]
+    embedding: np.ndarray,
+    facts: list[Fact],
+    variants_by_fact: dict[int, list[FactVariant]],
 ) -> tuple[Fact | None, float]:
-    """Return the active fact most similar to embedding, and that similarity.
+    """Return the active fact most similar to embedding -- via its canonical sentence
+    or any of its variants -- and that similarity.
 
     Returns (None, 0.0) for a guild with no active facts -- the ordinary case
     for a server whose knowledge model is still empty, and the reason this is
     not written as max() over a possibly-empty sequence.
 
-    Skips a fact whose stored similarity comes back non-finite, the same way
-    aura.proactive.gate does: a degenerate stored embedding cannot be
-    meaningfully compared to anything, and letting a NaN through would make it
-    win or lose every comparison silently depending on which way the
-    comparison happened to be written.
+    Skips a fact whose best similarity (across its canonical sentence and
+    every variant -- see aura.embeddings.best_similarity) comes back
+    non-finite, the same way aura.proactive.gate does: a fact none of whose
+    stored vectors can be meaningfully compared to anything must not win or
+    lose every comparison silently depending on which way the comparison
+    happened to be written.
     """
     best_fact: Fact | None = None
     best_score = 0.0
     for fact in facts:
-        score = cosine_similarity(
-            embedding, np.frombuffer(fact.embedding, dtype=EMBEDDING_DTYPE)
-        )
+        score = best_similarity(embedding, fact, variants_by_fact)
         if not np.isfinite(score):
             logger.warning(
                 "Fact %s scored non-finite similarity against a new candidate; "
