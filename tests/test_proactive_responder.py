@@ -223,14 +223,14 @@ class TestShortCircuitsBeforeSpending:
         # mistaken for removing the remaining one. A fact under
         # PROACTIVE_SIMILARITY_THRESHOLD is still no basis to answer from.
         content = "The rules are in #welcome."
-        model = _ScoredModel(content, similarity=0.20)
+        model = _ScoredModel(content, similarity=0.10)
         await add_fact(
             conn, model, guild_id=GUILD_A, channel_id=1, message_id=1, content=content  # type: ignore[arg-type]
         )
         await _enable(conn)
         message = _make_message()
         settings = _configured_settings()
-        assert 0.20 < settings.proactive_similarity_threshold
+        assert 0.10 < settings.proactive_similarity_threshold
 
         with patch("aura.proactive.responder.synthesize_answer", AsyncMock()) as synth:
             outcome = await respond_with_synthesis(

@@ -194,8 +194,20 @@ class Settings(BaseSettings):
     # This is the numeric half of the Phase 2b-3 product decision documented in
     # CLAUDE.md's "Proactive Relief: Visibly Active by Design" section: Aura is
     # now tuned to let real questions through rather than drop them silently.
+    #
+    # TESTING-PHASE OVERRIDE (2026-08-15): -0.15 -> -0.22, the peak-accuracy
+    # point already named (but not shipped) in reports/phase-2b-2.txt Section
+    # 5a/5b/5c: recall 0.982 -> 1.000 (373/380 -> 380/380), accuracy unchanged
+    # (0.868) and F1 essentially unchanged (0.928 -> 0.929), for a specificity
+    # drop from 0.150 to 0.033 -- more non-question traffic reaching Stage 2.
+    # Not a new calibration; no new corpus, no new LLM calls. Same treatment as
+    # EXTRACTION_FACT_WORTHINESS_THRESHOLD's 2026-07-31 override: Stage 1 only
+    # gates one free, local Stage 2 check, so the wider specificity loss costs
+    # nothing on the current single-member test server, while a Stage 1 false
+    # negative is still permanent silence. See reports/testing-threshold-note-2.txt.
+    # REVERT to -0.15 before any real multi-member community rollout.
     proactive_question_threshold: float = Field(
-        default=-0.15, gt=-2.0, le=2.0, allow_inf_nan=False
+        default=-0.22, gt=-2.0, le=2.0, allow_inf_nan=False
     )
 
     # Stage 2: minimum cosine similarity between the message and the best
@@ -250,8 +262,23 @@ class Settings(BaseSettings):
     # 45 of 580 corpus cases. Since proactive_confidence_gap retired above,
     # this is also the only Stage 2 number left, so it no longer "moves as a
     # pair" with anything.
+    #
+    # TESTING-PHASE OVERRIDE (2026-08-15): 0.30 -> 0.20, read off
+    # reports/phase-2b-4.txt Section 7's post-retirement sweep, gap=0.00 column
+    # (the operative column now that PROACTIVE_CONFIDENCE_GAP no longer gates
+    # anything): recall 0.85 -> 0.99, specificity 0.07 -> 0.02, the lowest value
+    # in that sweep table (no data below 0.20 to justify going further). Not a
+    # new calibration. Unlike Stage 1 above, this bar directly gates paid Stage
+    # 3 synthesis calls, so this is a real cost lever, not a free one -- accepted
+    # for the same reason CLAUDE.md's "Proactive Relief: Visibly Active by
+    # Design" already accepts the Phase 2b-3 cost increase: PROACTIVE_DAILY_CAP
+    # is unchanged and still bounds the worst case, and Timur has explicitly
+    # said more visible proactive activity is wanted during this single-member
+    # testing phase, cost aside. See reports/testing-threshold-note-2.txt.
+    # REVERT to 0.30 before any real multi-member community rollout, when the
+    # full-traffic cost math becomes load-bearing again.
     proactive_similarity_threshold: float = Field(
-        default=0.30, ge=-1.0, le=1.0, allow_inf_nan=False
+        default=0.20, ge=-1.0, le=1.0, allow_inf_nan=False
     )
 
     # RETIRED in Phase 2b-4. This value no longer gates anything: it is read,
@@ -447,6 +474,14 @@ class Settings(BaseSettings):
     # where the sweep tips into flagging more noise than signal. REVERT to
     # -0.02 before any real multi-member community rollout, when the
     # full-volume cost math above becomes load-bearing again.
+    #
+    # RECONSIDERED (2026-08-15) for further testing-phase loosening and KEPT
+    # UNCHANGED: this is already the recall-favouring value chosen just above,
+    # and the same phase-3a-1b.txt Section 6 sweep this comment already cites
+    # shows the next step, -0.05, crossing into the range that comment itself
+    # already flags as degenerate (precision 0.495, just under half, F1 0.619
+    # below -0.04's own 0.650). No further loosening is proposed here. See
+    # reports/testing-threshold-note-2.txt.
     extraction_fact_worthiness_threshold: float = Field(
         default=-0.04, gt=-2.0, le=2.0, allow_inf_nan=False
     )
@@ -562,8 +597,26 @@ class Settings(BaseSettings):
     # so raising this value instead would cost nothing on them specifically --
     # it is the supersession recall above that the higher bar was actually
     # giving up.
+    #
+    # TESTING-PHASE OVERRIDE (2026-08-15): 0.60 -> 0.53, the "RECALL-LEANING
+    # ALTERNATIVE" reports/extraction-dedup-threshold-calibration.txt Section 4
+    # already names and explicitly declines for production (+0.527 on its
+    # Pareto frontier, folded here into config.py's existing 2-decimal style).
+    # Not a new calibration -- same corpus, same sweep, a different point on it.
+    # Unusually clean trade for this corpus: the hard-negative sweep in that
+    # report shows IDENTICAL false-positive behaviour on the
+    # independent_related category at 0.60 and 0.527 (fp=13, tn=2, specificity
+    # 0.133 at both), while should-mark recall (duplicate + supersession +
+    # contradiction combined) rises from 0.867 to 0.933 (65/75 -> 70/75) --  no
+    # measured cost, in this corpus, for the extra recall. Both of the report's
+    # two named attack cases behave identically to the 0.60 setting (0.698
+    # marked, 0.509 held back at both). This does raise real call volume: more
+    # candidates clear this bar and reach the paid supersession-judgement call,
+    # bounded by SUPERSESSION_DAILY_CAP (unchanged). See
+    # reports/testing-threshold-note-2.txt. REVERT to 0.60 before any real
+    # multi-member community rollout.
     extraction_dedup_similarity_threshold: float = Field(
-        default=0.60, ge=-1.0, le=1.0, allow_inf_nan=False
+        default=0.53, ge=-1.0, le=1.0, allow_inf_nan=False
     )
 
     # Per-guild, per-UTC-day ceiling on SUPERSESSION-JUDGMENT CALLS (Phase
@@ -586,8 +639,14 @@ class Settings(BaseSettings):
     # tokens, about $0.001 at claude-haiku-4.5's $1/$5 per Mtok. 50 a day is
     # therefore a worst case near $1.50 per guild per month, and only if every
     # slot were spent every day, which the dedup threshold makes unlikely: this
-    # call fires only for a candidate that scored above 0.70 against an existing
-    # active fact, a small minority of what extraction produces. When the cap
+    # call fires only for a candidate that cleared
+    # EXTRACTION_DEDUP_SIMILARITY_THRESHOLD against an existing active fact
+    # (deliberately not restated as a number here -- this comment previously
+    # hardcoded "0.70" and silently went stale when that field was recalibrated
+    # to 0.60 in this same phase, a drift caught and fixed on the VPS but never
+    # fixed here; see reports/deployment-2026-07-31.txt's addendum and
+    # reports/testing-threshold-note-2.txt), a small minority of what extraction
+    # produces. When the cap
     # does bind, nothing breaks and nothing is lost -- the candidate is still
     # staged and still reviewed, it simply carries Phase 3a-2's plain similarity
     # hint instead of a judgment. 0 is valid and disables the judgment call

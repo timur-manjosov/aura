@@ -82,9 +82,15 @@ class TestDefaults:
     def test_proactive_defaults(self) -> None:
         # Phase 2b-3 recalibration -- see config.py for the per-field
         # evidence from the phase-2b-2 synthetic-corpus simulation.
+        # question/similarity currently overridden further for the
+        # single-member testing phase (same sweeps, more recall-friendly
+        # rows); see config.py's comments and
+        # reports/testing-threshold-note-2.txt. Revert these two assertions
+        # to -0.15 / 0.30 alongside config.py and .env.example when that
+        # override is reverted.
         settings = _settings(discord_token="valid-token")
-        assert settings.proactive_question_threshold == -0.15
-        assert settings.proactive_similarity_threshold == 0.30
+        assert settings.proactive_question_threshold == -0.22
+        assert settings.proactive_similarity_threshold == 0.20
         assert settings.proactive_confidence_gap == 0.05
         assert settings.proactive_cooldown_seconds == 900.0
         assert settings.proactive_daily_cap == 60
@@ -95,7 +101,8 @@ class TestDefaults:
         # -0.04 for the single-member testing phase (same sweep, a
         # different, more recall-friendly row); see config.py's
         # extraction_fact_worthiness_threshold comment and
-        # reports/testing-threshold-note.txt. Revert this assertion to
+        # reports/testing-threshold-note.txt (reconsidered and kept at -0.04
+        # in reports/testing-threshold-note-2.txt). Revert this assertion to
         # -0.02 alongside config.py and .env.example when that override is
         # reverted.
         settings = _settings(discord_token="valid-token")
@@ -110,8 +117,14 @@ class TestDefaults:
         assert settings.extraction_batch_max_messages == 20
         assert settings.extraction_daily_cap == 50
         # Extraction-dedup-threshold-calibration report: 0.60, down from 0.70,
-        # see config.py for the full sweep evidence.
-        assert settings.extraction_dedup_similarity_threshold == 0.60
+        # see config.py for the full sweep evidence. Currently overridden to
+        # 0.53 for the single-member testing phase (same report's named
+        # recall-leaning alternative); see config.py's
+        # extraction_dedup_similarity_threshold comment and
+        # reports/testing-threshold-note-2.txt. Revert this assertion to
+        # 0.60 alongside config.py and .env.example when that override is
+        # reverted.
+        assert settings.extraction_dedup_similarity_threshold == 0.53
         # Unset by default, like every other model: a hardcoded model with no
         # key would look configured in code while failing on every call.
         assert settings.extraction_model is None
@@ -126,7 +139,8 @@ class TestDefaults:
 
     def test_the_proactive_gate_bar_may_now_be_looser_than_the_direct_query_bar(self) -> None:
         # Phase 2b-3 deliberately inverted the ordering this test asserted
-        # through Phase 2b-2: proactive_similarity_threshold (0.30) is now
+        # through Phase 2b-2: proactive_similarity_threshold (now further
+        # testing-phase-overridden below its 0.30 calibrated default) is
         # BELOW similarity_threshold (0.4). That is safe, not a regression,
         # because the two thresholds serve different purposes and always
         # have: proactive_similarity_threshold is only the gate's "is this
