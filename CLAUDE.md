@@ -157,3 +157,9 @@ Therefore, for every implementation, without exception:
   up a shared bill. A cross-guild budget layer would be needed above the
   per-guild cap before offering that. Explicitly out of scope until such a tier
   exists; noted here so it is designed for, not discovered.
+
+# GitHub-Workflow
+- Arbeite bei GitHub-Aufgaben eigenständig über gh-CLI/GitHub-MCP-Tools, wie ein Senior Developer.
+- Branch → Fix → Hacker-Phase auf die neue Änderung → PR mit "Fixes #<nummer>" → Merge nur wenn Hacker-Phase bestanden. Branch-Naming: fix/<issue-nummer>-<kurzer-slug>.
+- Läuft live auf dem VPS mit echten Nutzern (analog zu Epiphyte) — sicherheitsrelevante Funde mit echtem Exploit-Potenzial NICHT als öffentliches Issue, stattdessen gesondert im Bericht melden.
+- Automatisierte Tests sind die einzige Abnahme, keine manuelle Testung.

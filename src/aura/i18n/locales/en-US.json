@@ -17,6 +17,8 @@
     "ask_error": "Something went wrong while putting together an answer. Please try again in a moment.",
     "ask_sources_label": "Sources",
     "ask_cooldown": "Please wait {seconds}s before asking again.",
+    "ask_grounding_rejected": "I put an answer together, but it wasn't fully backed by this server's recorded facts, so I'm not sending it. Try asking more specifically, or check with a moderator.",
+    "ask_grounding_unverified": "I put an answer together, but couldn't verify it against this server's facts just now — and I won't send an answer I haven't checked. Please try again in a moment.",
     "config_permission_error": "You need the Manage Server permission to do that.",
     "config_no_options_error": "Specify at least one of `proactive` or `extraction` to change something.",
     "config_proactive_enabled": "Proactive replies are now **on** in {channel}. Aura may volunteer an answer there when it's confident.",

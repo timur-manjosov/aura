@@ -23,6 +23,7 @@ from aura.commands.ask import _handle_ask_command_error, ask_command
 from aura.config import Settings
 from aura.db.repository import init_schema
 from aura.facts_service import add_fact
+from aura.grounding import GroundingOutcome
 from aura.synthesis import SynthesisResult
 
 GUILD_A = 100000000000000001
@@ -430,3 +431,410 @@ class TestLocalePassedThrough:
             await _invoke_ask(interaction, "a question")
 
         assert mock_synth.call_args.kwargs["model"] == "openrouter/the/synth-model"
+
+
+def _grounding(outcome: GroundingOutcome) -> AsyncMock:
+    """Patchable stand-in for the grounding check, forced to one verdict."""
+    return AsyncMock(return_value=outcome)
+
+
+class TestGroundingCheck:
+    """The independent check between synthesis and the followup that sends it.
+
+    Every test here mocks the check itself -- aura.grounding's own suite covers
+    the call. What is under test is /aura-ask's policy around it: what gets sent,
+    what does not, and that no verdict can influence the text of an answer that
+    does get sent.
+    """
+
+    async def _ask_with(
+        self,
+        conn: aiosqlite.Connection,
+        embedding_model: TextEmbedding,
+        *,
+        outcome: GroundingOutcome,
+        answer: str = "The server was founded in 2020.",
+        cited: bool = True,
+    ) -> MagicMock:
+        fact = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=11, message_id=101,
+            content="the server was founded in 2020",
+        )
+        settings = _fake_settings(
+            similarity_threshold=0.0, grounding_check_model="openrouter/other/vendor"
+        )
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
+        result = SynthesisResult(
+            answer=answer,
+            used_fact_ids=[fact.id] if cited else [],
+            answers_question=True,
+        )
+        with (
+            patch("aura.commands.ask.synthesize_answer", AsyncMock(return_value=result)),
+            patch("aura.commands.ask.verify_answer_grounded", _grounding(outcome)),
+        ):
+            await _invoke_ask(interaction, "When was the server founded?")
+        return interaction
+
+    async def test_a_grounded_answer_is_sent_unchanged(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        interaction = await self._ask_with(
+            conn, embedding_model, outcome=GroundingOutcome.GROUNDED
+        )
+        _, kwargs = interaction.followup.send.call_args
+        assert kwargs["embed"].description == "The server was founded in 2020."
+
+    async def test_an_unconfigured_check_sends_exactly_as_before(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        # The one deliberate not-fail-closed path: an operator who never set
+        # GROUNDING_CHECK_MODEL keeps the pre-feature behaviour rather than a
+        # bot that answers nothing after a `git pull`.
+        interaction = await self._ask_with(
+            conn, embedding_model, outcome=GroundingOutcome.NOT_CONFIGURED
+        )
+        _, kwargs = interaction.followup.send.call_args
+        assert kwargs["embed"].description == "The server was founded in 2020."
+
+    async def test_an_ungrounded_answer_is_never_sent(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        interaction = await self._ask_with(
+            conn, embedding_model, outcome=GroundingOutcome.UNGROUNDED
+        )
+        _, kwargs = interaction.followup.send.call_args
+        assert "embed" not in kwargs  # the answer itself never left
+
+    async def test_a_failed_check_is_never_sent_either(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        # The fail-closed case that matters most: the check broke, so the answer
+        # is unverified -- which carries exactly the risk a rejected one does.
+        interaction = await self._ask_with(
+            conn, embedding_model, outcome=GroundingOutcome.CHECK_FAILED
+        )
+        _, kwargs = interaction.followup.send.call_args
+        assert "embed" not in kwargs
+
+    async def test_the_two_refusals_say_different_honest_things(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        # Same consequence, different truth: "the facts did not back it" and "I
+        # could not check it" are not the same statement, and telling a user the
+        # wrong one is its own small dishonesty.
+        rejected = await self._ask_with(
+            conn, embedding_model, outcome=GroundingOutcome.UNGROUNDED
+        )
+        unverified = await self._ask_with(
+            conn, embedding_model, outcome=GroundingOutcome.CHECK_FAILED
+        )
+        rejected_text = rejected.followup.send.call_args[0][0]
+        unverified_text = unverified.followup.send.call_args[0][0]
+        assert rejected_text != unverified_text
+        assert rejected_text.strip() and unverified_text.strip()
+
+    async def test_a_refusal_still_replies_rather_than_falling_silent(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        # Somebody asked. A deferred interaction with no followup shows "the
+        # application did not respond" -- worse than an honest refusal.
+        for outcome in (GroundingOutcome.UNGROUNDED, GroundingOutcome.CHECK_FAILED):
+            interaction = await self._ask_with(conn, embedding_model, outcome=outcome)
+            interaction.followup.send.assert_awaited_once()
+
+    async def test_the_check_receives_only_the_cited_facts(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        cited = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=11, message_id=101,
+            content="the server was founded in 2020",
+        )
+        uncited = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=22, message_id=202,
+            content="the server's founding year is 2020",
+        )
+        settings = _fake_settings(
+            similarity_threshold=0.0, grounding_check_model="openrouter/other/vendor"
+        )
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
+        result = SynthesisResult(answer="2020.", used_fact_ids=[cited.id], answers_question=True)
+
+        check = _grounding(GroundingOutcome.GROUNDED)
+        with (
+            patch("aura.commands.ask.synthesize_answer", AsyncMock(return_value=result)),
+            patch("aura.commands.ask.verify_answer_grounded", check),
+        ):
+            await _invoke_ask(interaction, "When was the server founded?")
+
+        # A claim supported only by a retrieved-but-uncited fact is still one the
+        # reader cannot verify from the sources shown, so the check sees exactly
+        # what the reader will.
+        passed_facts = check.call_args.kwargs["cited_facts"]
+        assert [fact.id for fact in passed_facts] == [cited.id]
+        assert uncited.id not in [fact.id for fact in passed_facts]
+
+    async def test_the_check_receives_the_exact_answer_that_would_be_sent(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        # If the checked string and the sent string could ever differ, the whole
+        # feature would be theatre.
+        answer = "Gegründet 2020 — „laut den Fakten“. 🎉"
+        fact = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=11, message_id=101,
+            content="the server was founded in 2020",
+        )
+        settings = _fake_settings(
+            similarity_threshold=0.0, grounding_check_model="openrouter/other/vendor"
+        )
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
+        result = SynthesisResult(answer=answer, used_fact_ids=[fact.id], answers_question=True)
+
+        check = _grounding(GroundingOutcome.GROUNDED)
+        with (
+            patch("aura.commands.ask.synthesize_answer", AsyncMock(return_value=result)),
+            patch("aura.commands.ask.verify_answer_grounded", check),
+        ):
+            await _invoke_ask(interaction, "a question")
+
+        assert check.call_args.kwargs["answer"] == answer
+        _, kwargs = interaction.followup.send.call_args
+        assert kwargs["embed"].description == answer
+
+    async def test_the_check_runs_after_synthesis_and_before_the_send(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        order: list[str] = []
+        fact = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=11, message_id=101,
+            content="a relevant fact",
+        )
+        settings = _fake_settings(
+            similarity_threshold=0.0, grounding_check_model="openrouter/other/vendor"
+        )
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
+        interaction.followup.send = AsyncMock(side_effect=lambda *a, **k: order.append("send"))
+
+        async def synth(*_a: object, **_k: object) -> SynthesisResult:
+            order.append("synthesize")
+            return SynthesisResult(answer="ans", used_fact_ids=[fact.id], answers_question=True)
+
+        async def check(*_a: object, **_k: object) -> GroundingOutcome:
+            order.append("grounding")
+            return GroundingOutcome.GROUNDED
+
+        with (
+            patch("aura.commands.ask.synthesize_answer", AsyncMock(side_effect=synth)),
+            patch("aura.commands.ask.verify_answer_grounded", AsyncMock(side_effect=check)),
+        ):
+            await _invoke_ask(interaction, "a question")
+
+        assert order == ["synthesize", "grounding", "send"]
+
+    async def test_no_check_runs_when_synthesis_produced_nothing(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        # Nothing to check, and nothing to pay for.
+        await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            content="a relevant fact",
+        )
+        settings = _fake_settings(
+            similarity_threshold=0.0, grounding_check_model="openrouter/other/vendor"
+        )
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
+        check = _grounding(GroundingOutcome.GROUNDED)
+
+        with (
+            patch("aura.commands.ask.synthesize_answer", AsyncMock(return_value=None)),
+            patch("aura.commands.ask.verify_answer_grounded", check),
+        ):
+            await _invoke_ask(interaction, "a question")
+
+        check.assert_not_awaited()
+
+    async def test_an_uncited_answer_is_still_checked(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        # /aura-ask shows an answer whether or not the model cited anything, so
+        # a zero-citation answer is the most dangerous state there is -- it must
+        # be checked against an empty fact set, not waved past for lack of facts.
+        check = _grounding(GroundingOutcome.GROUNDED)
+        await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            content="a relevant fact",
+        )
+        settings = _fake_settings(
+            similarity_threshold=0.0, grounding_check_model="openrouter/other/vendor"
+        )
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
+        result = SynthesisResult(answer="I have nothing on that.", used_fact_ids=[], answers_question=False)
+
+        with (
+            patch("aura.commands.ask.synthesize_answer", AsyncMock(return_value=result)),
+            patch("aura.commands.ask.verify_answer_grounded", check),
+        ):
+            await _invoke_ask(interaction, "a question")
+
+        check.assert_awaited_once()
+        assert check.call_args.kwargs["cited_facts"] == []
+
+    async def test_the_ask_path_uses_the_ask_time_limit(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        from aura.grounding import ASK_GROUNDING_TIMEOUT_SECONDS
+
+        check = _grounding(GroundingOutcome.GROUNDED)
+        fact = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            content="a relevant fact",
+        )
+        settings = _fake_settings(
+            similarity_threshold=0.0, grounding_check_model="openrouter/other/vendor"
+        )
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
+        result = SynthesisResult(answer="ans", used_fact_ids=[fact.id], answers_question=True)
+
+        with (
+            patch("aura.commands.ask.synthesize_answer", AsyncMock(return_value=result)),
+            patch("aura.commands.ask.verify_answer_grounded", check),
+        ):
+            await _invoke_ask(interaction, "a question")
+
+        assert check.call_args.kwargs["timeout_seconds"] == ASK_GROUNDING_TIMEOUT_SECONDS
+
+
+class TestNoRegressionWithTheCheckAlwaysPassing:
+    """Every pre-existing /aura-ask behaviour, re-run with the check configured.
+
+    The check may only ever remove answers that fail it. With it configured and
+    forced to "grounded", /aura-ask must behave EXACTLY as it did before this
+    feature existed -- these mirror the assertions in the classes above, run
+    through the new code path.
+    """
+
+    async def test_sources_still_come_only_from_cited_facts(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        cited = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=11, message_id=101,
+            content="the server was founded in 2020",
+        )
+        uncited = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=22, message_id=202,
+            content="the server's founding year is 2020",
+        )
+        settings = _fake_settings(
+            similarity_threshold=0.0, grounding_check_model="openrouter/other/vendor"
+        )
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
+        result = SynthesisResult(
+            answer="The server was founded in 2020.", used_fact_ids=[cited.id], answers_question=True
+        )
+
+        with (
+            patch("aura.commands.ask.synthesize_answer", AsyncMock(return_value=result)),
+            patch(
+                "aura.commands.ask.verify_answer_grounded",
+                _grounding(GroundingOutcome.GROUNDED),
+            ),
+        ):
+            await _invoke_ask(interaction, "When was the server founded?")
+
+        _, kwargs = interaction.followup.send.call_args
+        assert kwargs.get("ephemeral", False) is False
+        embed = kwargs["embed"]
+        assert embed.description == "The server was founded in 2020."
+        sources = embed.fields[0].value
+        assert f"/{cited.channel_id}/{cited.message_id}" in sources
+        assert f"/{uncited.channel_id}/{uncited.message_id}" not in sources
+
+    async def test_no_citations_still_omits_the_sources_field(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            content="a relevant fact",
+        )
+        settings = _fake_settings(
+            similarity_threshold=0.0, grounding_check_model="openrouter/other/vendor"
+        )
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
+        result = SynthesisResult(
+            answer="I could not find a clear answer.", used_fact_ids=[], answers_question=False
+        )
+
+        with (
+            patch("aura.commands.ask.synthesize_answer", AsyncMock(return_value=result)),
+            patch(
+                "aura.commands.ask.verify_answer_grounded",
+                _grounding(GroundingOutcome.GROUNDED),
+            ),
+        ):
+            await _invoke_ask(interaction, "an unrelated question")
+
+        assert len(interaction.followup.send.call_args[1]["embed"].fields) == 0
+
+    async def test_an_overlong_answer_is_still_truncated_to_the_embed_limit(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        fact = await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            content="a relevant fact",
+        )
+        settings = _fake_settings(
+            similarity_threshold=0.0, grounding_check_model="openrouter/other/vendor"
+        )
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
+        result = SynthesisResult(answer="x" * 5000, used_fact_ids=[fact.id], answers_question=True)
+
+        with (
+            patch("aura.commands.ask.synthesize_answer", AsyncMock(return_value=result)),
+            patch(
+                "aura.commands.ask.verify_answer_grounded",
+                _grounding(GroundingOutcome.GROUNDED),
+            ),
+        ):
+            await _invoke_ask(interaction, "a question")
+
+        assert len(interaction.followup.send.call_args[1]["embed"].description) <= 4096
+
+    async def test_the_no_info_path_never_reaches_the_check(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        settings = _fake_settings(grounding_check_model="openrouter/other/vendor")
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
+        check = _grounding(GroundingOutcome.GROUNDED)
+
+        with patch("aura.commands.ask.verify_answer_grounded", check):
+            await _invoke_ask(interaction, "any question")
+
+        check.assert_not_awaited()
+        args, _ = interaction.followup.send.call_args
+        assert "don't have" in args[0].lower() or "no information" in args[0].lower()
+
+    async def test_a_failed_synthesis_still_shows_the_generic_error(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        # Not the grounding message: synthesis failing and the check failing are
+        # different situations and must stay distinguishable to the user.
+        await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            content="a relevant fact",
+        )
+        settings = _fake_settings(
+            similarity_threshold=0.0, grounding_check_model="openrouter/other/vendor"
+        )
+        interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
+
+        with (
+            patch("aura.commands.ask.synthesize_answer", AsyncMock(return_value=None)),
+            patch(
+                "aura.commands.ask.verify_answer_grounded",
+                _grounding(GroundingOutcome.CHECK_FAILED),
+            ),
+        ):
+            await _invoke_ask(interaction, "a question")
+
+        args, _ = interaction.followup.send.call_args
+        assert "went wrong" in args[0].lower() or "error" in args[0].lower()

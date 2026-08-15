@@ -17,6 +17,8 @@
     "ask_error": "Bir yanıt hazırlanırken bir şeyler ters gitti. Lütfen birazdan tekrar dene.",
     "ask_sources_label": "Kaynaklar",
     "ask_cooldown": "Tekrar sormadan önce lütfen {seconds} saniye bekle.",
+    "ask_grounding_rejected": "Bir yanıt hazırladım ama bu sunucuda kayıtlı bilgiler onu tam olarak desteklemiyor, bu yüzden göndermiyorum. Daha belirli bir soru sormayı dene ya da bir moderatöre danış.",
+    "ask_grounding_unverified": "Bir yanıt hazırladım ama şu anda bu sunucunun bilgileriyle doğrulayamadım — doğrulamadığım bir yanıtı da göndermem. Lütfen birazdan tekrar dene.",
     "config_permission_error": "Bunu yapmak için “Sunucuyu Yönet” iznine ihtiyacın var.",
     "config_no_options_error": "Değiştirilecek bir şey olması için en az “proactive” ya da “extraction” belirt.",
     "config_proactive_enabled": "{channel} kanalında proaktif yanıtlar artık **açık**. Aura emin olduğunda orada kendiliğinden yanıt verebilir.",

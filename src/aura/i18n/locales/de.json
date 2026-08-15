@@ -17,6 +17,8 @@
     "ask_error": "Beim Erstellen einer Antwort ist etwas schiefgelaufen. Bitte versuch es gleich noch einmal.",
     "ask_sources_label": "Quellen",
     "ask_cooldown": "Bitte warte {seconds}s, bevor du erneut fragst.",
+    "ask_grounding_rejected": "Ich habe eine Antwort zusammengestellt, aber die gespeicherten Fakten dieses Servers decken sie nicht vollständig ab — deshalb schicke ich sie nicht. Frag gerne genauer nach oder wende dich an einen Moderator.",
+    "ask_grounding_unverified": "Ich habe eine Antwort zusammengestellt, konnte sie gerade aber nicht gegen die Fakten dieses Servers prüfen — und ungeprüft schicke ich nichts. Bitte versuch es gleich noch einmal.",
     "config_permission_error": "Dafür brauchst du die Berechtigung „Server verwalten“.",
     "config_no_options_error": "Gib mindestens „proactive“ oder „extraction“ an, damit es etwas zu ändern gibt.",
     "config_proactive_enabled": "Proaktive Antworten sind jetzt **aktiviert** in {channel}. Aura meldet sich dort von selbst, wenn sie sich sicher ist.",

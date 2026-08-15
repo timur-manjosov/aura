@@ -17,6 +17,8 @@
     "ask_error": "Une erreur s'est produite en préparant une réponse. Réessaie dans un instant.",
     "ask_sources_label": "Sources",
     "ask_cooldown": "Attends {seconds}s avant de reposer une question.",
+    "ask_grounding_rejected": "J'ai préparé une réponse, mais les faits enregistrés de ce serveur ne la confirment pas entièrement, donc je ne l'envoie pas. Essaie de poser une question plus précise ou demande à un modérateur.",
+    "ask_grounding_unverified": "J'ai préparé une réponse, mais je n'ai pas pu la vérifier avec les faits de ce serveur à l'instant — et je n'envoie pas de réponse non vérifiée. Réessaie dans un moment.",
     "config_permission_error": "Il te faut la permission « Gérer le serveur » pour faire ça.",
     "config_no_options_error": "Indique au moins « proactive » ou « extraction » pour qu'il y ait quelque chose à changer.",
     "config_proactive_enabled": "Les réponses proactives sont maintenant **activées** dans {channel}. Aura peut proposer une réponse là-bas quand elle est sûre d'elle.",

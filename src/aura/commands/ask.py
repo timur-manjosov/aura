@@ -14,6 +14,11 @@ from discord import app_commands
 
 from aura.config import ModelComponent
 from aura.embeddings import find_similar_facts
+from aura.grounding import (
+    ASK_GROUNDING_TIMEOUT_SECONDS,
+    GroundingOutcome,
+    verify_answer_grounded,
+)
 from aura.i18n import t
 from aura.synthesis import synthesize_answer
 
@@ -111,8 +116,32 @@ async def ask_command(interaction: discord.Interaction[AuraClient], question: st
         await interaction.followup.send(t("ask_error", locale))
         return
 
-    embed = discord.Embed(description=_truncate(result.answer, _ANSWER_DISPLAY_LIMIT))
     cited_facts = [fact for fact in relevant_facts if fact.id in result.used_fact_ids]
+
+    # The independent grounding check, and the last thing that runs before this
+    # command speaks. It reads the answer synthesis just wrote against the facts
+    # that answer says it drew from, and returns a verdict only -- nothing it
+    # produces can reach the text below, which is why the embed is built after
+    # it rather than handed to it (see aura.grounding).
+    #
+    # Both refusal branches reply rather than falling silent: someone explicitly
+    # asked, and "I have nothing to say and will not tell you why" is a worse
+    # answer than an honest one. That is the opposite of Trigger 2's policy for
+    # the same two outcomes, deliberately -- see the proactive responder.
+    grounding = await verify_answer_grounded(
+        answer=result.answer,
+        cited_facts=cited_facts,
+        settings=settings,
+        timeout_seconds=ASK_GROUNDING_TIMEOUT_SECONDS,
+    )
+    if grounding is GroundingOutcome.UNGROUNDED:
+        await interaction.followup.send(t("ask_grounding_rejected", locale))
+        return
+    if grounding is GroundingOutcome.CHECK_FAILED:
+        await interaction.followup.send(t("ask_grounding_unverified", locale))
+        return
+
+    embed = discord.Embed(description=_truncate(result.answer, _ANSWER_DISPLAY_LIMIT))
     if cited_facts:
         links = "\n".join(
             f"https://discord.com/channels/{fact.guild_id}/{fact.channel_id}/{fact.message_id}"

@@ -17,6 +17,8 @@
     "ask_error": "Coś poszło nie tak podczas przygotowywania odpowiedzi. Spróbuj ponownie za chwilę.",
     "ask_sources_label": "Źródła",
     "ask_cooldown": "Poczekaj {seconds}s, zanim zapytasz ponownie.",
+    "ask_grounding_rejected": "Przygotowałam odpowiedź, ale zapisane fakty tego serwera nie potwierdzają jej w pełni, więc jej nie wysyłam. Spróbuj zapytać bardziej konkretnie albo zapytaj moderatora.",
+    "ask_grounding_unverified": "Przygotowałam odpowiedź, ale nie udało mi się teraz zweryfikować jej względem faktów tego serwera — a niesprawdzonej odpowiedzi nie wyślę. Spróbuj ponownie za chwilę.",
     "config_permission_error": "Potrzebujesz uprawnienia „Zarządzaj serwerem”, żeby to zrobić.",
     "config_no_options_error": "Podaj przynajmniej „proactive” albo „extraction”, żeby było co zmienić.",
     "config_proactive_enabled": "Proaktywne odpowiedzi są teraz **włączone** na {channel}. Aura może tam sama zaproponować odpowiedź, gdy jest pewna.",

@@ -27,6 +27,16 @@ and any single "no" is silence:
   3. Synthesis returned a well-formed result.
   4. The result's own answers_question self-assessment is true, AND it actually
      cited at least one fact.
+  5. The independent grounding check agrees the cited facts actually support the
+     answer that was written (see aura.grounding). A rejection, a timeout, and
+     any other failure of that check are all silence here -- unlike /aura-ask,
+     which replies honestly in the same two situations, because somebody asked
+     it. Nobody asked Trigger 2, so an unsolicited "I could not verify my own
+     answer" would be exactly the unwanted interruption CLAUDE.md's
+     "deliberately conservative" instruction exists to prevent: it carries no
+     information a reader can use and costs the same attention a real answer
+     would. It is logged at WARNING instead, which is where an operator can see
+     it without a channel having to.
 The numeric Stage 1/2 gates (question-likeness, similarity) and the budget gate
 were already satisfied upstream, computed from the message
 geometry alone and entirely independent of anything the LLM concludes here.
@@ -48,6 +58,11 @@ from aura.config import ModelComponent, Settings
 from aura.db.models import Fact
 from aura.db.proactive_channel_config import is_channel_enabled
 from aura.embeddings import SYNTHESIS_FACT_LIMIT, find_similar_facts
+from aura.grounding import (
+    PROACTIVE_GROUNDING_TIMEOUT_SECONDS,
+    GroundingOutcome,
+    verify_answer_grounded,
+)
 from aura.i18n import DEFAULT_LOCALE, t
 from aura.synthesis import SynthesisResult, synthesize_answer
 
@@ -243,6 +258,33 @@ async def respond_with_synthesis(
     if not result.answers_question or not result.used_fact_ids:
         return ProactiveResponseOutcome(answers_question=result.answers_question, posted=False)
 
+    cited_facts = [fact for fact in relevant_facts if fact.id in result.used_fact_ids]
+
+    # The independent grounding check. It runs before the channel re-check
+    # below rather than after, so the ordering stays the one the module
+    # docstring states -- everything about whether the answer is FIT to post is
+    # settled first, and the freshest-setting read stays the last word before
+    # the send. It also means a moderator who disables the channel mid-check is
+    # still obeyed either way.
+    #
+    # A rejection and a failure are both silence, and both are logged rather
+    # than posted; see the module docstring for why Trigger 2 differs from
+    # /aura-ask here. The escalation slot stays spent, the same documented
+    # direction every other refusal on this path takes.
+    grounding = await verify_answer_grounded(
+        answer=result.answer,
+        cited_facts=cited_facts,
+        settings=settings,
+        timeout_seconds=PROACTIVE_GROUNDING_TIMEOUT_SECONDS,
+    )
+    if grounding in (GroundingOutcome.UNGROUNDED, GroundingOutcome.CHECK_FAILED):
+        logger.warning(
+            "Proactive answer withheld in channel %s: grounding check returned %s",
+            getattr(channel, "id", "<unknown>"),
+            grounding.value,
+        )
+        return ProactiveResponseOutcome(answers_question=result.answers_question, posted=False)
+
     # Freshest-setting check: re-read the channel switch right before posting,
     # not the value the pipeline saw seconds ago, so a moderator who toggles the
     # channel off mid-synthesis is obeyed. The slot stays spent -- that is the
@@ -250,6 +292,10 @@ async def respond_with_synthesis(
     if not await is_channel_enabled(db, channel_id=channel.id):
         return ProactiveResponseOutcome(answers_question=result.answers_question, posted=False)
 
+    # Still relevant_facts, not the cited_facts computed above: _build_proactive_embed
+    # does its own used_fact_ids filtering, and passing the pre-filtered list would
+    # be the same output through a different path. Left exactly as it was, so the
+    # posting behaviour this phase must not regress has no new code in it at all.
     embed = _build_proactive_embed(result, relevant_facts, locale)
     try:
         await channel.send(embed=embed)

@@ -17,6 +17,8 @@
     "ask_error": "Algo deu errado ao montar uma resposta. Tente novamente daqui a pouco.",
     "ask_sources_label": "Fontes",
     "ask_cooldown": "Espere {seconds}s antes de perguntar de novo.",
+    "ask_grounding_rejected": "Montei uma resposta, mas os fatos registrados deste servidor não a sustentam por completo, então não vou enviá-la. Tente perguntar de forma mais específica ou fale com um moderador.",
+    "ask_grounding_unverified": "Montei uma resposta, mas não consegui verificá-la com os fatos deste servidor agora — e não envio uma resposta que não conferi. Tente novamente em instantes.",
     "config_permission_error": "Você precisa da permissão “Gerenciar Servidor” para fazer isso.",
     "config_no_options_error": "Informe pelo menos “proactive” ou “extraction” para ter algo a mudar.",
     "config_proactive_enabled": "As respostas proativas agora estão **ativadas** em {channel}. A Aura pode se antecipar com uma resposta lá quando tiver confiança.",

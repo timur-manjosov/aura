@@ -377,12 +377,16 @@ class TestResolveModel:
         # resolve_model's match statement has no default arm, so a member added
         # to ModelComponent without one silently returns None instead of
         # failing -- and a component whose model resolves to None never runs.
-        # VARIANT_AUDIT is excluded on purpose: it is the one deliberate
-        # exception to "falls back to synthesis_model", covered on its own in
-        # TestVariantModelResolution below.
+        # VARIANT_AUDIT and GROUNDING_CHECK are excluded on purpose: they are
+        # the two deliberate exceptions to "falls back to synthesis_model", each
+        # covered on its own below (TestVariantModelResolution and
+        # TestGroundingCheckModelResolution). Both exist to check another
+        # model's output, so a fallback would silently collapse the check onto
+        # the model it is supposed to be independent of.
+        no_fallback = {ModelComponent.VARIANT_AUDIT, ModelComponent.GROUNDING_CHECK}
         settings = _settings(discord_token="valid-token", synthesis_model="a/b")
         for component in ModelComponent:
-            if component is ModelComponent.VARIANT_AUDIT:
+            if component in no_fallback:
                 continue
             assert settings.resolve_model(component) == "a/b"
 
@@ -491,6 +495,64 @@ class TestVariantModelResolution:
     def test_variant_daily_cap_rejects_negative(self) -> None:
         with pytest.raises(Exception):
             _settings(discord_token="valid-token", variant_daily_cap="-1")
+
+
+class TestGroundingCheckModelResolution:
+    """The second field that deliberately never falls back to synthesis_model."""
+
+    def test_grounding_check_never_falls_back_to_synthesis(self) -> None:
+        # The independence the check exists for is a config property first. If
+        # this fell back, a deployment that set only SYNTHESIS_MODEL would have
+        # the synthesis model checking its own answer and reporting "verified"
+        # -- worse than no check, because it looks like one.
+        settings = _settings(discord_token="valid-token", synthesis_model="a/b")
+        assert settings.grounding_check_model is None
+        assert settings.resolve_model(ModelComponent.GROUNDING_CHECK) is None
+
+    def test_grounding_check_uses_its_own_model_when_set(self) -> None:
+        settings = _settings(
+            discord_token="valid-token",
+            synthesis_model="a/b",
+            grounding_check_model="different/vendor",
+        )
+        assert settings.resolve_model(ModelComponent.GROUNDING_CHECK) == "different/vendor"
+
+    def test_grounding_check_model_env_override_is_read(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DISCORD_TOKEN", "valid-token")
+        monkeypatch.setenv("GROUNDING_CHECK_MODEL", "openrouter/some/checker")
+        assert load_settings().grounding_check_model == "openrouter/some/checker"
+
+    def test_grounding_check_is_not_configured_off_synthesis_model_alone(self) -> None:
+        settings = _settings(
+            discord_token="valid-token",
+            llm_api_key="sk-fake",
+            synthesis_model="openrouter/foo/bar",
+        )
+        assert settings.is_llm_configured(ModelComponent.GROUNDING_CHECK) is False
+
+    def test_grounding_check_needs_the_api_key_like_the_others(self) -> None:
+        settings = _settings(
+            discord_token="valid-token", grounding_check_model="openrouter/foo/bar"
+        )
+        assert settings.is_llm_configured(ModelComponent.GROUNDING_CHECK) is False
+
+    def test_an_existing_dotenv_without_the_key_still_loads(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The deployment-safety half of the no-fallback decision: pydantic-settings
+        # runs with extra="forbid", so a NEW required key would be one thing --
+        # but the risk here is the reverse, an existing .env that predates this
+        # field. It must still start, with the check simply not running.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text(
+            "DISCORD_TOKEN=from-dotenv\nSYNTHESIS_MODEL=openrouter/foo/bar\n", encoding="utf-8"
+        )
+        settings = load_settings()
+        assert settings.grounding_check_model is None
+        assert settings.resolve_model(ModelComponent.SYNTHESIS) == "openrouter/foo/bar"
 
 
 class TestLoadSettings:

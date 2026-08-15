@@ -17,6 +17,8 @@
     "ask_error": "回答の作成中に問題が発生しました。少し時間をおいてもう一度試してください。",
     "ask_sources_label": "情報源",
     "ask_cooldown": "もう一度質問する前に{seconds}秒待ってください。",
+    "ask_grounding_rejected": "回答をまとめましたが、このサーバーに記録されている事実だけでは完全に裏付けられなかったため、送信しません。もう少し具体的に質問するか、モデレーターに確認してください。",
+    "ask_grounding_unverified": "回答をまとめましたが、今このサーバーの事実と照合して検証できませんでした。未検証の回答を送ることはしません。しばらくしてからもう一度お試しください。",
     "config_permission_error": "この操作には「サーバー管理」権限が必要です。",
     "config_no_options_error": "変更する内容がありません。「proactive」か「extraction」のどちらかを指定してください。",
     "config_proactive_enabled": "{channel}でプロアクティブ返信が**オン**になりました。Auraは自信があるときにそこで自発的に答えることがあります。",

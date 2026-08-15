@@ -27,6 +27,7 @@ class ModelComponent(StrEnum):
     SUPERSESSION = "supersession"
     VARIANT = "variant"
     VARIANT_AUDIT = "variant_audit"
+    GROUNDING_CHECK = "grounding_check"
 
 
 class ConfigurationError(Exception):
@@ -732,6 +733,53 @@ class Settings(BaseSettings):
     # Open Items note on a cross-guild shared budget applies here identically.
     variant_daily_cap: int = Field(default=200, ge=0, le=1_000_000)
 
+    # --- The independent grounding check on every answer Aura sends ---------
+    # The last step before /aura-ask replies or the proactive responder posts:
+    # a second model reads the finished answer against the facts it cited and
+    # decides whether they actually support it (see aura.grounding). It never
+    # rewrites anything -- it votes yes or no, and a no is silence.
+    #
+    # DELIBERATELY has NO fallback to synthesis_model, the second field in this
+    # file to make that choice and for the same reason variant_audit_model does:
+    # falling back would let an unconfigured deployment silently check the
+    # synthesis model's output with the synthesis model, which is not a check.
+    # An independent check that quietly stopped being independent is worse than
+    # no check, because it reports the same "verified" either way.
+    #
+    # SHIPPED VALUE: openrouter/openai/gpt-4o-mini, a DIFFERENT VENDOR from the
+    # Anthropic model this project ships for SYNTHESIS_MODEL and PROACTIVE_MODEL.
+    # Like extraction_model and variant_model, this is a CARRIED-OVER CHOICE
+    # rather than a bake-off of its own, and -- as with those two -- that is
+    # stated plainly because two other models in this file WERE chosen by
+    # measurement and a reader would otherwise reasonably assume this one was.
+    # What it is carried from: the fidelity audit in aura.variants_service uses
+    # this exact model for a structurally identical job (an independent,
+    # differently-trained model checking whether one piece of generated text
+    # says only what a source text says), and reports/phase-3a-1b.txt's label
+    # audit used it as this project's standing independent reviewer before that.
+    # The transfer is closer here than extraction_model's was: same task shape,
+    # same "no dropped or added qualifiers" question, same strict JSON, and the
+    # answer under check is short.
+    #
+    # Where the transfer is weakest, since a carried assumption should say where
+    # it might break: the variant audit compares two SENTENCES in the same
+    # language, while this compares a whole multi-sentence answer -- written in
+    # the asker's locale -- against several facts that may be written in a
+    # different one. reports/grounding-check.txt measures exactly that on real
+    # calls, including a German case, rather than assuming it transfers.
+    #
+    # WHEN UNSET, THE CHECK DOES NOT RUN AND ANSWERS ARE SENT AS BEFORE. This is
+    # the one place where this feature is deliberately NOT fail-closed, and the
+    # reasoning is the same one that keeps proactive_confidence_gap in this file
+    # long after it stopped doing anything: Aura runs live on a VPS, and a field
+    # whose absence silences the bot entirely would turn a routine `git pull` into
+    # an outage whose only explanation is that no answer ever arrives. An absent
+    # model is an operator decision not to run the check; a FAILING check is a
+    # different thing entirely and does fail closed (see aura.grounding). To keep
+    # that from being a silent grey area, every send without the check logs a
+    # warning naming this variable.
+    grounding_check_model: str | None = None
+
     log_level: str = "INFO"
 
     @field_validator("discord_token")
@@ -760,11 +808,12 @@ class Settings(BaseSettings):
         configures a single model still has every call site working rather
         than some that silently never run.
 
-        VARIANT_AUDIT is the one deliberate exception to that convention: it
-        has no fallback at all, because falling back to synthesis_model could
-        silently collapse it onto the same model family VARIANT resolves to
-        when both are left unset, defeating the independence the whole check
-        exists for. See variant_audit_model's own comment for the full
+        VARIANT_AUDIT and GROUNDING_CHECK are the two deliberate exceptions to
+        that convention: neither has a fallback at all, because falling back to
+        synthesis_model would silently collapse an "independent" check onto the
+        very model it is supposed to be independent of -- for VARIANT_AUDIT the
+        generator it audits, for GROUNDING_CHECK the synthesis model whose
+        finished answer it checks. See each field's own comment for the full
         reasoning.
         """
         match component:
@@ -780,6 +829,8 @@ class Settings(BaseSettings):
                 return self.variant_model or self.synthesis_model
             case ModelComponent.VARIANT_AUDIT:
                 return self.variant_audit_model
+            case ModelComponent.GROUNDING_CHECK:
+                return self.grounding_check_model
 
     def is_llm_configured(self, component: ModelComponent) -> bool:
         """Whether enough is present to actually call the LLM for component.

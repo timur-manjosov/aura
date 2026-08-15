@@ -21,6 +21,7 @@ from aura.config import Settings
 from aura.db.proactive_channel_config import set_channel_enabled
 from aura.db.repository import init_schema
 from aura.facts_service import add_fact
+from aura.grounding import GroundingOutcome
 from aura.proactive.responder import respond_with_synthesis
 from aura.synthesis import SynthesisResult
 
@@ -464,3 +465,319 @@ class TestLocaleAndContent:
             await _respond(conn, message, _configured_settings())
 
         assert synth.call_args[0][1] == content
+
+
+def _checked_settings(**overrides: object) -> Settings:
+    """Configured settings WITH the independent grounding check switched on."""
+    return _configured_settings(
+        grounding_check_model="openrouter/other/vendor", **overrides
+    )
+
+
+def _grounding(outcome: GroundingOutcome) -> AsyncMock:
+    return AsyncMock(return_value=outcome)
+
+
+class TestGroundingCheck:
+    """Gate 5: the independent check, and the last thing before a public post.
+
+    Trigger 2's policy for a rejection and for a failure is the same one it has
+    for every other "no" on this path -- silence. That deliberately differs from
+    /aura-ask, which replies honestly in both cases: somebody asked it, and
+    nobody asked this. An unsolicited "I could not verify my own answer" carries
+    nothing a reader can use and costs the same attention a real answer would,
+    which is exactly the interruption CLAUDE.md's "deliberately conservative"
+    instruction rules out.
+    """
+
+    async def test_a_grounded_answer_still_posts(self, conn: aiosqlite.Connection) -> None:
+        fact_id = await _seed_fact(conn)
+        await _enable(conn)
+        message = _make_message()
+
+        with (
+            patch(
+                "aura.proactive.responder.synthesize_answer",
+                AsyncMock(return_value=_confident(fact_id)),
+            ),
+            patch(
+                "aura.proactive.responder.verify_answer_grounded",
+                _grounding(GroundingOutcome.GROUNDED),
+            ),
+        ):
+            outcome = await _respond(conn, message, _checked_settings())
+
+        message.channel.send.assert_awaited_once()
+        assert outcome.posted is True
+
+    @pytest.mark.parametrize(
+        "verdict", [GroundingOutcome.UNGROUNDED, GroundingOutcome.CHECK_FAILED]
+    )
+    async def test_a_rejection_or_a_failure_posts_nothing(
+        self, conn: aiosqlite.Connection, verdict: GroundingOutcome
+    ) -> None:
+        fact_id = await _seed_fact(conn)
+        await _enable(conn)
+        message = _make_message()
+
+        with (
+            patch(
+                "aura.proactive.responder.synthesize_answer",
+                AsyncMock(return_value=_confident(fact_id)),
+            ),
+            patch("aura.proactive.responder.verify_answer_grounded", _grounding(verdict)),
+        ):
+            outcome = await _respond(conn, message, _checked_settings())
+
+        message.channel.send.assert_not_called()
+        assert outcome.posted is False
+        # The model DID answer; the trail must not misreport that as a failed
+        # synthesis, which is a different thing a moderator would debug differently.
+        assert outcome.answers_question is True
+
+    @pytest.mark.parametrize(
+        "verdict", [GroundingOutcome.UNGROUNDED, GroundingOutcome.CHECK_FAILED]
+    )
+    async def test_a_withheld_answer_is_logged_rather_than_posted(
+        self, conn: aiosqlite.Connection, caplog: pytest.LogCaptureFixture, verdict: GroundingOutcome
+    ) -> None:
+        # Silence in the channel is correct; silence in the log would make the
+        # refusal indistinguishable from a channel toggled off mid-flight.
+        fact_id = await _seed_fact(conn)
+        await _enable(conn)
+        message = _make_message()
+
+        with caplog.at_level(logging.WARNING):
+            with (
+                patch(
+                    "aura.proactive.responder.synthesize_answer",
+                    AsyncMock(return_value=_confident(fact_id)),
+                ),
+                patch("aura.proactive.responder.verify_answer_grounded", _grounding(verdict)),
+            ):
+                await _respond(conn, message, _checked_settings())
+
+        assert any(verdict.value in record.getMessage() for record in caplog.records)
+
+    async def test_an_unconfigured_check_posts_exactly_as_before(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        fact_id = await _seed_fact(conn)
+        await _enable(conn)
+        message = _make_message()
+
+        with (
+            patch(
+                "aura.proactive.responder.synthesize_answer",
+                AsyncMock(return_value=_confident(fact_id)),
+            ),
+            patch(
+                "aura.proactive.responder.verify_answer_grounded",
+                _grounding(GroundingOutcome.NOT_CONFIGURED),
+            ),
+        ):
+            outcome = await _respond(conn, message, _configured_settings())
+
+        message.channel.send.assert_awaited_once()
+        assert outcome.posted is True
+
+    async def test_the_check_sees_only_cited_facts_and_the_exact_answer(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        cited = await _seed_fact(conn, content="The rules are in #welcome.")
+        uncited = await _seed_fact(conn, content="Welcome messages go to #general.")
+        await _enable(conn)
+        message = _make_message()
+        answer = "Die Regeln stehen in #welcome — „nachzulesen dort“."
+        result = SynthesisResult(answer=answer, used_fact_ids=[cited], answers_question=True)
+
+        check = _grounding(GroundingOutcome.GROUNDED)
+        with (
+            patch("aura.proactive.responder.synthesize_answer", AsyncMock(return_value=result)),
+            patch("aura.proactive.responder.verify_answer_grounded", check),
+        ):
+            await _respond(conn, message, _checked_settings())
+
+        assert check.call_args.kwargs["answer"] == answer
+        passed = [fact.id for fact in check.call_args.kwargs["cited_facts"]]
+        assert passed == [cited]
+        assert uncited not in passed
+        # And the posted text is the same string that was checked.
+        assert message.channel.send.call_args.kwargs["embed"].description == answer
+
+    async def test_no_check_runs_for_an_answer_that_was_never_going_to_post(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # The earlier gates still short-circuit ahead of it, so an unconfident
+        # answer costs nothing extra.
+        fact_id = await _seed_fact(conn)
+        await _enable(conn)
+        message = _make_message()
+        unconfident = SynthesisResult(
+            answer="maybe", used_fact_ids=[fact_id], answers_question=False
+        )
+        check = _grounding(GroundingOutcome.GROUNDED)
+
+        with (
+            patch(
+                "aura.proactive.responder.synthesize_answer",
+                AsyncMock(return_value=unconfident),
+            ),
+            patch("aura.proactive.responder.verify_answer_grounded", check),
+        ):
+            await _respond(conn, message, _checked_settings())
+
+        check.assert_not_awaited()
+
+    async def test_a_channel_disabled_during_the_check_is_still_obeyed(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # The freshest-setting read stays the LAST word before the send, so
+        # inserting the check ahead of it cannot let a stale "on" through.
+        fact_id = await _seed_fact(conn)
+        await _enable(conn)
+        message = _make_message()
+
+        async def disable_then_pass(*_args: object, **_kwargs: object) -> GroundingOutcome:
+            await set_channel_enabled(
+                conn, guild_id=GUILD_A, channel_id=CHANNEL, enabled=False, updated_by_id=2
+            )
+            return GroundingOutcome.GROUNDED
+
+        with (
+            patch(
+                "aura.proactive.responder.synthesize_answer",
+                AsyncMock(return_value=_confident(fact_id)),
+            ),
+            patch(
+                "aura.proactive.responder.verify_answer_grounded",
+                AsyncMock(side_effect=disable_then_pass),
+            ),
+        ):
+            outcome = await _respond(conn, message, _checked_settings())
+
+        message.channel.send.assert_not_called()
+        assert outcome.posted is False
+
+    async def test_the_proactive_path_uses_the_proactive_time_limit(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        from aura.grounding import PROACTIVE_GROUNDING_TIMEOUT_SECONDS
+
+        fact_id = await _seed_fact(conn)
+        await _enable(conn)
+        message = _make_message()
+        check = _grounding(GroundingOutcome.GROUNDED)
+
+        with (
+            patch(
+                "aura.proactive.responder.synthesize_answer",
+                AsyncMock(return_value=_confident(fact_id)),
+            ),
+            patch("aura.proactive.responder.verify_answer_grounded", check),
+        ):
+            await _respond(conn, message, _checked_settings())
+
+        assert (
+            check.call_args.kwargs["timeout_seconds"] == PROACTIVE_GROUNDING_TIMEOUT_SECONDS
+        )
+
+
+class TestNoRegressionWithTheCheckAlwaysPassing:
+    """Trigger 2's whole posting behaviour, re-run with the check configured.
+
+    Mirrors the assertions in TestHardCodeGate and TestDistinguishablePost, run
+    through the new code path: with the check forced to "grounded", nothing
+    about what Aura posts may change.
+    """
+
+    async def test_the_embed_is_still_coloured_authored_and_footered(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        fact_id = await _seed_fact(conn)
+        await _enable(conn)
+        message = _make_message()
+
+        with (
+            patch(
+                "aura.proactive.responder.synthesize_answer",
+                AsyncMock(return_value=_confident(fact_id)),
+            ),
+            patch(
+                "aura.proactive.responder.verify_answer_grounded",
+                _grounding(GroundingOutcome.GROUNDED),
+            ),
+        ):
+            await _respond(conn, message, _checked_settings())
+
+        embed = message.channel.send.call_args.kwargs["embed"]
+        assert embed.color is not None
+        assert embed.author.name
+        assert embed.footer.text
+        assert "discord.com/channels" in "".join(field.value or "" for field in embed.fields)
+
+    async def test_an_overlong_answer_is_still_truncated(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        fact_id = await _seed_fact(conn)
+        await _enable(conn)
+        message = _make_message()
+        huge = SynthesisResult(answer="x" * 5000, used_fact_ids=[fact_id], answers_question=True)
+
+        with (
+            patch("aura.proactive.responder.synthesize_answer", AsyncMock(return_value=huge)),
+            patch(
+                "aura.proactive.responder.verify_answer_grounded",
+                _grounding(GroundingOutcome.GROUNDED),
+            ),
+        ):
+            await _respond(conn, message, _checked_settings())
+
+        assert len(message.channel.send.call_args.kwargs["embed"].description) <= 4096
+
+    async def test_an_uncited_confident_answer_is_still_refused_before_the_check(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        await _seed_fact(conn)
+        await _enable(conn)
+        message = _make_message()
+        no_citation = SynthesisResult(answer="trust me", used_fact_ids=[], answers_question=True)
+        check = _grounding(GroundingOutcome.GROUNDED)
+
+        with (
+            patch(
+                "aura.proactive.responder.synthesize_answer",
+                AsyncMock(return_value=no_citation),
+            ),
+            patch("aura.proactive.responder.verify_answer_grounded", check),
+        ):
+            outcome = await _respond(conn, message, _checked_settings())
+
+        message.channel.send.assert_not_called()
+        assert outcome.posted is False
+        check.assert_not_awaited()
+
+    async def test_a_post_failure_is_still_swallowed_and_reported_unposted(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        fact_id = await _seed_fact(conn)
+        await _enable(conn)
+        message = _make_message()
+        message.channel.send = AsyncMock(
+            side_effect=discord.Forbidden(MagicMock(status=403), "missing permissions")
+        )
+
+        with (
+            patch(
+                "aura.proactive.responder.synthesize_answer",
+                AsyncMock(return_value=_confident(fact_id)),
+            ),
+            patch(
+                "aura.proactive.responder.verify_answer_grounded",
+                _grounding(GroundingOutcome.GROUNDED),
+            ),
+        ):
+            outcome = await _respond(conn, message, _checked_settings())
+
+        assert outcome.posted is False
+        assert outcome.answers_question is True
