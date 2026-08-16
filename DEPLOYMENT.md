@@ -155,6 +155,59 @@ suggests running `/aura-supersede` afterwards, a complement says no
 supersession is needed, and an unrelated verdict means the similarity was a
 false positive. **Aura never acts on any of them by itself.**
 
+## Periodic digest (Phase 3e)
+
+The fourth trigger: a summary of what changed in the knowledge model, posted
+per guild on a cadence a moderator chooses. **It costs nothing to run** — the
+digest is assembled from data Aura already has structured (each fact's
+sentence, category, timestamp and supersession chain), so there is no LLM call
+anywhere in it, no model to configure, and no grounding check needed (nothing
+is generated, so nothing can be invented).
+
+One new `.env` value, and it is optional:
+
+- `DIGEST_CHECK_INTERVAL_SECONDS` (default `3600`) — how often the background
+  scheduler wakes to ask which guilds are due. **Not** how often a digest is
+  posted; that is per-guild state chosen with `/aura-digest`. This value only
+  bounds how late a due digest can be.
+
+Nothing else changes for an existing deployment: a `.env` that predates this
+phase starts cleanly, and the two new tables (`digest_config`, `digest_runs`)
+are created at startup by the usual `CREATE TABLE IF NOT EXISTS` — no
+migration, nothing to run by hand, no data to move.
+
+**`/aura-digest`** is the opt-in, mod-gated on `manage_guild` like every other
+Aura configuration command. A server with no setting gets no digests at all.
+
+    /aura-digest channel:#announcements interval:Weekly   # turn it on
+    /aura-digest interval:Daily                           # change only the cadence
+    /aura-digest enabled:False                            # stop; channel/interval kept
+
+Every option is optional and they compose: anything not named keeps its
+current value. Cadences offered are daily, weekly, every two weeks and every
+30 days. If Aura cannot post in the chosen channel (it needs **Send Messages**
+and **Embed Links**), the confirmation says so immediately rather than leaving
+the first missing digest to explain it a week later.
+
+Operational behaviour worth knowing before the first one arrives:
+
+- **The first digest covers what changes from the moment it is switched on**,
+  not the server's history — it will not repost the existing knowledge model.
+  It therefore arrives one interval after setup, not immediately.
+- **A period with nothing new posts nothing.** Silence means "nothing changed",
+  not "broken". The schedule still advances, so the cadence stays regular.
+- **Downtime is caught up exactly once.** A container that was off across a due
+  window posts one digest covering everything since the last one when it comes
+  back — never one per missed week, and never nothing. The schedule lives in
+  the database (`digest_runs`), so a restart resumes mid-interval with no
+  recovery step.
+- **A failed post is retried, not skipped.** If the channel is gone or Aura
+  cannot post, the window stays open and the next hourly check tries again;
+  fixing the channel delivers the digest that was missed, in full.
+- Re-enabling after a pause does not replay the silent period.
+
+Troubleshooting is in the checklist below.
+
 ## Restart policy: what `unless-stopped` actually guarantees
 
 Both Aura and Epiphyte use `restart: unless-stopped`. This **does**
@@ -187,6 +240,18 @@ again.
   `SUPERSESSION_DAILY_CAP` is spent for the day, no supersession model
   resolves, or the call failed — all three degrade to the plain hint by
   design. `docker logs aura-aura-1 | grep -i "judge"` distinguishes them.
+- **No digest ever arrives:** in order of likelihood — the guild was never
+  opted in (`/aura-digest channel:#…`), the first interval has not elapsed yet
+  (it never posts immediately), nothing changed in the period (an empty digest
+  is deliberately not posted), or Aura cannot post in the chosen channel.
+  `docker logs aura-aura-1 | grep -i digest` distinguishes all four: the
+  scheduler logs a line for a skipped-empty window and a warning for an
+  unavailable channel.
+- **A digest arrived twice:** should be impossible — the window is claimed
+  atomically before anything is sent. If it happens, check that only one
+  container is live on the token (below); two processes sharing the same
+  database file are still safe, but two processes on two *different* databases
+  are not.
 - **Suspect two instances are live on the same token:** check
   `docker logs aura-aura-1 | grep -i identify` for gateway resume/identify
   conflicts, and confirm no local ThinkPad process is running (see step 6).

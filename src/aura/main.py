@@ -14,6 +14,7 @@ from fastembed import TextEmbedding
 from aura.commands import (
     register_ask_command,
     register_config_command,
+    register_digest_command,
     register_fact_commands,
     register_pending_command,
     register_proactive_commands,
@@ -23,6 +24,7 @@ from aura.config import ConfigurationError, ModelComponent, Settings, load_setti
 from aura.db import init_schema
 from aura.db.pending_facts import verify_pending_facts_schema
 from aura.db.proactive_signals import OutdatedDiagnosticTableError, verify_signal_schema
+from aura.digest import ClientDigestGateway, run_digest_scheduler
 from aura.extraction import (
     create_fact_worthiness_detector,
     handle_extraction_message,
@@ -52,10 +54,15 @@ class AuraClient(discord.Client):
         # they answer different questions and are calibrated against different
         # thresholds (see aura.extraction.fact_worthiness).
         self.fact_worthiness_detector: QuestionDetector | None = None
-        # The one background task in the process: it closes extraction batches
-        # whose window has expired. Held so close() can stop it before the
-        # database connection it uses goes away.
+        # The two background tasks in the process, both held so close() can stop
+        # them before the database connection they use goes away: the extraction
+        # sweeper closes batches whose window has expired (Phase 3a-2), and the
+        # digest scheduler posts periodic summaries whose interval has elapsed
+        # (Phase 3e). Separate tasks rather than one shared timer -- they run on
+        # completely different cadences (seconds vs. an hour), and a failure in
+        # either must not be able to stop the other.
         self.extraction_sweeper: asyncio.Task[None] | None = None
+        self.digest_scheduler: asyncio.Task[None] | None = None
         # Built once in setup_hook rather than per message: it is derived
         # entirely from settings, and validating it on every incoming message
         # would be work with an identical answer every time.
@@ -170,12 +177,32 @@ class AuraClient(discord.Client):
             run_extraction_sweeper(self.db, self.embedding_model, settings=self.settings)
         )
 
+        # Phase 3e's periodic digest, the project's second background task and
+        # the first that posts on a schedule rather than in reaction to a
+        # message. Logged separately from the sweeper for the same reason the
+        # judgement call is logged separately from extraction: it is an
+        # independent mechanism with an independent opt-in, and an operator
+        # reading a container log should see whether it is running without
+        # inferring it from another line.
+        self.digest_scheduler = asyncio.create_task(
+            run_digest_scheduler(
+                self.db, ClientDigestGateway(self), settings=self.settings
+            )
+        )
+        logger.info(
+            "Digest scheduler ready: checking every %.0fs for guilds whose interval has "
+            "elapsed (posts only in guilds configured via /aura-digest, and never posts "
+            "an empty digest)",
+            self.settings.digest_check_interval_seconds,
+        )
+
         register_fact_commands(self.tree)
         register_ask_command(self.tree)
         register_proactive_commands(self.tree)
         register_config_command(self.tree)
         register_supersede_command(self.tree)
         register_pending_command(self.tree)
+        register_digest_command(self.tree)
 
         # Global sync; Discord can take up to an hour to propagate new or
         # changed commands globally. Sync to a specific guild instead
@@ -183,21 +210,24 @@ class AuraClient(discord.Client):
         await self.tree.sync()
 
     async def close(self) -> None:
-        """Stop the sweeper, then close the database, then hand off to discord.py.
+        """Stop both background tasks, then close the database, then hand off to discord.py.
 
-        The sweeper is stopped and awaited BEFORE the connection it uses is
-        closed. Closing first would let an in-flight sweep hit a closed
-        connection and log an exception on the way out of an otherwise clean
-        shutdown -- noise that looks exactly like a real fault when read in a
-        container log after a restart.
+        Each task is stopped and awaited BEFORE the connection it uses is
+        closed. Closing first would let an in-flight sweep or digest hit a
+        closed connection and log an exception on the way out of an otherwise
+        clean shutdown -- noise that looks exactly like a real fault when read
+        in a container log after a restart.
         """
-        if self.extraction_sweeper is not None:
-            self.extraction_sweeper.cancel()
-            # The sweeper only ever ends by cancellation, so suppressing that
-            # one exception here is awaiting it, not swallowing a failure.
+        for task_name in ("extraction_sweeper", "digest_scheduler"):
+            task: asyncio.Task[None] | None = getattr(self, task_name)
+            if task is None:
+                continue
+            task.cancel()
+            # Both tasks only ever end by cancellation, so suppressing that one
+            # exception here is awaiting them, not swallowing a failure.
             with suppress(asyncio.CancelledError):
-                await self.extraction_sweeper
-            self.extraction_sweeper = None
+                await task
+            setattr(self, task_name, None)
         if self.db is not None:
             await self.db.close()
         await super().close()

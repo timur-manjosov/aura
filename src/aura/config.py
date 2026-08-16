@@ -780,6 +780,30 @@ class Settings(BaseSettings):
     # warning naming this variable.
     grounding_check_model: str | None = None
 
+    # --- The periodic digest (CLAUDE.md's fourth trigger) -------------------
+    # How often the background scheduler wakes to ask which guilds are due for a
+    # digest. NOT how often a digest is posted -- that is per-guild state a
+    # moderator picks with /aura-digest (see aura.digest.intervals), and this
+    # value only bounds how late a due digest can be.
+    #
+    # Hourly is chosen against what being wrong in either direction costs, since
+    # nothing here is calibrated against data and nothing needs to be. Too slow
+    # and a digest configured for "daily" could arrive up to an hour off, which
+    # nobody notices in a weekly or daily summary. Too fast and the deployment
+    # pays a handful of indexed reads per guild for nothing -- there is no LLM
+    # call and no API call on a tick where nothing is due, so the floor is not a
+    # cost problem but a pointlessness one. An hour sits comfortably between:
+    # 1/24 of the shortest offered cadence, and 24 wake-ups a day.
+    #
+    # Bounded at both ends for the same reason the proactive cooldown is: the
+    # value is used in arithmetic and in a sleep, and a deployment that sets it
+    # to zero would spin the scheduler task in a tight loop against the
+    # database, while one that sets it to a month would make the shortest digest
+    # interval meaningless.
+    digest_check_interval_seconds: float = Field(
+        default=3600.0, ge=1.0, le=24 * 60 * 60.0, allow_inf_nan=False
+    )
+
     log_level: str = "INFO"
 
     @field_validator("discord_token")

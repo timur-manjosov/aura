@@ -22,6 +22,9 @@ from aura.db.repository import (
     create_fact,
     get_active_facts,
     get_fact_by_id,
+    get_facts_by_ids,
+    get_facts_created_between,
+    get_facts_superseded_between,
     get_linked_facts,
     init_schema,
     link_facts,
@@ -805,3 +808,114 @@ class TestSupersedeFactWithExistingSuccessor:
         assert old_readback is not None
         # Exactly one successor id stuck -- not a corrupted mix of both calls.
         assert old_readback.superseded_by_id in (successor_a.id, successor_b.id)
+
+
+class TestWindowedReads:
+    """The three reads Phase 3e's periodic digest added.
+
+    Their windowing behaviour is exercised in depth against the digest that
+    consumes them (tests/test_digest_builder.py); what is covered here is the
+    data layer's own contract -- status filtering, guild scoping, ordering, and
+    the batching that keeps a long supersession chain from outgrowing SQLite's
+    limit on bound parameters.
+    """
+
+    async def test_created_between_returns_only_active_facts_in_the_window(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        inside = await _make_fact(conn, message_id=1, content="inside")
+        retired = await _make_fact(conn, message_id=2, content="retired")
+        successor = await _make_fact(conn, message_id=3, content="successor")
+        await supersede_fact_with_existing_successor(
+            conn, old_fact_id=retired.id, new_fact_id=successor.id, guild_id=GUILD_A
+        )
+
+        found = await get_facts_created_between(
+            conn, guild_id=GUILD_A, since="2000-01-01T00:00:00.000000+00:00", until="2999-01-01T00:00:00.000000+00:00"
+        )
+
+        assert {fact.id for fact in found} == {inside.id, successor.id}
+
+    async def test_created_between_is_scoped_to_one_guild(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        await _make_fact(conn, guild_id=GUILD_B, message_id=1, content="theirs")
+
+        found = await get_facts_created_between(
+            conn, guild_id=GUILD_A, since="2000-01-01T00:00:00.000000+00:00", until="2999-01-01T00:00:00.000000+00:00"
+        )
+
+        assert found == []
+
+    async def test_superseded_between_returns_only_retired_facts(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        active = await _make_fact(conn, message_id=1, content="still true")
+        retired = await _make_fact(conn, message_id=2, content="no longer true")
+        successor = await _make_fact(conn, message_id=3, content="true now")
+        await supersede_fact_with_existing_successor(
+            conn, old_fact_id=retired.id, new_fact_id=successor.id, guild_id=GUILD_A
+        )
+
+        found = await get_facts_superseded_between(
+            conn, guild_id=GUILD_A, since="2000-01-01T00:00:00.000000+00:00", until="2999-01-01T00:00:00.000000+00:00"
+        )
+
+        assert [fact.id for fact in found] == [retired.id]
+        assert active.id not in {fact.id for fact in found}
+        assert found[0].superseded_by_id == successor.id
+
+    async def test_by_ids_returns_a_mapping_and_omits_what_is_missing(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        first = await _make_fact(conn, message_id=1, content="first")
+        second = await _make_fact(conn, message_id=2, content="second")
+
+        found = await get_facts_by_ids(
+            conn, guild_id=GUILD_A, fact_ids=[first.id, second.id, 999999]
+        )
+
+        assert set(found) == {first.id, second.id}
+        assert found[first.id].content == "first"
+
+    async def test_by_ids_never_crosses_a_guild_boundary(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        theirs = await _make_fact(conn, guild_id=GUILD_B, message_id=1, content="theirs")
+
+        assert await get_facts_by_ids(conn, guild_id=GUILD_A, fact_ids=[theirs.id]) == {}
+
+    async def test_by_ids_with_no_ids_asks_the_database_nothing(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        assert await get_facts_by_ids(conn, guild_id=GUILD_A, fact_ids=[]) == {}
+
+    async def test_by_ids_batches_past_sqlites_bound_parameter_limit(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # One IN clause per ID would be N queries; ONE IN clause with N ids is a
+        # statement SQLite can refuse to prepare (999 parameters on older
+        # builds). Neither is acceptable, so the read chunks -- and this is the
+        # only test that actually crosses the chunk boundary.
+        facts = [
+            await _make_fact(conn, message_id=index, content=f"fact {index}")
+            for index in range(1200)
+        ]
+
+        found = await get_facts_by_ids(
+            conn, guild_id=GUILD_A, fact_ids=[fact.id for fact in facts]
+        )
+
+        assert len(found) == 1200
+        assert found[facts[-1].id].content == "fact 1199"
+
+    async def test_by_ids_tolerates_duplicate_ids(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        only = await _make_fact(conn, message_id=1, content="once")
+
+        found = await get_facts_by_ids(
+            conn, guild_id=GUILD_A, fact_ids=[only.id, only.id, only.id]
+        )
+
+        assert found == {only.id: found[only.id]}

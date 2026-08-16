@@ -424,6 +424,46 @@ async def get_pending_fact(
     return None if row is None else _row_to_pending_fact(row)
 
 
+async def get_milestone_fact_ids(conn: aiosqlite.Connection, *, guild_id: int) -> set[int]:
+    """Return the IDs of this guild's facts that came from a MILESTONE candidate.
+
+    The periodic digest's only use of this table, and the first place the
+    milestone category is read by anything other than the review embed it was
+    written for -- reports/phase-3a-2.txt designed that category explicitly with
+    a later digest in mind, and this is that later.
+
+    **Why the category has to be looked up here at all, rather than read off the
+    fact.** `facts` has no category column, by the same argument schema.sql makes
+    for keeping candidates in their own table: a category is the extraction
+    model's judgement about a sentence, not one of CLAUDE.md's four
+    knowledge-model components, so it stays on the candidate and the confirmed
+    fact keeps only a pointer back to it. The consequence, stated plainly
+    because it is a real limitation rather than an oversight: a fact a moderator
+    typed in by hand through "Add as Aura Fact" was never categorised by
+    anything, so it can never appear in a digest's milestone section, however
+    milestone-like its wording. Only automatically extracted, moderator-
+    confirmed facts can.
+
+    Returns every milestone-derived fact ID for the guild rather than taking a
+    window or a set of IDs to filter by. The set is small -- milestones are the
+    rarest category, and a guild's whole history of them is a handful of
+    integers -- and one unfiltered read that the caller intersects in Python is
+    both cheaper and simpler than passing a window down into a table whose rows
+    are timestamped by when the candidate was staged rather than by when the
+    fact was created.
+    """
+    async with connection_lock(conn):
+        async with conn.execute(
+            """
+            SELECT confirmed_fact_id FROM pending_facts
+            WHERE guild_id = ? AND category = ? AND status = ? AND confirmed_fact_id IS NOT NULL
+            """,
+            (guild_id, FactCategory.MILESTONE, PendingFactStatus.CONFIRMED),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return {int(row[0]) for row in rows}
+
+
 async def confirm_pending_fact(
     conn: aiosqlite.Connection, *, guild_id: int, pending_id: int, resolved_by_id: int
 ) -> Fact:

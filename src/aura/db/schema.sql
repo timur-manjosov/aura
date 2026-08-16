@@ -472,3 +472,114 @@ CREATE TABLE IF NOT EXISTS variant_calls (
 
 CREATE INDEX IF NOT EXISTS idx_variant_calls_guild_day
     ON variant_calls(guild_id, call_day);
+
+-- Phase 3e's periodic digest (CLAUDE.md's FOURTH trigger): where a guild's
+-- digest is posted, how often, and whether it is on at all.
+--
+-- KEYED BY GUILD, unlike its two siblings proactive_channel_config and
+-- extraction_channel_config, which are keyed by channel. That is a deliberate
+-- difference rather than an inconsistency: those two answer "may Aura read /
+-- speak in THIS channel", a property of each channel, and a guild legitimately
+-- has many of them switched on at once. A digest is one summary of one guild's
+-- whole knowledge model, so "which channel does it go to" is a property of the
+-- GUILD with exactly one answer. Keying it by channel would make two digest
+-- channels representable, and nothing downstream would know which of them is
+-- meant.
+--
+-- Same opt-in invariant as both siblings, for the same reason: a guild with NO
+-- row here is OFF, and is_digest_enabled-style reads return "off" for an
+-- unconfigured guild rather than assuming a default. A bot that started posting
+-- unprompted weekly summaries into a channel it picked for itself is precisely
+-- the unwanted interruption CLAUDE.md's "deliberately conservative" instruction
+-- rules out.
+--
+-- enabled_at is the BASELINE for the first digest, and it is why this column
+-- exists at all rather than being derivable from updated_at: without it, a
+-- guild's first digest would either have to cover all of history (which is the
+-- onboarding trigger's job, not this one) or nothing. It is set when digests go
+-- from off (or absent) to on, and deliberately NOT touched by a later change of
+-- channel or interval while they stay on -- see set_digest_config for the
+-- CASE expression that enforces that, and for why re-enabling after a pause
+-- does reset it.
+CREATE TABLE IF NOT EXISTS digest_config (
+    guild_id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL,
+    -- Seconds between digests, stored as the unit every other duration in this
+    -- project uses. The slash command offers a fixed set of choices, so the
+    -- values written here are always one of those; the reader validates anyway
+    -- (see get_enabled_digest_configs), because a hand-edited 0 or negative
+    -- value would otherwise mean "a digest every sweep, forever".
+    interval_seconds INTEGER NOT NULL,
+    digest_enabled INTEGER NOT NULL CHECK (digest_enabled IN (0, 1)),
+    enabled_at TEXT NOT NULL,
+    -- Who last changed it and when, for a moderator auditing why a digest is
+    -- (or isn't) arriving. Not load-bearing; purely diagnostic, exactly as on
+    -- the two channel-config tables above.
+    updated_by_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- The digest's durable bookkeeping: one row per digest window that was actually
+-- evaluated, whatever came of it. This is what makes the schedule survive a
+-- container restart, and it is deliberately the same append-only shape as the
+-- four spend ledgers above rather than a "last_digest_at" column on
+-- digest_config, for two reasons that only an append-only table gives:
+--
+--   * The window a digest covered is a fact about that digest, not about the
+--     guild's current configuration. covered_from/covered_until make "what did
+--     the members of this server actually get told about" answerable months
+--     later, which a single overwritten timestamp cannot.
+--   * A row is CLAIMED before the message is posted, by a guarded INSERT whose
+--     WHERE clause re-checks at write time that no successful run already
+--     covers this window (see try_claim_digest_run). Two sweeps in flight for
+--     one guild -- overlapping ticks, or a second process on the same database
+--     file -- therefore cannot both post. An UPDATE of a single column would be
+--     a check-then-set race with a duplicate weekly post as its prize.
+--
+-- WHY outcome IS A CLOSED SET RATHER THAN A BOOLEAN. The three values are not
+-- three shades of the same thing; two of them advance the schedule and one
+-- deliberately does not:
+--
+--   'posted'        a digest message was sent. The window is consumed.
+--   'skipped_empty' the window was evaluated and had no content, so nothing was
+--                   sent (see CLAUDE.md: no unprompted interruption without
+--                   content). The window is still consumed -- there was nothing
+--                   in it to lose, and advancing keeps the cadence periodic
+--                   instead of firing at an arbitrary moment after the next
+--                   fact lands.
+--   'post_failed'   the row was claimed and then the send failed (channel
+--                   deleted, permission revoked, Discord error). The window is
+--                   NOT consumed: every read that computes "where does the next
+--                   digest start" ignores this outcome, so the next hourly
+--                   check retries the same window rather than silently skipping
+--                   a week's worth of changes.
+--
+-- The one interleaving this shape still loses to is a crash between a failed
+-- send and the write that records the failure, which consumes the window. That
+-- is the conservative direction and the same one every ledger in this file
+-- chose: a missed digest is a missed message, while a double digest is Aura
+-- posting something nobody asked for twice.
+CREATE TABLE IF NOT EXISTS digest_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    -- The half-open window (covered_from, covered_until] this run reported on.
+    -- Fixed-width UTC ISO-8601 (see aura.db.connection.utc_iso), so SQL can
+    -- compare them as text against facts.created_at and facts.superseded_at
+    -- without parsing anything.
+    covered_from TEXT NOT NULL,
+    covered_until TEXT NOT NULL,
+    -- What the window contained, recorded rather than recomputed: the facts
+    -- behind these numbers keep changing after the digest is sent, so the only
+    -- moment this is knowable is now.
+    new_fact_count INTEGER NOT NULL,
+    milestone_count INTEGER NOT NULL,
+    updated_fact_count INTEGER NOT NULL,
+    outcome TEXT NOT NULL CHECK (
+        outcome IN ('posted', 'skipped_empty', 'post_failed')
+    ),
+    ran_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_digest_runs_guild_window
+    ON digest_runs(guild_id, covered_until DESC);

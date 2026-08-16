@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,12 @@ from aura.db.connection import connection_lock, utc_now_iso
 from aura.db.models import Fact, FactStatus
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+
+# How many IDs one `WHERE id IN (...)` may carry. Well under SQLite's own
+# SQLITE_MAX_VARIABLE_NUMBER (999 on builds predating 3.32, far higher since),
+# chosen against the lower bound rather than the installed one so the limit
+# cannot depend on which SQLite a deployment happens to link against.
+_ID_QUERY_CHUNK_SIZE = 500
 
 _FACT_COLUMNS = (
     "id, guild_id, channel_id, message_id, content, embedding, status, "
@@ -398,6 +405,108 @@ async def get_active_facts(conn: aiosqlite.Connection, guild_id: int) -> list[Fa
         ) as cursor:
             rows = await cursor.fetchall()
     return [_row_to_fact(row) for row in rows]
+
+
+async def get_facts_created_between(
+    conn: aiosqlite.Connection, *, guild_id: int, since: str, until: str
+) -> list[Fact]:
+    """Return the facts a guild gained in the half-open window (since, until], oldest first.
+
+    ACTIVE facts only, and that filter carries a decision rather than being a
+    copy of get_active_facts' habit: a fact created inside the window and
+    already superseded before the window closed is not something the server
+    "gained", it is a correction that happened too fast to be worth reporting as
+    news. Leaving it out is what keeps the periodic digest a statement about
+    what is true now (see aura.digest.builder, which makes the same choice on
+    the supersession side for the same reason).
+
+    HALF-OPEN, deliberately: `since` is the previous window's `until`, so a fact
+    created at exactly that instant belongs to the window that already reported
+    it. Closed at the far end so the caller's single `now` bounds the window and
+    a fact written between the query and the run being recorded lands in the
+    next digest instead of falling between the two.
+
+    Both bounds are fixed-width UTC ISO-8601 strings (see
+    aura.db.connection.utc_iso) and are compared as text in SQL, exactly as the
+    proactive cooldown compares its own: that formatting exists precisely so
+    lexicographic order is chronological order, and it keeps a hand-edited
+    timestamp from turning a digest into a parse error.
+    """
+    async with connection_lock(conn):
+        async with conn.execute(
+            f"""
+            SELECT {_FACT_COLUMNS} FROM facts
+            WHERE guild_id = ? AND status = ? AND created_at > ? AND created_at <= ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (guild_id, FactStatus.ACTIVE, since, until),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [_row_to_fact(row) for row in rows]
+
+
+async def get_facts_superseded_between(
+    conn: aiosqlite.Connection, *, guild_id: int, since: str, until: str
+) -> list[Fact]:
+    """Return the facts a guild retired in the half-open window (since, until], oldest first.
+
+    The other half of "what changed", read off the supersession chain the
+    knowledge model has carried since Phase 1b: a fact whose `superseded_at`
+    falls in the window stopped being true during it, and `superseded_by_id`
+    says what replaced it. Nothing is ever deleted, which is exactly why this
+    question is answerable at all.
+
+    Same half-open window and same string comparison as
+    get_facts_created_between, for the same reasons.
+    """
+    async with connection_lock(conn):
+        async with conn.execute(
+            f"""
+            SELECT {_FACT_COLUMNS} FROM facts
+            WHERE guild_id = ? AND status = ? AND superseded_at > ? AND superseded_at <= ?
+            ORDER BY superseded_at ASC, id ASC
+            """,
+            (guild_id, FactStatus.SUPERSEDED, since, until),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [_row_to_fact(row) for row in rows]
+
+
+async def get_facts_by_ids(
+    conn: aiosqlite.Connection, *, guild_id: int, fact_ids: Iterable[int]
+) -> dict[int, Fact]:
+    """Return the requested facts of one guild, keyed by ID; missing IDs are absent.
+
+    Returns a mapping rather than a list because every caller so far is
+    following references (a supersession chain's next link) and asks about one
+    ID at a time after fetching -- handing back a list would make each of them
+    rebuild this dict.
+
+    Batched in chunks rather than issued one query per ID, per CLAUDE.md's
+    Performance section, and chunked rather than sent as one enormous IN clause
+    because SQLite caps how many bound parameters a statement may carry
+    (SQLITE_MAX_VARIABLE_NUMBER, 999 on older builds). A caller walking a long
+    chain must not turn into a query the database refuses to prepare.
+
+    Guild-scoped, like every other read here: a chain that somehow pointed at
+    another guild's fact yields nothing rather than crossing the boundary.
+    """
+    unique_ids = list(dict.fromkeys(fact_ids))
+    facts: dict[int, Fact] = {}
+    for start in range(0, len(unique_ids), _ID_QUERY_CHUNK_SIZE):
+        chunk = unique_ids[start : start + _ID_QUERY_CHUNK_SIZE]
+        placeholders = ", ".join("?" for _ in chunk)
+        async with connection_lock(conn):
+            async with conn.execute(
+                f"SELECT {_FACT_COLUMNS} FROM facts "
+                f"WHERE guild_id = ? AND id IN ({placeholders})",
+                (guild_id, *chunk),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        for row in rows:
+            fact = _row_to_fact(row)
+            facts[fact.id] = fact
+    return facts
 
 
 async def get_linked_facts(conn: aiosqlite.Connection, fact_id: int) -> list[Fact]:

@@ -7,6 +7,7 @@ arrives before startup has finished.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -237,3 +238,63 @@ class TestGateConfiguration:
         # retuning that lands outside the ranges the gate accepts must fail
         # here, at build time, rather than at a deployment's startup.
         assert ProactiveGateConfig.from_settings(_settings())
+
+
+class TestBackgroundTasks:
+    """Both long-lived tasks must be stopped before the connection they use is.
+
+    Closing the database first lets an in-flight sweep or digest hit a closed
+    connection and log an exception on the way out of a clean shutdown -- noise
+    that reads exactly like a real fault in a container log after a restart.
+    Phase 3e added a second task, so this is also the guard against a future
+    third one being created and never cancelled.
+    """
+
+    _BACKGROUND_TASKS = ("extraction_sweeper", "digest_scheduler")
+
+    @pytest.mark.parametrize("attribute", _BACKGROUND_TASKS)
+    def test_a_fresh_client_has_no_background_task_yet(self, attribute: str) -> None:
+        assert getattr(_client(), attribute) is None
+
+    async def test_close_cancels_every_background_task_before_closing_the_database(
+        self,
+    ) -> None:
+        client = _started_client()
+        client.db = AsyncMock()
+        order: list[str] = []
+
+        async def forever(name: str, running: asyncio.Event) -> None:
+            running.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                order.append(name)
+                raise
+
+        sweeper_running, scheduler_running = asyncio.Event(), asyncio.Event()
+        client.extraction_sweeper = asyncio.create_task(
+            forever("extraction_sweeper", sweeper_running)
+        )
+        client.digest_scheduler = asyncio.create_task(
+            forever("digest_scheduler", scheduler_running)
+        )
+        # Both tasks must actually be RUNNING before close(): a task cancelled
+        # before its first step never reaches its own except clause, which would
+        # make the recorded order an artifact of the scheduler rather than of
+        # close()'s own sequencing.
+        await asyncio.gather(sweeper_running.wait(), scheduler_running.wait())
+        client.db.close = AsyncMock(side_effect=lambda: order.append("db"))
+
+        with patch.object(discord.Client, "close", AsyncMock()):
+            await client.close()
+
+        assert order == ["extraction_sweeper", "digest_scheduler", "db"]
+        assert client.extraction_sweeper is None
+        assert client.digest_scheduler is None
+
+    async def test_close_works_before_startup_ever_created_the_tasks(self) -> None:
+        # A process that fails during setup_hook still gets closed.
+        client = _client()
+
+        with patch.object(discord.Client, "close", AsyncMock()):
+            await client.close()

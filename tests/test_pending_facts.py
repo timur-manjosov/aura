@@ -27,6 +27,7 @@ from aura.db.pending_facts import (
     confirm_pending_fact,
     count_pending_facts,
     discard_pending_fact,
+    get_milestone_fact_ids,
     get_pending_fact,
     get_pending_facts,
     record_relationship_judgement,
@@ -781,3 +782,112 @@ class TestSchemaMigration:
             await conn.execute(
                 "UPDATE pending_facts SET relationship = 'whatever' WHERE id = 1"
             )
+
+
+class TestMilestoneFactIds:
+    """The lookup Phase 3e's digest uses to find its highlighted section.
+
+    `facts` carries no category column -- a category is the extraction model's
+    judgement about a sentence, not one of CLAUDE.md's four knowledge-model
+    components -- so "which facts are milestones" is answerable only by looking
+    back at the candidate each fact was confirmed from. That indirection is the
+    thing worth testing: every way a fact can exist WITHOUT a milestone
+    candidate behind it must be absent from the result.
+    """
+
+    async def test_a_confirmed_milestone_is_reported(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        candidate = await _stage(conn, category=FactCategory.MILESTONE)
+        assert candidate is not None
+        fact = await confirm_pending_fact(
+            conn, guild_id=GUILD_A, pending_id=candidate.id, resolved_by_id=MOD_A
+        )
+
+        assert await get_milestone_fact_ids(conn, guild_id=GUILD_A) == {fact.id}
+
+    @pytest.mark.parametrize(
+        "category",
+        [category for category in FactCategory if category is not FactCategory.MILESTONE],
+    )
+    async def test_no_other_category_is_reported(
+        self, conn: aiosqlite.Connection, category: FactCategory
+    ) -> None:
+        candidate = await _stage(conn, category=category)
+        assert candidate is not None
+        await confirm_pending_fact(
+            conn, guild_id=GUILD_A, pending_id=candidate.id, resolved_by_id=MOD_A
+        )
+
+        assert await get_milestone_fact_ids(conn, guild_id=GUILD_A) == set()
+
+    async def test_an_unreviewed_milestone_candidate_is_not_reported(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # It has no fact yet, so there is nothing for a digest to point at.
+        await _stage(conn, category=FactCategory.MILESTONE)
+
+        assert await get_milestone_fact_ids(conn, guild_id=GUILD_A) == set()
+
+    async def test_a_discarded_milestone_candidate_is_not_reported(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        candidate = await _stage(conn, category=FactCategory.MILESTONE)
+        assert candidate is not None
+        await discard_pending_fact(
+            conn, guild_id=GUILD_A, pending_id=candidate.id, resolved_by_id=MOD_A
+        )
+
+        assert await get_milestone_fact_ids(conn, guild_id=GUILD_A) == set()
+
+    async def test_a_hand_entered_fact_can_never_be_a_milestone(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # The documented limitation: "Add as Aura Fact" writes a fact with no
+        # candidate behind it, so nothing ever categorised it.
+        await create_fact(
+            conn,
+            guild_id=GUILD_A,
+            channel_id=CHANNEL,
+            message_id=77,
+            content="We just hit 1000 members!",
+            embedding=EMBEDDING,
+        )
+
+        assert await get_milestone_fact_ids(conn, guild_id=GUILD_A) == set()
+
+    async def test_another_guilds_milestones_are_never_reported(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        candidate = await _stage(conn, guild_id=GUILD_B, category=FactCategory.MILESTONE)
+        assert candidate is not None
+        await confirm_pending_fact(
+            conn, guild_id=GUILD_B, pending_id=candidate.id, resolved_by_id=MOD_A
+        )
+
+        assert await get_milestone_fact_ids(conn, guild_id=GUILD_A) == set()
+        assert len(await get_milestone_fact_ids(conn, guild_id=GUILD_B)) == 1
+
+    async def test_several_milestones_all_come_back(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        expected = set()
+        for message_id in range(3):
+            candidate = await _stage(
+                conn,
+                message_id=message_id,
+                content=f"The server reached {message_id}00 members.",
+                category=FactCategory.MILESTONE,
+            )
+            assert candidate is not None
+            fact = await confirm_pending_fact(
+                conn, guild_id=GUILD_A, pending_id=candidate.id, resolved_by_id=MOD_A
+            )
+            expected.add(fact.id)
+
+        assert await get_milestone_fact_ids(conn, guild_id=GUILD_A) == expected
+
+    async def test_a_guild_with_no_candidates_at_all_gets_an_empty_set(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        assert await get_milestone_fact_ids(conn, guild_id=GUILD_A) == set()
