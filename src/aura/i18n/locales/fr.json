@@ -119,5 +119,21 @@
     "digest_changes_label": "Mis à jour ({count})",
     "digest_change_collapsed": "(+{count} étape(s) intermédiaire(s))",
     "digest_more_items": "…et {count} de plus.",
-    "digest_footer": "Récapitulatif automatique de ce que sait Aura, publié {interval}. Un modérateur peut le modifier ou l'arrêter avec /aura-digest."
+    "digest_footer": "Récapitulatif automatique de ce que sait Aura, publié {interval}. Un modérateur peut le modifier ou l'arrêter avec /aura-digest.",
+    "onboarding_permission_error": "Il te faut la permission Gérer le serveur pour faire cela.",
+    "onboarding_no_options_error": "Indique au moins l'une des options `channel` ou `enabled` pour changer quelque chose.",
+    "onboarding_channel_required": "Choisis d'abord un salon, par exemple /aura-onboarding channel:#bienvenue.",
+    "onboarding_already_off": "Les messages de bienvenue sont déjà désactivés sur ce serveur.",
+    "onboarding_enabled": "Les messages de bienvenue sont maintenant **activés** dans {channel}. Le prochain membre qui rejoint verra un résumé de ce qui est actif en ce moment.",
+    "onboarding_updated": "Réglages de bienvenue mis à jour : publication désormais dans {channel}.",
+    "onboarding_disabled": "Les messages de bienvenue sont maintenant **désactivés**. Le salon est conservé pour une réactivation.",
+    "onboarding_permission_warning": "⚠️ Aura ne peut pas publier dans {channel} pour l'instant (il lui faut Envoyer des messages et Intégrer des liens), donc les nouveaux membres ne recevront pas de message de bienvenue tant que ce ne sera pas corrigé.",
+    "onboarding_title": "Bienvenue ! Voici ce qui est actif sur ce serveur en ce moment",
+    "onboarding_intro": "Un résumé des connaissances actuelles d'Aura, condensé pour les nouveaux membres.",
+    "onboarding_rules_label": "Règles ({count})",
+    "onboarding_status_label": "État actuel ({count})",
+    "onboarding_other_label": "À savoir aussi ({count})",
+    "onboarding_more_items": "…et {count} de plus.",
+    "onboarding_capped_note": "{count} fait(s) actif(s) de plus ne sont pas affichés ici.",
+    "onboarding_footer": "Résumé d'Aura de ce qui est actif ici. Demande à tout moment avec /aura-ask."
 }

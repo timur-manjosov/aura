@@ -119,5 +119,21 @@
     "digest_changes_label": "Aktualisiert ({count})",
     "digest_change_collapsed": "(+{count} Zwischenschritt(e))",
     "digest_more_items": "…und {count} weitere.",
-    "digest_footer": "Automatische Übersicht von Auras Wissen, {interval}. Moderatoren können sie mit /aura-digest ändern oder abschalten."
+    "digest_footer": "Automatische Übersicht von Auras Wissen, {interval}. Moderatoren können sie mit /aura-digest ändern oder abschalten.",
+    "onboarding_permission_error": "Dafür brauchst du die Berechtigung „Server verwalten“.",
+    "onboarding_no_options_error": "Gib mindestens eine der Optionen `channel` oder `enabled` an, damit sich etwas ändert.",
+    "onboarding_channel_required": "Wähle zuerst einen Kanal, z. B. /aura-onboarding channel:#willkommen.",
+    "onboarding_already_off": "Die Willkommens-Zusammenfassung ist für diesen Server bereits deaktiviert.",
+    "onboarding_enabled": "Die Willkommens-Zusammenfassung ist jetzt **aktiv** in {channel}. Das nächste neue Mitglied sieht dort eine Zusammenfassung dessen, was gerade aktiv ist.",
+    "onboarding_updated": "Einstellungen der Willkommens-Zusammenfassung geändert: erscheint jetzt in {channel}.",
+    "onboarding_disabled": "Die Willkommens-Zusammenfassung ist jetzt **deaktiviert**. Der Kanal bleibt gespeichert, falls du sie wieder einschaltest.",
+    "onboarding_permission_warning": "⚠️ Aura kann derzeit nicht in {channel} schreiben (nötig sind „Nachrichten senden“ und „Links einbetten“), deshalb bekommen neue Mitglieder dort bis auf Weiteres keine Willkommens-Zusammenfassung.",
+    "onboarding_title": "Willkommen! Das gilt gerade auf diesem Server",
+    "onboarding_intro": "Eine Zusammenfassung von Auras aktuellem Wissen, verdichtet für neue Mitglieder.",
+    "onboarding_rules_label": "Regeln ({count})",
+    "onboarding_status_label": "Aktueller Stand ({count})",
+    "onboarding_other_label": "Außerdem wissenswert ({count})",
+    "onboarding_more_items": "…und {count} weitere.",
+    "onboarding_capped_note": "{count} weitere aktive Fakten werden hier nicht angezeigt.",
+    "onboarding_footer": "Auras Zusammenfassung dessen, was hier gerade aktiv ist. Frage jederzeit mit /aura-ask nach."
 }

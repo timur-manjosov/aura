@@ -583,3 +583,61 @@ CREATE TABLE IF NOT EXISTS digest_runs (
 
 CREATE INDEX IF NOT EXISTS idx_digest_runs_guild_window
     ON digest_runs(guild_id, covered_until DESC);
+
+-- Per-guild configuration for onboarding (CLAUDE.md's THIRD trigger): which
+-- channel a new member's summary of the current knowledge model is posted
+-- into, and whether it runs at all. Keyed by guild, not by channel, for
+-- exactly the reason digest_config above is: "where does this server's
+-- onboarding message go" is one question about one server with exactly one
+-- answer, not a per-channel switch many channels could hold at once.
+--
+-- A guild with no row is OFF, the same opt-in invariant as every other
+-- configuration table in this project.
+CREATE TABLE IF NOT EXISTS onboarding_config (
+    guild_id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL,
+    onboarding_enabled INTEGER NOT NULL CHECK (onboarding_enabled IN (0, 1)),
+    -- Who last changed it and when, purely diagnostic, exactly as on
+    -- digest_config and both channel-config tables above.
+    updated_by_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- Onboarding's durable bookkeeping: one row per member a summary was actually
+-- sent for, keyed on (guild_id, user_id, joined_at) rather than just
+-- (guild_id, user_id). That is the load-bearing decision, so it is recorded
+-- here rather than only in code:
+--
+--   * A duplicate on_member_join for the SAME join (Discord redelivering the
+--     event after a resumed gateway session, discord.py dispatching twice)
+--     must never post twice. Two concurrent handlers for the same join race
+--     on the same (guild_id, user_id, joined_at) UNIQUE constraint, and only
+--     one wins -- the same shape try_claim_digest_run above uses for the same
+--     reason.
+--   * A member who LEAVES and REJOINS later gets a *different* joined_at from
+--     Discord, and therefore a fresh row and a fresh onboarding message. This
+--     is a deliberate choice, not an oversight: a returning member is, from
+--     Aura's point of view, exactly as context-free as a brand new one --
+--     more so if the server changed while they were away -- so the same
+--     "here is what's currently true" summary is exactly as useful the second
+--     time. See reports/phase-3d.txt for the reasoning written out in full.
+--
+-- send_day is denormalized from sent_at (the UTC calendar day, see
+-- aura.db.connection.utc_day) so the per-guild daily cap below is one indexed
+-- equality lookup rather than a range scan re-parsed on every join --
+-- mirroring escalation_day on proactive_escalations above, for the same
+-- reason: a mass-join event (a raid, a partnership's invite spike) must not
+-- flood the onboarding channel with one embed per arriving member.
+CREATE TABLE IF NOT EXISTS onboarding_sends (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    joined_at TEXT NOT NULL,
+    send_day TEXT NOT NULL,
+    fact_count INTEGER NOT NULL,
+    sent_at TEXT NOT NULL,
+    UNIQUE (guild_id, user_id, joined_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_onboarding_sends_guild_day
+    ON onboarding_sends(guild_id, send_day);

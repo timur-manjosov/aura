@@ -119,5 +119,21 @@
     "digest_changes_label": "Actualizado ({count})",
     "digest_change_collapsed": "(+{count} paso(s) intermedio(s))",
     "digest_more_items": "…y {count} más.",
-    "digest_footer": "Resumen automático de lo que sabe Aura, publicado {interval}. Un moderador puede cambiarlo o detenerlo con /aura-digest."
+    "digest_footer": "Resumen automático de lo que sabe Aura, publicado {interval}. Un moderador puede cambiarlo o detenerlo con /aura-digest.",
+    "onboarding_permission_error": "Necesitas el permiso Gestionar servidor para hacer eso.",
+    "onboarding_no_options_error": "Indica al menos una de las opciones `channel` o `enabled` para cambiar algo.",
+    "onboarding_channel_required": "Elige primero un canal, por ejemplo /aura-onboarding channel:#bienvenida.",
+    "onboarding_already_off": "Los mensajes de bienvenida ya están desactivados en este servidor.",
+    "onboarding_enabled": "Los mensajes de bienvenida están ahora **activados** en {channel}. El próximo miembro que se una verá un resumen de lo que está activo ahora mismo.",
+    "onboarding_updated": "Ajustes de bienvenida actualizados: se publicarán en {channel}.",
+    "onboarding_disabled": "Los mensajes de bienvenida están ahora **desactivados**. Se conserva el canal por si vuelves a activarlos.",
+    "onboarding_permission_warning": "⚠️ Aura no puede publicar en {channel} ahora mismo (necesita Enviar mensajes e Insertar enlaces), así que los nuevos miembros no recibirán mensaje de bienvenida hasta que se corrija.",
+    "onboarding_title": "¡Bienvenido/a! Esto es lo que está activo ahora en este servidor",
+    "onboarding_intro": "Un resumen del conocimiento actual de Aura, condensado para nuevos miembros.",
+    "onboarding_rules_label": "Normas ({count})",
+    "onboarding_status_label": "Estado actual ({count})",
+    "onboarding_other_label": "También interesa saber ({count})",
+    "onboarding_more_items": "…y {count} más.",
+    "onboarding_capped_note": "{count} hecho(s) activo(s) más no se muestran aquí.",
+    "onboarding_footer": "Resumen de Aura sobre lo que está activo aquí. Pregunta cuando quieras con /aura-ask."
 }

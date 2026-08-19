@@ -119,5 +119,21 @@
     "digest_changes_label": "Güncellendi ({count})",
     "digest_change_collapsed": "(arada +{count} adım)",
     "digest_more_items": "…ve {count} tane daha.",
-    "digest_footer": "Aura'nın bildiklerinin otomatik özeti, {interval} yayınlanır. Bir moderatör /aura-digest ile değiştirebilir veya durdurabilir."
+    "digest_footer": "Aura'nın bildiklerinin otomatik özeti, {interval} yayınlanır. Bir moderatör /aura-digest ile değiştirebilir veya durdurabilir.",
+    "onboarding_permission_error": "Bunun için Sunucuyu Yönet yetkisine ihtiyacın var.",
+    "onboarding_no_options_error": "Bir şeyin değişmesi için `channel` veya `enabled` seçeneklerinden en az birini belirt.",
+    "onboarding_channel_required": "Önce bir kanal seç, örneğin /aura-onboarding channel:#hosgeldin.",
+    "onboarding_already_off": "Karşılama mesajları bu sunucuda zaten kapalı.",
+    "onboarding_enabled": "Karşılama mesajları artık {channel} kanalında **açık**. Katılan bir sonraki üye, şu anda geçerli olanların bir özetini görecek.",
+    "onboarding_updated": "Karşılama ayarları güncellendi: artık {channel} kanalında yayınlanıyor.",
+    "onboarding_disabled": "Karşılama mesajları artık **kapalı**. Kanal, tekrar açtığında kullanılmak üzere saklanıyor.",
+    "onboarding_permission_warning": "⚠️ Aura şu anda {channel} kanalına yazamıyor (Mesaj Gönderme ve Bağlantı Yerleştirme gerekli), bu düzeltilene kadar yeni üyeler karşılama mesajı almayacak.",
+    "onboarding_title": "Hoş geldin! Bu sunucuda şu anda geçerli olanlar",
+    "onboarding_intro": "Aura'nın güncel bilgisinin yeni üyeler için özetlenmiş hâli.",
+    "onboarding_rules_label": "Kurallar ({count})",
+    "onboarding_status_label": "Güncel durum ({count})",
+    "onboarding_other_label": "Bilinmesi faydalı olanlar ({count})",
+    "onboarding_more_items": "…ve {count} tane daha.",
+    "onboarding_capped_note": "{count} aktif gerçek daha burada gösterilmiyor.",
+    "onboarding_footer": "Aura'nın burada şu anda geçerli olanlara dair özeti. /aura-ask ile istediğin zaman sorabilirsin."
 }

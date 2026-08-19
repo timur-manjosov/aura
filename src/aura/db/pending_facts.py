@@ -464,6 +464,43 @@ async def get_milestone_fact_ids(conn: aiosqlite.Connection, *, guild_id: int) -
     return {int(row[0]) for row in rows}
 
 
+async def get_confirmed_fact_categories(
+    conn: aiosqlite.Connection, *, guild_id: int
+) -> dict[int, FactCategory]:
+    """Return every guild's confirmed fact ID mapped to the category it was extracted as.
+
+    A generalisation of get_milestone_fact_ids to the full FactCategory
+    vocabulary, added for onboarding's category-priority ordering (rules and
+    status changes first, milestones excluded entirely -- see
+    aura.onboarding.builder) rather than folded into that function, to avoid
+    touching the digest's already-shipped read path for an unrelated feature.
+
+    The same limitation applies here as there, restated because it matters
+    just as much for a caller reading a full category map as for one reading
+    only the milestone slice: a fact a moderator typed in by hand through "Add
+    as Aura Fact" was never categorised by anything, so it is simply absent
+    from the returned mapping. Callers must treat a missing key as
+    "uncategorised", not as an error or as evidence the fact does not exist.
+
+    Returns every confirmed fact's category for the guild rather than taking a
+    window or a set of IDs to filter by, for the same reasoning
+    get_milestone_fact_ids gives: the data volume this project targets makes
+    one unfiltered read cheaper and simpler than passing a window into a table
+    timestamped by when the candidate was staged rather than by when the fact
+    was created.
+    """
+    async with connection_lock(conn):
+        async with conn.execute(
+            """
+            SELECT confirmed_fact_id, category FROM pending_facts
+            WHERE guild_id = ? AND status = ? AND confirmed_fact_id IS NOT NULL
+            """,
+            (guild_id, PendingFactStatus.CONFIRMED),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return {int(row[0]): FactCategory(row[1]) for row in rows}
+
+
 async def confirm_pending_fact(
     conn: aiosqlite.Connection, *, guild_id: int, pending_id: int, resolved_by_id: int
 ) -> Fact:

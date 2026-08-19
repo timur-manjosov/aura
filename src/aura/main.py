@@ -16,6 +16,7 @@ from aura.commands import (
     register_config_command,
     register_digest_command,
     register_fact_commands,
+    register_onboarding_command,
     register_pending_command,
     register_proactive_commands,
     register_supersede_command,
@@ -33,6 +34,7 @@ from aura.extraction import (
 )
 from aura.i18n import DEFAULT_LOCALE, TranslationLoadError, Translator, get_translator
 from aura.logging_config import configure_logging
+from aura.onboarding import ClientOnboardingGateway, handle_member_join
 from aura.proactive import GraceRegistry, ProactiveGateConfig, QuestionDetector, handle_message
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,12 @@ class AuraClient(discord.Client):
         # either must not be able to stop the other.
         self.extraction_sweeper: asyncio.Task[None] | None = None
         self.digest_scheduler: asyncio.Task[None] | None = None
+        # Onboarding (Phase 3d) has no background task -- it fires once per
+        # on_member_join event rather than on a schedule, so there is nothing
+        # here for close() to cancel. The gateway is still built once in
+        # setup_hook and stored, exactly like the digest's, so a join handler
+        # never constructs a fresh adapter around the same client per member.
+        self.onboarding_gateway: ClientOnboardingGateway | None = None
         # Built once in setup_hook rather than per message: it is derived
         # entirely from settings, and validating it on every incoming message
         # would be work with an identical answer every time.
@@ -196,6 +204,21 @@ class AuraClient(discord.Client):
             self.settings.digest_check_interval_seconds,
         )
 
+        # Phase 3d's onboarding, the project's third trigger and the first
+        # that reacts to a gateway event other than a message -- no background
+        # task, unlike the digest, since on_member_join already IS the
+        # schedule (see aura.onboarding.listener). The gateway is still built
+        # once, here, for the same reason ClientDigestGateway is: constructing
+        # it is cheap but pointless to repeat per member.
+        self.onboarding_gateway = ClientOnboardingGateway(self)
+        logger.info(
+            "Onboarding ready: max %d fact(s) per message, cap %d message(s)/guild/UTC-day "
+            "(posts only in guilds configured via /aura-onboarding, and never posts an "
+            "empty message)",
+            self.settings.onboarding_fact_limit,
+            self.settings.onboarding_daily_cap,
+        )
+
         register_fact_commands(self.tree)
         register_ask_command(self.tree)
         register_proactive_commands(self.tree)
@@ -203,6 +226,7 @@ class AuraClient(discord.Client):
         register_supersede_command(self.tree)
         register_pending_command(self.tree)
         register_digest_command(self.tree)
+        register_onboarding_command(self.tree)
 
         # Global sync; Discord can take up to an hour to propagate new or
         # changed commands globally. Sync to a specific guild instead
@@ -357,6 +381,26 @@ class AuraClient(discord.Client):
             channel_id=after.channel.id, message_id=after.id
         )
 
+    async def on_member_join(self, member: discord.Member) -> None:
+        """Hand a new member's arrival to Phase 3d's onboarding trigger.
+
+        A thin adapter, exactly like on_message above and for the same
+        reason: every decision about whether to post, what to say and how to
+        guard against duplicates lives in aura.onboarding.listener, where it
+        is testable without a gateway connection. Requires the privileged
+        Members intent (see build_intents) or this event never fires at all.
+        """
+        if self.db is None or self.onboarding_gateway is None:
+            # Unreachable in practice -- setup_hook completes before the
+            # gateway starts delivering events -- but a None here would
+            # otherwise become an AttributeError on every single join.
+            logger.warning("Skipping member join: startup has not finished")
+            return
+
+        await handle_member_join(
+            member, db=self.db, gateway=self.onboarding_gateway, settings=self.settings
+        )
+
     async def on_ready(self) -> None:
         """Log a clear, greppable line once the gateway connection is live."""
         logger.info(
@@ -369,13 +413,17 @@ class AuraClient(discord.Client):
 def build_intents() -> discord.Intents:
     """Build the gateway intents Aura requires.
 
-    Message Content Intent is requested here, but it must ALSO be enabled
-    for this bot in the Discord Developer Portal, under
-    Bot > Privileged Gateway Intents. Without both, the client fails to
-    connect with an intent-related error.
+    Message Content Intent and Server Members Intent are both requested here,
+    but BOTH must ALSO be enabled for this bot in the Discord Developer
+    Portal, under Bot > Privileged Gateway Intents. Message Content's absence
+    fails the connection outright with an intent-related error; Members'
+    absence is quieter and easy to miss -- on_member_join (Phase 3d's
+    onboarding trigger) simply never fires, with no error anywhere, and the
+    bot otherwise looks completely healthy.
     """
     intents = discord.Intents.default()
     intents.message_content = True
+    intents.members = True
     return intents
 
 

@@ -119,5 +119,21 @@
     "digest_changes_label": "Updated ({count})",
     "digest_change_collapsed": "(+{count} step(s) in between)",
     "digest_more_items": "…and {count} more.",
-    "digest_footer": "Automatic summary of Aura's knowledge, posted {interval}. A moderator can change or stop it with /aura-digest."
+    "digest_footer": "Automatic summary of Aura's knowledge, posted {interval}. A moderator can change or stop it with /aura-digest.",
+    "onboarding_permission_error": "You need the Manage Server permission to do that.",
+    "onboarding_no_options_error": "Specify at least one of `channel` or `enabled` to change something.",
+    "onboarding_channel_required": "Pick a channel first, e.g. /aura-onboarding channel:#welcome.",
+    "onboarding_already_off": "Onboarding messages are already off for this server.",
+    "onboarding_enabled": "Onboarding messages are now **on** in {channel}. The next member who joins will see a summary of what's currently active here.",
+    "onboarding_updated": "Onboarding settings updated: now posting in {channel}.",
+    "onboarding_disabled": "Onboarding messages are now **off**. The channel is kept for when you turn it back on.",
+    "onboarding_permission_warning": "⚠️ Aura can't post in {channel} right now (it needs Send Messages and Embed Links there), so new members won't get an onboarding message until that's fixed.",
+    "onboarding_title": "Welcome! Here's what's currently active on this server",
+    "onboarding_intro": "A summary of Aura's current knowledge, condensed for new members.",
+    "onboarding_rules_label": "Rules ({count})",
+    "onboarding_status_label": "Current status ({count})",
+    "onboarding_other_label": "Also worth knowing ({count})",
+    "onboarding_more_items": "…and {count} more.",
+    "onboarding_capped_note": "{count} more active fact(s) aren't shown here.",
+    "onboarding_footer": "Aura's summary of what's currently active here. Ask anytime with /aura-ask."
 }

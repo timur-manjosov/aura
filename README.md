@@ -14,7 +14,7 @@ This repository is currently at **Phase 0**: the bot skeleton. It connects to Di
    cp .env.example .env
    ```
 
-   At minimum, set `DISCORD_TOKEN` to a bot token from the [Discord Developer Portal](https://discord.com/developers/applications). Under **Bot > Privileged Gateway Intents**, enable **Message Content Intent** — the bot also enables it in code, but it must be turned on in the portal too, or the bot fails to connect with an intent-related error.
+   At minimum, set `DISCORD_TOKEN` to a bot token from the [Discord Developer Portal](https://discord.com/developers/applications). Under **Bot > Privileged Gateway Intents**, enable **Message Content Intent** and **Server Members Intent** — the bot also enables both in code, but they must be turned on in the portal too. Message Content's absence fails the connection outright; Server Members' absence is quieter — `on_member_join` (the onboarding trigger) simply never fires, with no error anywhere.
 
 2. Build and start the bot:
 

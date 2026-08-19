@@ -804,6 +804,44 @@ class Settings(BaseSettings):
         default=3600.0, ge=1.0, le=24 * 60 * 60.0, allow_inf_nan=False
     )
 
+    # --- Onboarding (CLAUDE.md's third trigger) ------------------------------
+    # The TOTAL number of facts one member's onboarding message may list,
+    # spent in priority order across all three sections (rules, then status
+    # changes, then everything else -- see aura.onboarding.builder). A single
+    # total rather than a per-section cap, because the product decision this
+    # sub-phase makes is about the size of the WHOLE message a brand-new
+    # member is handed, not about how much room any one heading gets: three
+    # sections independently capped at the digest's per-field value of 10
+    # would let a message reach 30 items, which defeats onboarding's own
+    # purpose of orienting someone with zero context rather than overwhelming
+    # them on arrival.
+    #
+    # 15 is chosen as comfortably more than a typical small server's rule set
+    # (rarely more than a handful) plus enough current-status items to be
+    # useful, while staying well short of "wall of text". A server that
+    # outgrows it is exactly the case reports/phase-3d.txt names as the point
+    # where plain category filtering stops being enough and real relevance
+    # judgment (an LLM call) would be justified -- deliberately out of scope
+    # for this sub-phase, and revisit this default if that line is crossed.
+    onboarding_fact_limit: int = Field(default=15, ge=1, le=100)
+
+    # Per-guild, per-UTC-day ceiling on onboarding MESSAGES SENT, mirroring the
+    # shape of proactive_daily_cap and extraction_daily_cap (aura.db.
+    # onboarding_state) but bounding something different: this is not a spend
+    # control (there is no LLM call in the base case, see aura.onboarding.
+    # builder) but a channel-flood control, the direct answer to what happens
+    # on a mass-join event -- a raid, a bot pile-on, a partnership's invite
+    # spike -- where every arriving member would otherwise get their own
+    # embed in the same channel within seconds of each other.
+    #
+    # 20 is generous for organic growth (a small server rarely gains 20
+    # genuine members in a single day) while still bounding an unbounded pile
+    # of joins to a fixed, small number of public posts. Members who join
+    # after the cap is reached get no onboarding message for that guild that
+    # day; there is no catch-up mechanism (see aura.onboarding.listener) since
+    # onboarding has no periodic sweep to retry from, unlike the digest.
+    onboarding_daily_cap: int = Field(default=20, ge=0, le=1_000_000)
+
     log_level: str = "INFO"
 
     @field_validator("discord_token")

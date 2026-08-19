@@ -119,5 +119,21 @@
     "digest_changes_label": "更新（{count}件）",
     "digest_change_collapsed": "（途中に +{count} 段階）",
     "digest_more_items": "…ほか {count} 件。",
-    "digest_footer": "Aura が把握している内容の自動まとめです（{interval}投稿）。モデレーターは /aura-digest で変更・停止できます。"
+    "digest_footer": "Aura が把握している内容の自動まとめです（{interval}投稿）。モデレーターは /aura-digest で変更・停止できます。",
+    "onboarding_permission_error": "この操作には「サーバー管理」権限が必要です。",
+    "onboarding_no_options_error": "変更するには `channel` か `enabled` のいずれかを指定してください。",
+    "onboarding_channel_required": "まずチャンネルを選んでください（例: /aura-onboarding channel:#welcome）。",
+    "onboarding_already_off": "オンボーディングメッセージはこのサーバーではすでにオフです。",
+    "onboarding_enabled": "オンボーディングメッセージを {channel} で**オン**にしました。次に参加するメンバーは、現在有効な内容のまとめを見ることになります。",
+    "onboarding_updated": "オンボーディングの設定を更新しました: {channel} に投稿します。",
+    "onboarding_disabled": "オンボーディングメッセージを**オフ**にしました。チャンネルは次に有効化するときのために保存されています。",
+    "onboarding_permission_warning": "⚠️ Aura は現在 {channel} に投稿できません（「メッセージを送信」と「埋め込みリンク」が必要です）。解決するまで新しいメンバーにオンボーディングメッセージは届きません。",
+    "onboarding_title": "ようこそ！このサーバーで今有効な内容",
+    "onboarding_intro": "Aura が把握している現在の知識を、新しいメンバー向けにまとめたものです。",
+    "onboarding_rules_label": "ルール（{count}）",
+    "onboarding_status_label": "現在の状況（{count}）",
+    "onboarding_other_label": "その他知っておきたいこと（{count}）",
+    "onboarding_more_items": "…ほか {count} 件。",
+    "onboarding_capped_note": "さらに {count} 件のアクティブな事実はここに表示されていません。",
+    "onboarding_footer": "Aura が把握している、ここで現在有効な内容のまとめです。/aura-ask でいつでも質問できます。"
 }

@@ -52,6 +52,13 @@ class TestIntents:
         # detector silently scores nothing, forever.
         assert build_intents().message_content is True
 
+    def test_members_intent_is_requested(self) -> None:
+        # Without it, on_member_join (Phase 3d's onboarding trigger) never
+        # fires at all -- no error, no log line, the bot just silently never
+        # welcomes anyone. Both this and message_content must ALSO be enabled
+        # in the Discord Developer Portal; see build_intents' docstring.
+        assert build_intents().members is True
+
 
 _STARTUP_ATTRIBUTES = (
     "db",
@@ -154,6 +161,58 @@ class TestOnMessage:
         # eagerly in __init__, the same way a restart is meant to leave it:
         # empty, ready, and requiring no recovery step (see aura.proactive.grace).
         assert isinstance(_client().grace_registry, GraceRegistry)
+
+
+def _make_member() -> MagicMock:
+    member = MagicMock(spec=discord.Member)
+    member.id = 42
+    member.bot = False
+    member.guild = MagicMock()
+    member.guild.id = GUILD_A
+    member.joined_at = None
+    return member
+
+
+_ONBOARDING_STARTUP_ATTRIBUTES = ("db", "onboarding_gateway")
+
+
+class TestOnMemberJoin:
+    async def test_a_join_is_handed_to_the_listener_with_the_clients_own_dependencies(
+        self,
+    ) -> None:
+        client = _client()
+        client.db = MagicMock()
+        client.onboarding_gateway = MagicMock()
+        member = _make_member()
+
+        with patch("aura.main.handle_member_join", AsyncMock()) as handler:
+            await client.on_member_join(member)
+
+        handler.assert_awaited_once()
+        args, kwargs = handler.call_args
+        assert args[0] is member
+        assert kwargs["db"] is client.db
+        assert kwargs["gateway"] is client.onboarding_gateway
+        assert kwargs["settings"] is client.settings
+
+    @pytest.mark.parametrize("missing", _ONBOARDING_STARTUP_ATTRIBUTES)
+    async def test_a_join_before_startup_finishes_is_skipped_not_crashed(
+        self, missing: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = _client()
+        client.db = MagicMock()
+        client.onboarding_gateway = MagicMock()
+        setattr(client, missing, None)
+
+        with patch("aura.main.handle_member_join", AsyncMock()) as handler:
+            with caplog.at_level(logging.WARNING):
+                await client.on_member_join(_make_member())
+
+        handler.assert_not_awaited()
+        assert any(record.levelno >= logging.WARNING for record in caplog.records)
+
+    def test_a_fresh_client_has_no_onboarding_gateway_yet(self) -> None:
+        assert _client().onboarding_gateway is None
 
 
 class TestMessageDeleteAndEdit:

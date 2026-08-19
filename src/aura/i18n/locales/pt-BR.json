@@ -119,5 +119,21 @@
     "digest_changes_label": "Atualizado ({count})",
     "digest_change_collapsed": "(+{count} etapa(s) no meio)",
     "digest_more_items": "…e mais {count}.",
-    "digest_footer": "Resumo automático do que Aura sabe, publicado {interval}. Um moderador pode alterar ou parar com /aura-digest."
+    "digest_footer": "Resumo automático do que Aura sabe, publicado {interval}. Um moderador pode alterar ou parar com /aura-digest.",
+    "onboarding_permission_error": "Você precisa da permissão Gerenciar servidor para fazer isso.",
+    "onboarding_no_options_error": "Informe pelo menos uma das opções `channel` ou `enabled` para mudar algo.",
+    "onboarding_channel_required": "Escolha um canal primeiro, por exemplo /aura-onboarding channel:#boas-vindas.",
+    "onboarding_already_off": "As mensagens de boas-vindas já estão desativadas neste servidor.",
+    "onboarding_enabled": "As mensagens de boas-vindas agora estão **ativadas** em {channel}. O próximo membro que entrar verá um resumo do que está ativo agora.",
+    "onboarding_updated": "Configurações de boas-vindas atualizadas: agora publicadas em {channel}.",
+    "onboarding_disabled": "As mensagens de boas-vindas agora estão **desativadas**. O canal fica guardado para quando você reativar.",
+    "onboarding_permission_warning": "⚠️ Aura não consegue publicar em {channel} agora (precisa de Enviar mensagens e Inserir links), então novos membros não receberão a mensagem de boas-vindas até isso ser corrigido.",
+    "onboarding_title": "Bem-vindo(a)! Veja o que está ativo neste servidor agora",
+    "onboarding_intro": "Um resumo do conhecimento atual de Aura, condensado para novos membros.",
+    "onboarding_rules_label": "Regras ({count})",
+    "onboarding_status_label": "Status atual ({count})",
+    "onboarding_other_label": "Também vale saber ({count})",
+    "onboarding_more_items": "…e mais {count}.",
+    "onboarding_capped_note": "Mais {count} fato(s) ativo(s) não aparecem aqui.",
+    "onboarding_footer": "Resumo de Aura sobre o que está ativo aqui. Pergunte quando quiser com /aura-ask."
 }

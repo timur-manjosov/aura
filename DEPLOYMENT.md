@@ -208,6 +208,61 @@ Operational behaviour worth knowing before the first one arrives:
 
 Troubleshooting is in the checklist below.
 
+## Onboarding for new members (Phase 3d)
+
+The third trigger: when a member joins, Aura posts a summary of the currently
+active knowledge model to one configured channel — rules and policies first,
+then current status, then everything else. Milestones are deliberately
+excluded (they are retrospective, not actionable for someone with no
+context). **It also costs nothing to run in the base case**, for the same
+reason the digest does: the summary is assembled from facts already
+structured, so there is no LLM call, no model to configure, and no grounding
+check needed.
+
+Requires the **Server Members Intent** enabled in the Discord Developer
+Portal (see the README) — without it, `on_member_join` never fires and no
+onboarding message is ever posted, with nothing in the logs to say why.
+
+No new `.env` values are required; two optional ones tune it:
+
+- `ONBOARDING_FACT_LIMIT` (default `15`) — the total number of facts one
+  onboarding message may list, spent in priority order across all sections.
+- `ONBOARDING_DAILY_CAP` (default `20`) — the per-guild, per-UTC-day ceiling
+  on onboarding messages *sent*. Not a spend control (there is no LLM call) —
+  a channel-flood control for a raid, a bot pile-on, or an invite spike.
+
+The two new tables (`onboarding_config`, `onboarding_sends`) are created at
+startup the same way as every other phase's — no migration, nothing to run
+by hand.
+
+**`/aura-onboarding`** is the opt-in, mod-gated on `manage_guild`. A server
+with no setting gets no onboarding messages at all.
+
+    /aura-onboarding channel:#welcome    # turn it on
+    /aura-onboarding enabled:False       # stop; channel kept for later
+
+Both options are optional and compose, same as `/aura-digest`. If Aura cannot
+post in the chosen channel, the confirmation says so immediately.
+
+Operational behaviour worth knowing:
+
+- **Posts to a channel, never a DM.** An unsolicited private message to
+  someone who just joined is a stronger interruption than a channel post.
+- **A member who leaves and rejoins gets a fresh message.** Deliberate: a
+  returning member is exactly as context-free as a new one, and Discord gives
+  each join a distinct `joined_at`, which is what the dedup key is built on —
+  so this is not the same case as a duplicate delivery of the *same* join
+  (which is suppressed).
+- **A guild with no eligible active facts yet gets no message.** Same
+  deliberately-conservative stance as everywhere else in Aura: no empty
+  shell of headings.
+- **A failed post is not retried.** Unlike the digest, a join is a one-shot
+  event with no periodic sweep behind it — a moderator who fixes a broken
+  channel gets it right for every join from then on, but the one that failed
+  is not replayed.
+
+Troubleshooting is in the checklist below.
+
 ## Restart policy: what `unless-stopped` actually guarantees
 
 Both Aura and Epiphyte use `restart: unless-stopped`. This **does**
@@ -252,6 +307,17 @@ again.
   container is live on the token (below); two processes sharing the same
   database file are still safe, but two processes on two *different* databases
   are not.
+- **No onboarding message ever arrives:** in order of likelihood — the
+  **Server Members Intent** is not enabled in the Discord Developer Portal
+  (see the README; this fails silently, with no error anywhere), the guild
+  was never opted in (`/aura-onboarding channel:#…`), the guild currently has
+  no eligible active facts (rules, status changes or other non-milestone
+  facts), or Aura cannot post in the chosen channel.
+  `docker logs aura-aura-1 | grep -i onboarding` distinguishes the last three.
+- **An onboarding message arrived twice for the same join:** should be
+  impossible — the send is claimed atomically before anything is posted,
+  keyed on the member's actual join event. A member who left and rejoined
+  getting a second message is expected behaviour, not a bug (see above).
 - **Suspect two instances are live on the same token:** check
   `docker logs aura-aura-1 | grep -i identify` for gateway resume/identify
   conflicts, and confirm no local ThinkPad process is running (see step 6).

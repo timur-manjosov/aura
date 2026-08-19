@@ -119,5 +119,21 @@
     "digest_changes_label": "Zaktualizowane ({count})",
     "digest_change_collapsed": "(+{count} krok(ów) pośrednich)",
     "digest_more_items": "…i {count} więcej.",
-    "digest_footer": "Automatyczne podsumowanie wiedzy Aury, publikowane {interval}. Moderator może je zmienić lub wyłączyć poleceniem /aura-digest."
+    "digest_footer": "Automatyczne podsumowanie wiedzy Aury, publikowane {interval}. Moderator może je zmienić lub wyłączyć poleceniem /aura-digest.",
+    "onboarding_permission_error": "Potrzebujesz uprawnienia Zarządzanie serwerem, aby to zrobić.",
+    "onboarding_no_options_error": "Podaj przynajmniej jedną z opcji `channel` lub `enabled`, aby coś zmienić.",
+    "onboarding_channel_required": "Najpierw wybierz kanał, na przykład /aura-onboarding channel:#powitanie.",
+    "onboarding_already_off": "Wiadomości powitalne są już wyłączone na tym serwerze.",
+    "onboarding_enabled": "Wiadomości powitalne są teraz **włączone** na {channel}. Kolejny dołączający członek zobaczy podsumowanie tego, co jest teraz aktualne.",
+    "onboarding_updated": "Zaktualizowano ustawienia powitania: publikacja teraz na {channel}.",
+    "onboarding_disabled": "Wiadomości powitalne są teraz **wyłączone**. Kanał zostaje zapisany na wypadek ponownego włączenia.",
+    "onboarding_permission_warning": "⚠️ Aura nie może teraz pisać na {channel} (potrzebuje uprawnień Wysyłanie wiadomości i Osadzanie linków), więc nowi członkowie nie dostaną wiadomości powitalnej, dopóki tego nie naprawisz.",
+    "onboarding_title": "Witamy! Oto co obowiązuje teraz na tym serwerze",
+    "onboarding_intro": "Podsumowanie aktualnej wiedzy Aury, skrócone dla nowych członków.",
+    "onboarding_rules_label": "Zasady ({count})",
+    "onboarding_status_label": "Aktualny stan ({count})",
+    "onboarding_other_label": "Warto też wiedzieć ({count})",
+    "onboarding_more_items": "…i {count} więcej.",
+    "onboarding_capped_note": "{count} więcej aktywnych faktów nie jest tu pokazanych.",
+    "onboarding_footer": "Podsumowanie Aury dotyczące tego, co jest tu teraz aktualne. Pytaj kiedy chcesz poleceniem /aura-ask."
 }
