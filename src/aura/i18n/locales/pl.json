@@ -135,5 +135,19 @@
     "onboarding_other_label": "Warto też wiedzieć ({count})",
     "onboarding_more_items": "…i {count} więcej.",
     "onboarding_capped_note": "{count} więcej aktywnych faktów nie jest tu pokazanych.",
-    "onboarding_footer": "Podsumowanie Aury dotyczące tego, co jest tu teraz aktualne. Pytaj kiedy chcesz poleceniem /aura-ask."
+    "onboarding_footer": "Podsumowanie Aury dotyczące tego, co jest tu teraz aktualne. Pytaj kiedy chcesz poleceniem /aura-ask.",
+    "link_permission_error": "Potrzebujesz uprawnienia Zarządzanie serwerem, aby to zrobić.",
+    "link_self_error": "Faktu nie można połączyć z samym sobą.",
+    "link_fact_not_found": "Fakt #{fact_id} nie istnieje na tym serwerze.",
+    "link_fact_not_active": "Fakt #{fact_id} został zastąpiony, więc nie można go połączyć.",
+    "link_fact_superseded": "Fakt #{fact_id} został zastąpiony przez fakt #{successor_id}. Połącz zamiast niego ten.",
+    "link_race_missing_error": "Jeden z tych faktów przed chwilą przestał istnieć. Nic nie zostało połączone.",
+    "link_race_superseded_error": "Ktoś inny przed chwilą zastąpił jeden z tych faktów. Nic nie zostało połączone.",
+    "link_success": "Fakty #{fact_a_id} i #{fact_b_id} są teraz połączone. Od teraz Aura może cytować je razem.",
+    "link_already_linked": "Fakty #{fact_a_id} i #{fact_b_id} były już połączone. Nic nie zostało zmienione.",
+    "link_result_title": "Połączone fakty",
+    "link_fact_label": "Fakt #{fact_id}",
+    "unlink_self_error": "Faktu nie można rozłączyć z samym sobą.",
+    "unlink_success": "Połączenie między faktami #{fact_a_id} i #{fact_b_id} zostało usunięte.",
+    "unlink_not_linked": "Fakty #{fact_a_id} i #{fact_b_id} nie były połączone. Nic nie zostało zmienione."
 }

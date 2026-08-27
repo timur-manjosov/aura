@@ -135,5 +135,19 @@
     "onboarding_other_label": "Also worth knowing ({count})",
     "onboarding_more_items": "…and {count} more.",
     "onboarding_capped_note": "{count} more active fact(s) aren't shown here.",
-    "onboarding_footer": "Aura's summary of what's currently active here. Ask anytime with /aura-ask."
+    "onboarding_footer": "Aura's summary of what's currently active here. Ask anytime with /aura-ask.",
+    "link_permission_error": "You need the Manage Server permission to do that.",
+    "link_self_error": "A fact can't be linked to itself.",
+    "link_fact_not_found": "Fact #{fact_id} doesn't exist in this server.",
+    "link_fact_not_active": "Fact #{fact_id} is superseded, so it can't be linked.",
+    "link_fact_superseded": "Fact #{fact_id} is superseded by fact #{successor_id}. Link that one instead.",
+    "link_race_missing_error": "One of those facts stopped existing just now. Nothing was linked.",
+    "link_race_superseded_error": "One of those facts was superseded by someone else just now. Nothing was linked.",
+    "link_success": "Facts #{fact_a_id} and #{fact_b_id} are now linked. Aura can cite them together from now on.",
+    "link_already_linked": "Facts #{fact_a_id} and #{fact_b_id} were already linked. Nothing was changed.",
+    "link_result_title": "Linked Facts",
+    "link_fact_label": "Fact #{fact_id}",
+    "unlink_self_error": "A fact can't be unlinked from itself.",
+    "unlink_success": "The link between facts #{fact_a_id} and #{fact_b_id} was removed.",
+    "unlink_not_linked": "Facts #{fact_a_id} and #{fact_b_id} weren't linked. Nothing was changed."
 }

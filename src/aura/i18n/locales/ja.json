@@ -135,5 +135,19 @@
     "onboarding_other_label": "その他知っておきたいこと（{count}）",
     "onboarding_more_items": "…ほか {count} 件。",
     "onboarding_capped_note": "さらに {count} 件のアクティブな事実はここに表示されていません。",
-    "onboarding_footer": "Aura が把握している、ここで現在有効な内容のまとめです。/aura-ask でいつでも質問できます。"
+    "onboarding_footer": "Aura が把握している、ここで現在有効な内容のまとめです。/aura-ask でいつでも質問できます。",
+    "link_permission_error": "この操作には「サーバー管理」権限が必要です。",
+    "link_self_error": "ファクトを自分自身にリンクすることはできません。",
+    "link_fact_not_found": "ファクト #{fact_id} はこのサーバーに存在しません。",
+    "link_fact_not_active": "ファクト #{fact_id} は更新済みのため、リンクできません。",
+    "link_fact_superseded": "ファクト #{fact_id} はファクト #{successor_id} に置き換えられました。代わりにそちらをリンクしてください。",
+    "link_race_missing_error": "たった今、いずれかのファクトが存在しなくなりました。リンクは作成されていません。",
+    "link_race_superseded_error": "たった今、別の人がいずれかのファクトを置き換えました。リンクは作成されていません。",
+    "link_success": "ファクト #{fact_a_id} と #{fact_b_id} をリンクしました。今後 Aura はこの2つをまとめて引用できます。",
+    "link_already_linked": "ファクト #{fact_a_id} と #{fact_b_id} はすでにリンクされていました。変更はありません。",
+    "link_result_title": "リンクされたファクト",
+    "link_fact_label": "ファクト #{fact_id}",
+    "unlink_self_error": "ファクトを自分自身からリンク解除することはできません。",
+    "unlink_success": "ファクト #{fact_a_id} と #{fact_b_id} のリンクを解除しました。",
+    "unlink_not_linked": "ファクト #{fact_a_id} と #{fact_b_id} はリンクされていませんでした。変更はありません。"
 }

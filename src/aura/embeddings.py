@@ -42,6 +42,15 @@ EMBEDDING_DTYPE = np.float32
 # per call, while real facts are one distilled sentence each and land nearer
 # ~500 tokens for the whole set. Raising this would widen the worst case
 # faster than it would improve any answer.
+#
+# NOT the whole prompt ceiling since links were wired in. Both triggers now
+# expand this set with the facts a moderator explicitly linked to them, under a
+# second, separate bound (aura.links_service.LINKED_FACT_LIMIT), so a synthesis
+# prompt's real worst case is the two added together. They are separate numbers
+# because they bound different risks: this one stands between a guild's
+# hundreds of active facts and an unbounded prompt, while that one bounds a set
+# that only grows with deliberate moderator effort. See its comment for the
+# arithmetic.
 SYNTHESIS_FACT_LIMIT = 5
 
 

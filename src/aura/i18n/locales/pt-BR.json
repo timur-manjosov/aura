@@ -135,5 +135,19 @@
     "onboarding_other_label": "Também vale saber ({count})",
     "onboarding_more_items": "…e mais {count}.",
     "onboarding_capped_note": "Mais {count} fato(s) ativo(s) não aparecem aqui.",
-    "onboarding_footer": "Resumo de Aura sobre o que está ativo aqui. Pergunte quando quiser com /aura-ask."
+    "onboarding_footer": "Resumo de Aura sobre o que está ativo aqui. Pergunte quando quiser com /aura-ask.",
+    "link_permission_error": "Você precisa da permissão Gerenciar servidor para fazer isso.",
+    "link_self_error": "Um fato não pode ser vinculado a si mesmo.",
+    "link_fact_not_found": "O fato n.º {fact_id} não existe neste servidor.",
+    "link_fact_not_active": "O fato n.º {fact_id} foi substituído, então não pode ser vinculado.",
+    "link_fact_superseded": "O fato n.º {fact_id} foi substituído pelo fato n.º {successor_id}. Vincule esse no lugar dele.",
+    "link_race_missing_error": "Um desses fatos deixou de existir agora mesmo. Nada foi vinculado.",
+    "link_race_superseded_error": "Outra pessoa acabou de substituir um desses fatos. Nada foi vinculado.",
+    "link_success": "Os fatos n.º {fact_a_id} e n.º {fact_b_id} agora estão vinculados. A partir de agora a Aura pode citá-los juntos.",
+    "link_already_linked": "Os fatos n.º {fact_a_id} e n.º {fact_b_id} já estavam vinculados. Nada foi alterado.",
+    "link_result_title": "Fatos vinculados",
+    "link_fact_label": "Fato n.º {fact_id}",
+    "unlink_self_error": "Um fato não pode ser desvinculado de si mesmo.",
+    "unlink_success": "O vínculo entre os fatos n.º {fact_a_id} e n.º {fact_b_id} foi removido.",
+    "unlink_not_linked": "Os fatos n.º {fact_a_id} e n.º {fact_b_id} não estavam vinculados. Nada foi alterado."
 }

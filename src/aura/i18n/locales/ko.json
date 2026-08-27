@@ -135,5 +135,19 @@
     "onboarding_other_label": "그 외 알아두면 좋은 것 ({count})",
     "onboarding_more_items": "…외 {count}건.",
     "onboarding_capped_note": "활성 사실 {count}건이 더 있지만 여기에는 표시되지 않습니다.",
-    "onboarding_footer": "Aura가 정리한, 여기서 지금 활성화된 내용의 요약입니다. /aura-ask로 언제든 물어보세요."
+    "onboarding_footer": "Aura가 정리한, 여기서 지금 활성화된 내용의 요약입니다. /aura-ask로 언제든 물어보세요.",
+    "link_permission_error": "이 작업에는 서버 관리하기 권한이 필요합니다.",
+    "link_self_error": "사실은 자기 자신과 연결할 수 없습니다.",
+    "link_fact_not_found": "이 서버에는 사실 #{fact_id} 이(가) 없습니다.",
+    "link_fact_not_active": "사실 #{fact_id} 은(는) 대체되었으므로 연결할 수 없습니다.",
+    "link_fact_superseded": "사실 #{fact_id} 은(는) 사실 #{successor_id} (으)로 대체되었습니다. 대신 그 사실을 연결하세요.",
+    "link_race_missing_error": "방금 그 사실 중 하나가 사라졌습니다. 아무것도 연결되지 않았습니다.",
+    "link_race_superseded_error": "방금 다른 사람이 그 사실 중 하나를 대체했습니다. 아무것도 연결되지 않았습니다.",
+    "link_success": "사실 #{fact_a_id} 과(와) #{fact_b_id} 이(가) 연결되었습니다. 이제 Aura가 두 사실을 함께 인용할 수 있습니다.",
+    "link_already_linked": "사실 #{fact_a_id} 과(와) #{fact_b_id} 은(는) 이미 연결되어 있었습니다. 변경된 내용이 없습니다.",
+    "link_result_title": "연결된 사실",
+    "link_fact_label": "사실 #{fact_id}",
+    "unlink_self_error": "사실은 자기 자신과의 연결을 해제할 수 없습니다.",
+    "unlink_success": "사실 #{fact_a_id} 과(와) #{fact_b_id} 의 연결을 해제했습니다.",
+    "unlink_not_linked": "사실 #{fact_a_id} 과(와) #{fact_b_id} 은(는) 연결되어 있지 않았습니다. 변경된 내용이 없습니다."
 }

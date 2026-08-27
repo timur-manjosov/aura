@@ -135,5 +135,19 @@
     "onboarding_other_label": "À savoir aussi ({count})",
     "onboarding_more_items": "…et {count} de plus.",
     "onboarding_capped_note": "{count} fait(s) actif(s) de plus ne sont pas affichés ici.",
-    "onboarding_footer": "Résumé d'Aura de ce qui est actif ici. Demande à tout moment avec /aura-ask."
+    "onboarding_footer": "Résumé d'Aura de ce qui est actif ici. Demande à tout moment avec /aura-ask.",
+    "link_permission_error": "Tu as besoin de la permission Gérer le serveur pour faire cela.",
+    "link_self_error": "Un fait ne peut pas être lié à lui-même.",
+    "link_fact_not_found": "Le fait n° {fact_id} n'existe pas sur ce serveur.",
+    "link_fact_not_active": "Le fait n° {fact_id} est remplacé, il ne peut donc pas être lié.",
+    "link_fact_superseded": "Le fait n° {fact_id} a été remplacé par le fait n° {successor_id}. Lie plutôt celui-là.",
+    "link_race_missing_error": "L'un de ces faits vient de disparaître. Rien n'a été lié.",
+    "link_race_superseded_error": "Quelqu'un d'autre vient de remplacer l'un de ces faits. Rien n'a été lié.",
+    "link_success": "Les faits n° {fact_a_id} et n° {fact_b_id} sont désormais liés. Aura peut les citer ensemble à partir de maintenant.",
+    "link_already_linked": "Les faits n° {fact_a_id} et n° {fact_b_id} étaient déjà liés. Rien n'a été modifié.",
+    "link_result_title": "Faits liés",
+    "link_fact_label": "Fait n° {fact_id}",
+    "unlink_self_error": "Un fait ne peut pas être délié de lui-même.",
+    "unlink_success": "Le lien entre les faits n° {fact_a_id} et n° {fact_b_id} a été supprimé.",
+    "unlink_not_linked": "Les faits n° {fact_a_id} et n° {fact_b_id} n'étaient pas liés. Rien n'a été modifié."
 }

@@ -21,6 +21,7 @@ from aura.grounding import (
     verify_answer_grounded,
 )
 from aura.i18n import t
+from aura.links_service import expand_with_linked_facts
 from aura.synthesis import synthesize_answer
 
 if TYPE_CHECKING:
@@ -108,19 +109,30 @@ async def ask_command(interaction: discord.Interaction[AuraClient], question: st
         await interaction.followup.send(t("ask_no_info", locale))
         return
 
+    # CLAUDE.md's fourth knowledge-model component, on the read path: a fact a
+    # moderator deliberately linked to one of these becomes available to cite
+    # too, resolved through any supersession that has happened since. Only the
+    # candidate set widens -- what is actually cited stays the synthesis model's
+    # decision, and the threshold above is untouched, so this can never turn a
+    # question Aura has nothing for into one it answers anyway (an empty
+    # relevant_facts already returned, above).
+    synthesis_facts = await expand_with_linked_facts(
+        db, guild_id=interaction.guild_id, facts=relevant_facts
+    )
+
     # Resolve the model through the one seam every trigger uses; is_llm_configured
     # above already guaranteed this component resolves to a non-empty model.
     model_name = settings.resolve_model(ModelComponent.SYNTHESIS)
     assert model_name is not None  # guaranteed by is_llm_configured() above
     result = await synthesize_answer(
-        relevant_facts,
+        synthesis_facts,
         question,
         locale,
         model=model_name,
         question_channel_name=channel_display_name(interaction.channel, interaction.channel_id),
         question_asked_at=interaction.created_at,
         fact_channel_names=fact_channel_names(
-            interaction.guild, {fact.channel_id for fact in relevant_facts}
+            interaction.guild, {fact.channel_id for fact in synthesis_facts}
         ),
     )
 
@@ -128,7 +140,13 @@ async def ask_command(interaction: discord.Interaction[AuraClient], question: st
         await interaction.followup.send(t("ask_error", locale))
         return
 
-    cited_facts = [fact for fact in relevant_facts if fact.id in result.used_fact_ids]
+    # Filtered against synthesis_facts, not relevant_facts: a fact the model
+    # cited only because a link made it available must still reach the
+    # grounding check below and the source list further down. Narrowing this
+    # back to the similarity hits would hide exactly the citations this phase
+    # exists to produce -- from the check that verifies them, and from the
+    # reader who has to be able to follow them.
+    cited_facts = [fact for fact in synthesis_facts if fact.id in result.used_fact_ids]
 
     # The independent grounding check, and the last thing that runs before this
     # command speaks. It reads the answer synthesis just wrote against the facts

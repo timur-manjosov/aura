@@ -3,6 +3,7 @@ from aura.commands.ask import register_ask_command
 from aura.commands.config import register_config_command
 from aura.commands.digest import register_digest_command
 from aura.commands.facts import register_fact_commands
+from aura.commands.links import register_link_commands
 from aura.commands.onboarding import register_onboarding_command
 from aura.commands.pending import register_pending_command
 from aura.commands.proactive import register_proactive_commands
@@ -13,6 +14,7 @@ __all__ = [
     "register_config_command",
     "register_digest_command",
     "register_fact_commands",
+    "register_link_commands",
     "register_onboarding_command",
     "register_pending_command",
     "register_proactive_commands",

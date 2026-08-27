@@ -65,6 +65,7 @@ from aura.grounding import (
     verify_answer_grounded,
 )
 from aura.i18n import DEFAULT_LOCALE, t
+from aura.links_service import expand_with_linked_facts
 from aura.synthesis import SynthesisResult, synthesize_answer
 
 logger = logging.getLogger(__name__)
@@ -193,6 +194,17 @@ async def respond_with_synthesis(
         # superseded, say). No basis to answer; stay silent.
         return ProactiveResponseOutcome(answers_question=None, posted=False)
 
+    # Link expansion, identical to /aura-ask's -- one mechanism, two triggers,
+    # per CLAUDE.md. Placed strictly AFTER the emptiness check above, which is
+    # what keeps it out of the gate's business: a message that found no fact of
+    # its own still posts nothing, so a link can widen an answer Aura was
+    # already going to give but can never authorize one it wasn't. Nothing here
+    # touches the budget either -- the escalation slot was spent upstream, and
+    # this adds facts to one prompt, not a second call.
+    synthesis_facts = await expand_with_linked_facts(
+        db, guild_id=guild.id, facts=relevant_facts
+    )
+
     # --- PROACTIVE_MODEL selection (CLAUDE.md: reason about the task, don't
     #     restate the criteria; document the evidence) -------------------------
     #
@@ -246,14 +258,14 @@ async def respond_with_synthesis(
     proactive_model = settings.resolve_model(ModelComponent.PROACTIVE)
     assert proactive_model is not None  # guaranteed by is_llm_configured() above
     result = await synthesize_answer(
-        relevant_facts,
+        synthesis_facts,
         message.content,
         locale,
         model=proactive_model,
         question_channel_name=channel_display_name(channel, channel.id),
         question_asked_at=message.created_at,
         fact_channel_names=fact_channel_names(
-            guild, {fact.channel_id for fact in relevant_facts}
+            guild, {fact.channel_id for fact in synthesis_facts}
         ),
     )
 
@@ -267,7 +279,11 @@ async def respond_with_synthesis(
     if not result.answers_question or not result.used_fact_ids:
         return ProactiveResponseOutcome(answers_question=result.answers_question, posted=False)
 
-    cited_facts = [fact for fact in relevant_facts if fact.id in result.used_fact_ids]
+    # Against synthesis_facts, not relevant_facts, for the reason /aura-ask
+    # states at its own copy of this line: a fact cited only because a link
+    # made it available must still reach the grounding check below and the
+    # source list in the embed.
+    cited_facts = [fact for fact in synthesis_facts if fact.id in result.used_fact_ids]
 
     # The independent grounding check. It runs before the channel re-check
     # below rather than after, so the ordering stays the one the module
@@ -301,11 +317,13 @@ async def respond_with_synthesis(
     if not await is_channel_enabled(db, channel_id=channel.id):
         return ProactiveResponseOutcome(answers_question=result.answers_question, posted=False)
 
-    # Still relevant_facts, not the cited_facts computed above: _build_proactive_embed
-    # does its own used_fact_ids filtering, and passing the pre-filtered list would
-    # be the same output through a different path. Left exactly as it was, so the
-    # posting behaviour this phase must not regress has no new code in it at all.
-    embed = _build_proactive_embed(result, relevant_facts, locale)
+    # Still the full candidate list, not the cited_facts computed above:
+    # _build_proactive_embed does its own used_fact_ids filtering, and passing
+    # the pre-filtered list would be the same output through a different path.
+    # It must be synthesis_facts rather than relevant_facts, though -- a source
+    # link for a fact the model cited through a link has to survive into the
+    # embed, and filtering against the narrower list would silently drop it.
+    embed = _build_proactive_embed(result, synthesis_facts, locale)
     try:
         await channel.send(embed=embed)
     except Exception:

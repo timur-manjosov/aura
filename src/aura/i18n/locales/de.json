@@ -135,5 +135,19 @@
     "onboarding_other_label": "Außerdem wissenswert ({count})",
     "onboarding_more_items": "…und {count} weitere.",
     "onboarding_capped_note": "{count} weitere aktive Fakten werden hier nicht angezeigt.",
-    "onboarding_footer": "Auras Zusammenfassung dessen, was hier gerade aktiv ist. Frage jederzeit mit /aura-ask nach."
+    "onboarding_footer": "Auras Zusammenfassung dessen, was hier gerade aktiv ist. Frage jederzeit mit /aura-ask nach.",
+    "link_permission_error": "Dafür brauchst du die Berechtigung „Server verwalten“.",
+    "link_self_error": "Ein Fakt kann nicht mit sich selbst verknüpft werden.",
+    "link_fact_not_found": "Fakt #{fact_id} existiert auf diesem Server nicht.",
+    "link_fact_not_active": "Fakt #{fact_id} ist ersetzt und kann deshalb nicht verknüpft werden.",
+    "link_fact_superseded": "Fakt #{fact_id} wurde durch Fakt #{successor_id} ersetzt. Verknüpfe stattdessen diesen.",
+    "link_race_missing_error": "Einer dieser Fakten existiert seit eben nicht mehr. Es wurde nichts verknüpft.",
+    "link_race_superseded_error": "Einer dieser Fakten wurde soeben von jemand anderem ersetzt. Es wurde nichts verknüpft.",
+    "link_success": "Fakt #{fact_a_id} und #{fact_b_id} sind jetzt verknüpft. Aura kann sie ab sofort gemeinsam zitieren.",
+    "link_already_linked": "Fakt #{fact_a_id} und #{fact_b_id} waren bereits verknüpft. Es wurde nichts geändert.",
+    "link_result_title": "Verknüpfte Fakten",
+    "link_fact_label": "Fakt #{fact_id}",
+    "unlink_self_error": "Ein Fakt kann nicht von sich selbst getrennt werden.",
+    "unlink_success": "Die Verknüpfung zwischen Fakt #{fact_a_id} und #{fact_b_id} wurde entfernt.",
+    "unlink_not_linked": "Fakt #{fact_a_id} und #{fact_b_id} waren nicht verknüpft. Es wurde nichts geändert."
 }

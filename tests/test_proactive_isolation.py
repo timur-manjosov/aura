@@ -141,8 +141,24 @@ _FORBIDDEN_FACT_WRITERS = frozenset(
 # The stricter bar Phase 2a-1 applied to everything, still applied to the
 # scorer alone: it answers one question about one string and has no business
 # knowing that facts exist.
+#
+# expand_with_linked_facts joined this set when links were wired into
+# retrieval. It reads the knowledge model exactly as the other three do, and it
+# must reach no part of this path -- INCLUDING the gate, which is the one
+# module the audit below exempts. That exemption exists because Stage 2 has to
+# rank facts by similarity; a link is not similarity, and letting one influence
+# eligibility would let a moderator's link decide when Aura speaks up
+# unprompted and spends budget. The gate's own half of that guarantee is
+# asserted in tests/test_link_retrieval.py, which forbids exactly the module
+# this set exempts.
 _FORBIDDEN_READ_NAMES = frozenset(
-    {"find_similar_facts", "get_active_facts", "get_linked_facts"}
+    {
+        "find_similar_facts",
+        "get_active_facts",
+        "get_linked_facts",
+        "get_linked_fact_ids",
+        "expand_with_linked_facts",
+    }
 )
 
 # The only module allowed to read the knowledge model, so that permission

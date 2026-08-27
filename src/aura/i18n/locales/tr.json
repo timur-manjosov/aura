@@ -135,5 +135,19 @@
     "onboarding_other_label": "Bilinmesi faydalı olanlar ({count})",
     "onboarding_more_items": "…ve {count} tane daha.",
     "onboarding_capped_note": "{count} aktif gerçek daha burada gösterilmiyor.",
-    "onboarding_footer": "Aura'nın burada şu anda geçerli olanlara dair özeti. /aura-ask ile istediğin zaman sorabilirsin."
+    "onboarding_footer": "Aura'nın burada şu anda geçerli olanlara dair özeti. /aura-ask ile istediğin zaman sorabilirsin.",
+    "link_permission_error": "Bunu yapmak için Sunucuyu Yönet yetkisine ihtiyacın var.",
+    "link_self_error": "Bir bilgi kendisiyle bağlanamaz.",
+    "link_fact_not_found": "#{fact_id} numaralı bilgi bu sunucuda yok.",
+    "link_fact_not_active": "#{fact_id} numaralı bilgi geçersiz kılınmış, bu yüzden bağlanamaz.",
+    "link_fact_superseded": "#{fact_id} numaralı bilginin yerini #{successor_id} numaralı bilgi aldı. Bunun yerine onu bağla.",
+    "link_race_missing_error": "Bu bilgilerden biri az önce ortadan kalktı. Hiçbir şey bağlanmadı.",
+    "link_race_superseded_error": "Bu bilgilerden birini az önce başka biri geçersiz kıldı. Hiçbir şey bağlanmadı.",
+    "link_success": "#{fact_a_id} ve #{fact_b_id} numaralı bilgiler artık bağlı. Aura bundan sonra ikisini birlikte kaynak gösterebilir.",
+    "link_already_linked": "#{fact_a_id} ve #{fact_b_id} numaralı bilgiler zaten bağlıydı. Hiçbir şey değişmedi.",
+    "link_result_title": "Bağlı Bilgiler",
+    "link_fact_label": "#{fact_id} numaralı bilgi",
+    "unlink_self_error": "Bir bilginin kendisiyle bağlantısı kaldırılamaz.",
+    "unlink_success": "#{fact_a_id} ve #{fact_b_id} numaralı bilgiler arasındaki bağlantı kaldırıldı.",
+    "unlink_not_linked": "#{fact_a_id} ve #{fact_b_id} numaralı bilgiler bağlı değildi. Hiçbir şey değişmedi."
 }

@@ -3,10 +3,26 @@
 Every operation here runs under the shared per-connection lock from
 aura.db.connection, which is also where the reasoning for that lock lives --
 it is a rule for all writers on the connection, not just this module's.
+
+**Links stopped being dormant scaffolding here.** fact_links has existed since
+Phase 1b with zero call sites; the link phase wired it to a mod command and to
+both answering triggers' retrieval. Three things about the link functions
+changed in that wiring, and each was a real defect rather than a style
+preference -- see each function's own docstring for the reasoning:
+
+  * every link operation is now scoped by guild_id like every other read here,
+    instead of deriving the guild from the facts it was handed;
+  * linking requires both facts to be currently ACTIVE, so a link can never be
+    created into a fact that is already retired;
+  * the read side gained a batched, many-facts-at-once neighbour lookup and a
+    supersession-chain resolver, because retrieval asks about several facts at
+    once and must follow a link to whatever is current rather than to whatever
+    the moderator happened to point at months ago.
 """
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
 from collections.abc import Iterable
 from datetime import datetime
@@ -17,6 +33,8 @@ import aiosqlite
 from aura.db.connection import connection_lock, utc_now_iso
 from aura.db.models import Fact, FactStatus
 
+logger = logging.getLogger(__name__)
+
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 # How many IDs one `WHERE id IN (...)` may carry. Well under SQLite's own
@@ -24,6 +42,23 @@ _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 # chosen against the lower bound rather than the installed one so the limit
 # cannot depend on which SQLite a deployment happens to link against.
 _ID_QUERY_CHUNK_SIZE = 500
+
+# The same bound for a statement that binds each ID TWICE -- get_linked_fact_ids
+# has to ask about both ends of an undirected link in one query, so a chunk of
+# _ID_QUERY_CHUNK_SIZE would bind 1000 parameters plus the guild and blow the
+# very limit that constant was chosen against. Derived from it rather than
+# written as a second literal, so the two cannot drift apart.
+_LINK_QUERY_CHUNK_SIZE = _ID_QUERY_CHUNK_SIZE // 2
+
+# How far resolve_active_successors will follow a supersession chain before
+# giving up on it. Not a limit any real chain can reach: a fact corrected once
+# a week for two years is a chain of ~100, and every real chain observed is 1-2
+# links long. It exists because the walk is driven by data in a table a human
+# with database access can hand-edit, and an unbounded walk over hand-editable
+# data is an unbounded number of queries. A chain that exceeds this resolves to
+# nothing (the link is dropped, loudly) rather than to a guess -- fail closed,
+# the same direction every other refusal in this project takes.
+_MAX_SUPERSESSION_HOPS = 100
 
 _FACT_COLUMNS = (
     "id, guild_id, channel_id, message_id, content, embedding, status, "
@@ -52,20 +87,54 @@ class FactAlreadySupersededError(RepositoryError):
 
 
 class SelfLinkError(RepositoryError):
-    """Raised when link_facts is called with the same fact ID twice."""
+    """Raised when link_facts or unlink_facts is called with the same fact ID twice.
+
+    A fact is trivially related to itself, so a self-link carries no
+    information a reader could ever use -- and the schema agrees: fact_links'
+    `CHECK (fact_a_id < fact_b_id)` makes the row unrepresentable. Rejected
+    here, before the database is touched, so the caller gets a sentence
+    instead of an IntegrityError. unlink_facts raises it too rather than
+    quietly reporting "nothing was unlinked": a self-unlink is the same
+    caller mistake and deserves the same answer.
+    """
 
 
 class FactNotFoundError(RepositoryError):
-    """Raised when link_facts is given a fact ID that doesn't exist."""
+    """Raised when a link operation names a fact that doesn't exist IN THAT GUILD.
+
+    One error for "no such fact" and for "that fact belongs to another guild",
+    deliberately -- the same isolation rule get_fact_by_id already states: a
+    moderator in one guild must not be able to learn anything about another
+    guild's facts by guessing numeric IDs, and two distinguishable errors
+    would turn /aura-link into an ID oracle across guild boundaries.
+
+    This replaces the CrossGuildLinkError that link_facts raised through Phase
+    1b. That error was only reachable because link_facts derived the guild
+    from the two facts it was handed instead of being told which guild the
+    caller was acting in; scoping the operation by guild_id, like every other
+    read in this module, makes a cross-guild pair indistinguishable from a
+    nonexistent one -- which is the property that was wanted all along.
+    """
 
 
-class CrossGuildLinkError(RepositoryError):
-    """Raised when link_facts is asked to link facts from two different guilds.
+class FactNotActiveError(RepositoryError):
+    """Raised when link_facts names a fact that exists in the guild but is superseded.
 
-    fact_links has no guild_id column of its own -- guild isolation for links
-    is enforced here, at write time, so every later read (get_linked_facts)
-    can trust that anything reachable from a fact never crosses a guild
-    boundary, without having to re-check on every query.
+    Linking is a statement about what is currently true together, so both
+    ends must currently be true. A link INTO an already-retired fact would be
+    dead the moment it was written -- retrieval would resolve it forward to
+    whatever replaced it (see resolve_active_successors), which is exactly the
+    fact the moderator should have named in the first place.
+
+    Distinct from FactNotFoundError on purpose, and this leaks nothing: by the
+    time this can be raised the fact is already known to be in the caller's own
+    guild, so the extra detail is about a fact they can already read. It buys a
+    genuinely useful error message -- /aura-link names the successor and tells
+    the moderator to link that instead.
+
+    Deliberately NOT enforced by unlink_facts: removing a link must keep
+    working after either end has been retired, or a link created before a
+    supersession could never be cleaned up.
     """
 
 
@@ -359,12 +428,36 @@ async def get_fact_by_id(conn: aiosqlite.Connection, *, guild_id: int, fact_id: 
     return _row_to_fact(row)
 
 
-async def link_facts(conn: aiosqlite.Connection, fact_id_1: int, fact_id_2: int) -> None:
-    """Create an undirected link between two facts, no-op if it already exists.
+async def link_facts(
+    conn: aiosqlite.Connection, *, guild_id: int, fact_id_1: int, fact_id_2: int
+) -> bool:
+    """Link two active facts of one guild thematically. Returns whether a row was created.
 
-    Raises SelfLinkError if the two IDs are equal, FactNotFoundError if
-    either fact doesn't exist, or CrossGuildLinkError if they belong to
-    different guilds.
+    CLAUDE.md's fourth knowledge-model component, written: a moderator has
+    decided these two DIFFERENT facts belong in one answer together, which is
+    the one relationship no similarity search can derive on its own -- it is
+    not "the same fact worded differently" (that is a variant) and not "this
+    replaced that" (that is supersession).
+
+    Undirected, and normalized to make that true in the data rather than only
+    in the reader's head: the pair is sorted so the smaller ID is always
+    fact_a_id, which is what fact_links' own `CHECK (fact_a_id < fact_b_id)`
+    plus its two-column primary key turn into a hard one-row-per-pair
+    guarantee. Calling this with the arguments swapped therefore hits the same
+    row, and cannot produce a second one.
+
+    Returns True if this call created the link and False if it already
+    existed. The database operation is idempotent either way (INSERT OR
+    IGNORE); the distinction is returned rather than swallowed because the
+    caller is a moderator who typed two IDs and deserves to be told whether
+    anything actually changed.
+
+    Both facts must exist in `guild_id` and both must be ACTIVE. Raises
+    SelfLinkError if the IDs are equal (before touching the database),
+    FactNotFoundError if either is not a fact of this guild, and
+    FactNotActiveError if either is superseded -- each checked under the same
+    lock and in the same transaction as the insert, so a fact superseded
+    concurrently cannot slip in between the check and the commit.
     """
     if fact_id_1 == fact_id_2:
         raise SelfLinkError(f"Cannot link fact {fact_id_1} to itself.")
@@ -373,27 +466,95 @@ async def link_facts(conn: aiosqlite.Connection, fact_id_1: int, fact_id_2: int)
     now = utc_now_iso()
 
     async with connection_lock(conn):
-        async with conn.execute(
-            "SELECT id, guild_id FROM facts WHERE id IN (?, ?)", (fact_a_id, fact_b_id)
-        ) as cursor:
-            rows = await cursor.fetchall()
+        try:
+            async with conn.execute(
+                "SELECT id, status FROM facts WHERE guild_id = ? AND id IN (?, ?)",
+                (guild_id, fact_a_id, fact_b_id),
+            ) as cursor:
+                rows = await cursor.fetchall()
 
-        guild_by_id = {row[0]: row[1] for row in rows}
-        for fact_id in (fact_a_id, fact_b_id):
-            if fact_id not in guild_by_id:
-                raise FactNotFoundError(f"Fact {fact_id} does not exist.")
+            status_by_id = {row[0]: FactStatus(row[1]) for row in rows}
+            # Existence is settled for BOTH facts before activity is looked at
+            # for either. Interleaving the two checks would make the error a
+            # caller gets depend on which of their two IDs happens to be
+            # numerically smaller -- so naming a superseded fact of their own
+            # alongside a nonexistent one would report the supersession and
+            # hide the typo. It also keeps this in step with /aura-link's
+            # pre-flight checks, which run in the same two passes.
+            for fact_id in (fact_a_id, fact_b_id):
+                if fact_id not in status_by_id:
+                    raise FactNotFoundError(
+                        f"Fact {fact_id} does not exist in guild {guild_id}."
+                    )
+            for fact_id in (fact_a_id, fact_b_id):
+                if status_by_id[fact_id] is not FactStatus.ACTIVE:
+                    raise FactNotActiveError(
+                        f"Fact {fact_id} in guild {guild_id} is superseded and cannot be linked."
+                    )
 
-        if guild_by_id[fact_a_id] != guild_by_id[fact_b_id]:
-            raise CrossGuildLinkError(
-                f"Cannot link fact {fact_a_id} (guild {guild_by_id[fact_a_id]}) to fact "
-                f"{fact_b_id} (guild {guild_by_id[fact_b_id]}): they belong to different guilds."
+            cursor = await conn.execute(
+                "INSERT OR IGNORE INTO fact_links (fact_a_id, fact_b_id, created_at) "
+                "VALUES (?, ?, ?)",
+                (fact_a_id, fact_b_id, now),
             )
+            created = cursor.rowcount == 1
+        except BaseException:
+            await conn.rollback()
+            raise
 
-        await conn.execute(
-            "INSERT OR IGNORE INTO fact_links (fact_a_id, fact_b_id, created_at) VALUES (?, ?, ?)",
-            (fact_a_id, fact_b_id, now),
-        )
         await conn.commit()
+
+    return created
+
+
+async def unlink_facts(
+    conn: aiosqlite.Connection, *, guild_id: int, fact_id_1: int, fact_id_2: int
+) -> bool:
+    """Remove the link between two facts of one guild. Returns whether a row was deleted.
+
+    The exact inverse of link_facts, including the same argument-order
+    indifference (the pair is sorted the same way), and the same guild
+    scoping: the EXISTS guards mean a moderator cannot delete another guild's
+    link by naming its IDs, even though fact_links itself carries no guild
+    column.
+
+    Deliberately does NOT require either fact to still be active. A link is
+    typically created between two active facts and then outlives one of them;
+    refusing to remove it at that point would leave exactly the links a
+    moderator most wants to clean up permanently unremovable. Removing a link
+    can never make Aura state something false, only make it cite less, so the
+    conservative direction here is the permissive one.
+
+    Returns False -- not an error -- when there was no such link. "Unlink two
+    facts that were not linked" is already the state the caller asked for, and
+    the command surface says so plainly rather than treating it as a failure.
+    Raises SelfLinkError if the two IDs are equal; see that class for why this
+    is an error rather than a False.
+    """
+    if fact_id_1 == fact_id_2:
+        raise SelfLinkError(f"Cannot unlink fact {fact_id_1} from itself.")
+
+    fact_a_id, fact_b_id = sorted((fact_id_1, fact_id_2))
+
+    async with connection_lock(conn):
+        try:
+            cursor = await conn.execute(
+                """
+                DELETE FROM fact_links
+                WHERE fact_a_id = ? AND fact_b_id = ?
+                  AND EXISTS (SELECT 1 FROM facts WHERE id = ? AND guild_id = ?)
+                  AND EXISTS (SELECT 1 FROM facts WHERE id = ? AND guild_id = ?)
+                """,
+                (fact_a_id, fact_b_id, fact_a_id, guild_id, fact_b_id, guild_id),
+            )
+            removed = cursor.rowcount == 1
+        except BaseException:
+            await conn.rollback()
+            raise
+
+        await conn.commit()
+
+    return removed
 
 
 async def get_active_facts(conn: aiosqlite.Connection, guild_id: int) -> list[Fact]:
@@ -509,19 +670,187 @@ async def get_facts_by_ids(
     return facts
 
 
-async def get_linked_facts(conn: aiosqlite.Connection, fact_id: int) -> list[Fact]:
-    """Return every fact linked to fact_id, checking both sides of the undirected link."""
+async def get_linked_facts(
+    conn: aiosqlite.Connection, *, guild_id: int, fact_id: int
+) -> list[Fact]:
+    """Return every fact of guild_id linked to fact_id, whatever its status, oldest ID first.
+
+    Checks both sides of the undirected link, which is what makes "linked" a
+    symmetric question rather than one that depends on which ID a moderator
+    happened to type first.
+
+    Deliberately unfiltered by status, exactly like get_variants_for_fact: this
+    is the raw view of what a moderator actually linked, used by the command
+    surface and by tests. Retrieval wants the very different question "what
+    should be cited alongside this fact, resolved through any supersession
+    that has happened since" -- that is expand_with_linked_facts, built on
+    get_linked_fact_ids and resolve_active_successors below.
+
+    Guild-scoped, and that is defense in depth rather than the only guard:
+    link_facts already refuses to create a link whose ends sit in different
+    guilds, so this filter can only ever matter if a link is written by
+    something other than link_facts (a hand-edited database, a future writer).
+    It costs one WHERE clause and removes the possibility entirely, matching
+    the isolation every other read in this module already provides.
+    """
     async with connection_lock(conn):
         async with conn.execute(
             f"""
             SELECT {_FACT_COLUMNS} FROM facts
-            WHERE id IN (
+            WHERE guild_id = ? AND id IN (
                 SELECT fact_b_id FROM fact_links WHERE fact_a_id = ?
                 UNION
                 SELECT fact_a_id FROM fact_links WHERE fact_b_id = ?
             )
+            ORDER BY id ASC
             """,
-            (fact_id, fact_id),
+            (guild_id, fact_id, fact_id),
         ) as cursor:
             rows = await cursor.fetchall()
     return [_row_to_fact(row) for row in rows]
+
+
+async def get_linked_fact_ids(
+    conn: aiosqlite.Connection, *, guild_id: int, fact_ids: Iterable[int]
+) -> dict[int, list[int]]:
+    """Return each requested fact's linked neighbour IDs, keyed by the fact asked about.
+
+    The batched counterpart to get_linked_facts, and the reason it exists is
+    CLAUDE.md's Performance rule rather than taste: retrieval asks this about
+    every citation candidate at once (up to SYNTHESIS_FACT_LIMIT of them), and
+    a loop of single-fact queries would be N round trips on a path a user is
+    waiting on. One query per chunk instead.
+
+    Returns IDs, not Facts, because every caller immediately hands them to
+    resolve_active_successors -- a link may point at a fact that has since been
+    superseded, so the row this query finds is frequently NOT the row that
+    should be cited, and materializing it would be work thrown away.
+
+    Neighbours are returned whatever their status, for the same reason: it is
+    resolution's job to decide what a link means now, not this query's. A fact
+    with no links is absent from the mapping rather than present with an empty
+    list, matching get_facts_by_ids' "missing IDs are absent" contract; each
+    list is sorted ascending so a caller's ordering is decided by the data
+    rather than by SQLite's row order.
+
+    Guild-scoped on BOTH ends of every link, so a link that somehow spanned
+    two guilds yields nothing rather than leaking one guild's fact into the
+    other's answer.
+    """
+    unique_ids = list(dict.fromkeys(fact_ids))
+    neighbours: dict[int, set[int]] = {}
+
+    for start in range(0, len(unique_ids), _LINK_QUERY_CHUNK_SIZE):
+        chunk = unique_ids[start : start + _LINK_QUERY_CHUNK_SIZE]
+        placeholders = ", ".join("?" for _ in chunk)
+        async with connection_lock(conn):
+            async with conn.execute(
+                f"""
+                SELECT link.fact_a_id, link.fact_b_id
+                FROM fact_links link
+                JOIN facts fact_a ON fact_a.id = link.fact_a_id
+                JOIN facts fact_b ON fact_b.id = link.fact_b_id
+                WHERE fact_a.guild_id = ? AND fact_b.guild_id = ?
+                  AND (
+                    link.fact_a_id IN ({placeholders})
+                    OR link.fact_b_id IN ({placeholders})
+                  )
+                """,
+                (guild_id, guild_id, *chunk, *chunk),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+        requested = set(chunk)
+        for fact_a_id, fact_b_id in rows:
+            # Both directions are checked rather than one: a single row can
+            # match this chunk through either end, or through both at once
+            # when two requested facts are linked to each other.
+            if fact_a_id in requested:
+                neighbours.setdefault(fact_a_id, set()).add(fact_b_id)
+            if fact_b_id in requested:
+                neighbours.setdefault(fact_b_id, set()).add(fact_a_id)
+
+    return {fact_id: sorted(neighbour_ids) for fact_id, neighbour_ids in neighbours.items()}
+
+
+async def resolve_active_successors(
+    conn: aiosqlite.Connection, *, guild_id: int, fact_ids: Iterable[int]
+) -> dict[int, Fact]:
+    """Map each requested fact ID to the ACTIVE fact it resolves to, following supersession.
+
+    A fact that is still active resolves to itself. A superseded one resolves
+    to whatever `superseded_by_id` chains to, transitively, however many times
+    it has been replaced -- so a link a moderator drew at a fact months ago
+    still lands on what is true today rather than on a fact retrieval is
+    forbidden to cite. This is the read-side counterpart of the `status` +
+    successor chaining the knowledge model has carried since Phase 1b, and the
+    reason a link never has to be rewritten when either end is superseded.
+
+    An ID is ABSENT from the result -- never guessed at -- if it does not
+    exist in guild_id, if its chain runs off the end (a superseded fact with
+    no successor, or one whose successor belongs to another guild), if the
+    chain cycles, or if it is longer than _MAX_SUPERSESSION_HOPS. Every one of
+    those is broken data rather than a normal state, and the two that can only
+    come from outside this module's own writes are logged. Fail closed: a link
+    that resolves to nothing simply contributes no citation candidate, which
+    costs an answer some context; resolving it to a fact that is not current
+    would cost the answer its correctness.
+
+    Batched breadth-first rather than one walk per ID: several links commonly
+    point into the same chain (or at the same fact), so the chains are walked
+    together, one query per hop for the whole set, and each fact is fetched at
+    most once.
+    """
+    unique_ids = list(dict.fromkeys(fact_ids))
+    if not unique_ids:
+        return {}
+
+    known: dict[int, Fact] = {}
+    frontier = unique_ids
+    for _ in range(_MAX_SUPERSESSION_HOPS):
+        # Already-known IDs are dropped rather than re-fetched: each fact has
+        # exactly one successor, so a fact reached twice was already expanded
+        # the first time. This is also what makes a cycle terminate here
+        # instead of looping until the hop limit.
+        missing = [fact_id for fact_id in frontier if fact_id not in known]
+        if not missing:
+            break
+        fetched = await get_facts_by_ids(conn, guild_id=guild_id, fact_ids=missing)
+        known.update(fetched)
+        frontier = [
+            fact.superseded_by_id
+            for fact in fetched.values()
+            if fact.status is FactStatus.SUPERSEDED and fact.superseded_by_id is not None
+        ]
+        if not frontier:
+            break
+    else:
+        logger.warning(
+            "Supersession chains in guild %s exceed %d hops; the links pointing into "
+            "them resolve to nothing rather than to an intermediate state",
+            guild_id,
+            _MAX_SUPERSESSION_HOPS,
+        )
+
+    resolved: dict[int, Fact] = {}
+    for origin_id in unique_ids:
+        visited: set[int] = set()
+        current = known.get(origin_id)
+        while current is not None and current.status is not FactStatus.ACTIVE:
+            if current.id in visited:
+                logger.warning(
+                    "Supersession chain from fact %s in guild %s cycles at fact %s; "
+                    "resolving it to nothing",
+                    origin_id,
+                    guild_id,
+                    current.id,
+                )
+                current = None
+                break
+            visited.add(current.id)
+            successor_id = current.superseded_by_id
+            current = known.get(successor_id) if successor_id is not None else None
+        if current is not None:
+            resolved[origin_id] = current
+
+    return resolved

@@ -13,6 +13,32 @@ CREATE TABLE IF NOT EXISTS facts (
 
 CREATE INDEX IF NOT EXISTS idx_facts_guild_status ON facts(guild_id, status);
 
+-- CLAUDE.md's fourth knowledge-model component: two DIFFERENT facts a
+-- moderator decided belong in one answer. Not "the same fact worded
+-- differently" (that is fact_variants) and not "this replaced that" (that is
+-- facts.status + superseded_by_id) -- the relationship no similarity search
+-- can derive, which is why the only writer is the mod-gated /aura-link.
+--
+-- UNDIRECTED, enforced in the data rather than only in the reader's head. The
+-- CHECK plus the two-column primary key together make one row per unordered
+-- pair a hard guarantee: sorting the pair before insert (see
+-- aura.db.repository.link_facts) is then the only way a row can be written at
+-- all, so "linked" cannot depend on which ID a moderator typed first, and no
+-- second row for the reverse direction is representable.
+--
+-- NO STATUS COLUMN, and no rewrite when either end is superseded. A link
+-- points at a fact ID for the fact's whole life; retrieval follows the
+-- supersession chain forward at read time (aura.db.repository's
+-- resolve_active_successors) so the link lands on whatever is current. Storing
+-- a resolved target instead would need every supersession to rewrite every
+-- link touching it -- more writes, and a chance for one to be missed.
+--
+-- NO GUILD COLUMN, because it would be derivable and therefore a second copy
+-- of the truth that could disagree with facts.guild_id. Guild isolation is
+-- enforced at write time (link_facts refuses a pair that is not wholly inside
+-- one guild) AND re-checked at read time by joining both ends back to facts,
+-- so a row written by anything other than link_facts still cannot leak one
+-- server's fact into another's answer.
 CREATE TABLE IF NOT EXISTS fact_links (
     fact_a_id INTEGER NOT NULL REFERENCES facts(id),
     fact_b_id INTEGER NOT NULL REFERENCES facts(id),

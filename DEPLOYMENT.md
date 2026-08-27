@@ -263,6 +263,49 @@ Operational behaviour worth knowing:
 
 Troubleshooting is in the checklist below.
 
+## Linked facts (`/aura-link`)
+
+The fourth knowledge-model component, and the last one to reach production.
+**Nothing about deployment changes**: no new `.env` value, no new table, no
+migration. A database that predates this already has the `fact_links` table —
+it has existed since Phase 1b and simply had no way for a human to write to it.
+
+Two mod-gated commands (`manage_guild`, same as every other moderator tool),
+both replying ephemerally:
+
+    /aura-link   fact_a_id:12 fact_b_id:19   # these two belong in one answer
+    /aura-unlink fact_a_id:12 fact_b_id:19   # take that back
+
+The IDs are the `#N` values `/aura-facts` shows. Order does not matter — a link
+is undirected, and linking the same pair twice tells you nothing changed rather
+than creating a second one. There is no confirmation step, deliberately:
+unlike `/aura-supersede`, this command has an inverse.
+
+**What it changes at answer time.** When `/aura-ask` or proactive relief finds
+a fact by similarity, the facts linked to it are handed to the synthesis model
+as *additional candidates*. They are not automatically cited — the model still
+decides on relevance, and the grounding check still verifies whatever it did
+cite. This is for the case similarity structurally cannot reach: "the
+tournament starts Saturday" and "the winner gets a month of Nitro" are one
+topic to a member and two unrelated sentences to an embedding model.
+
+**What it deliberately does not change:**
+
+- **Eligibility.** A link never makes proactive relief speak up where it
+  otherwise would not. A message that matches no fact still gets silence, and
+  the escalation budget is untouched — links widen an answer Aura was already
+  going to give, never authorize a new one.
+- **Superseded facts.** `/aura-link` refuses a retired fact and names its
+  replacement instead. Existing links are never rewritten when a fact is
+  superseded: retrieval follows the supersession chain forward, so a link
+  drawn months ago delivers whatever is current today, however many times it
+  has been replaced since. `/aura-unlink` still works on a retired fact, which
+  is the case worth cleaning up.
+- **Prompt size, unboundedly.** At most five linked facts join one call, on
+  top of the five similarity hits. A hub fact linked to fifty is capped, not
+  obeyed, and expansion is one hop only — a chain A–B–C–D contributes B, never
+  C and D.
+
 ## Restart policy: what `unless-stopped` actually guarantees
 
 Both Aura and Epiphyte use `restart: unless-stopped`. This **does**
@@ -318,6 +361,16 @@ again.
   impossible — the send is claimed atomically before anything is posted,
   keyed on the member's actual join event. A member who left and rejoined
   getting a second message is expected behaviour, not a bug (see above).
+- **A linked fact never shows up in an answer:** expected in two cases and a
+  problem in a third. Expected: the synthesis model judged it irrelevant to
+  that particular question (it is offered, never forced), or more than five
+  linked facts were available and it fell outside the cap. A problem: check
+  the link actually exists by running `/aura-link` on the same pair again — it
+  reports "already linked" if it does. Note that expansion is one hop, so a
+  fact linked to a fact linked to the match is not a candidate, by design.
+- **`/aura-link` says a fact is superseded:** that is the command working. The
+  message names the replacement; link that ID instead. Aura resolves existing
+  links forward automatically, so this only affects links you are creating now.
 - **Suspect two instances are live on the same token:** check
   `docker logs aura-aura-1 | grep -i identify` for gateway resume/identify
   conflicts, and confirm no local ThinkPad process is running (see step 6).

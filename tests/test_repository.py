@@ -13,7 +13,6 @@ import pytest
 
 from aura.db.models import Fact, FactLink, FactStatus
 from aura.db.repository import (
-    CrossGuildLinkError,
     FactAlreadySupersededError,
     FactNotFoundError,
     SelfLinkError,
@@ -452,15 +451,23 @@ class TestSupersedeFact:
 
 
 class TestLinkFacts:
+    """The Phase 1b link surface, re-asserted against its guild-scoped signature.
+
+    Everything the link phase ADDED -- unlink, batched neighbour reads,
+    supersession resolution, the active-facts-only rule -- lives in
+    tests/test_fact_links.py. What stays here is the original contract, so a
+    regression in it is still caught by the file that owns the repository.
+    """
+
     async def test_link_then_get_linked_facts_is_symmetric(
         self, conn: aiosqlite.Connection
     ) -> None:
         a = await _make_fact(conn, content="a")
         b = await _make_fact(conn, content="b")
-        await link_facts(conn, a.id, b.id)
+        await link_facts(conn, guild_id=GUILD_A, fact_id_1=a.id, fact_id_2=b.id)
 
-        linked_from_a = await get_linked_facts(conn, a.id)
-        linked_from_b = await get_linked_facts(conn, b.id)
+        linked_from_a = await get_linked_facts(conn, guild_id=GUILD_A, fact_id=a.id)
+        linked_from_b = await get_linked_facts(conn, guild_id=GUILD_A, fact_id=b.id)
         assert [f.id for f in linked_from_a] == [b.id]
         assert [f.id for f in linked_from_b] == [a.id]
 
@@ -469,48 +476,58 @@ class TestLinkFacts:
     ) -> None:
         a = await _make_fact(conn, content="a")
         b = await _make_fact(conn, content="b")
-        await link_facts(conn, a.id, b.id)
-        await link_facts(conn, b.id, a.id)  # reversed order
+        await link_facts(conn, guild_id=GUILD_A, fact_id_1=a.id, fact_id_2=b.id)
+        await link_facts(conn, guild_id=GUILD_A, fact_id_1=b.id, fact_id_2=a.id)  # reversed
 
         async with conn.execute("SELECT COUNT(*) FROM fact_links") as cursor:
             row = await cursor.fetchone()
         assert row is not None
         assert row[0] == 1
 
-    async def test_linking_already_linked_facts_is_a_silent_no_op(
+    async def test_linking_already_linked_facts_is_an_idempotent_no_op(
         self, conn: aiosqlite.Connection
     ) -> None:
         a = await _make_fact(conn, content="a")
         b = await _make_fact(conn, content="b")
-        await link_facts(conn, a.id, b.id)
-        await link_facts(conn, a.id, b.id)  # must not raise
-        assert len(await get_linked_facts(conn, a.id)) == 1
+        assert await link_facts(conn, guild_id=GUILD_A, fact_id_1=a.id, fact_id_2=b.id) is True
+        # Must not raise -- and must report that it changed nothing this time.
+        assert await link_facts(conn, guild_id=GUILD_A, fact_id_1=a.id, fact_id_2=b.id) is False
+        assert len(await get_linked_facts(conn, guild_id=GUILD_A, fact_id=a.id)) == 1
 
     async def test_self_link_is_rejected(self, conn: aiosqlite.Connection) -> None:
         fact = await _make_fact(conn)
         with pytest.raises(SelfLinkError):
-            await link_facts(conn, fact.id, fact.id)
+            await link_facts(conn, guild_id=GUILD_A, fact_id_1=fact.id, fact_id_2=fact.id)
 
     async def test_linking_nonexistent_fact_raises_fact_not_found(
         self, conn: aiosqlite.Connection
     ) -> None:
         real = await _make_fact(conn)
         with pytest.raises(FactNotFoundError):
-            await link_facts(conn, real.id, 999999)
+            await link_facts(conn, guild_id=GUILD_A, fact_id_1=real.id, fact_id_2=999999)
 
     async def test_linking_two_nonexistent_facts_raises_fact_not_found(
         self, conn: aiosqlite.Connection
     ) -> None:
         with pytest.raises(FactNotFoundError):
-            await link_facts(conn, 999998, 999999)
+            await link_facts(conn, guild_id=GUILD_A, fact_id_1=999998, fact_id_2=999999)
 
     async def test_cross_guild_link_is_rejected_and_nothing_is_inserted(
         self, conn: aiosqlite.Connection
     ) -> None:
+        # Now a FactNotFoundError rather than the old CrossGuildLinkError: the
+        # operation is scoped to one guild, so another guild's fact is simply
+        # not a fact of this one. Deliberate -- two distinguishable errors
+        # would let a moderator use /aura-link to probe which IDs exist in
+        # other servers (see FactNotFoundError's docstring).
         a = await _make_fact(conn, guild_id=GUILD_A)
         b = await _make_fact(conn, guild_id=GUILD_B)
-        with pytest.raises(CrossGuildLinkError):
-            await link_facts(conn, a.id, b.id)
+        with pytest.raises(FactNotFoundError):
+            await link_facts(conn, guild_id=GUILD_A, fact_id_1=a.id, fact_id_2=b.id)
+        # ...and identically from the other guild's side, so neither direction
+        # is a channel through which the pair could be linked.
+        with pytest.raises(FactNotFoundError):
+            await link_facts(conn, guild_id=GUILD_B, fact_id_1=a.id, fact_id_2=b.id)
         async with conn.execute("SELECT COUNT(*) FROM fact_links") as cursor:
             row = await cursor.fetchone()
         assert row is not None
@@ -522,12 +539,13 @@ class TestLinkFacts:
         a = await _make_fact(conn, content="a")
         b = await _make_fact(conn, content="b")
         results = await asyncio.gather(
-            link_facts(conn, a.id, b.id),
-            link_facts(conn, b.id, a.id),
+            link_facts(conn, guild_id=GUILD_A, fact_id_1=a.id, fact_id_2=b.id),
+            link_facts(conn, guild_id=GUILD_A, fact_id_1=b.id, fact_id_2=a.id),
             return_exceptions=True,
         )
-        # Neither ordering is an error case -- both should complete cleanly.
-        assert all(r is None for r in results), results
+        # Neither ordering is an error case -- both should complete cleanly,
+        # and exactly one of them can be the call that created the row.
+        assert sorted(results, key=repr) == [False, True], results
         async with conn.execute("SELECT COUNT(*) FROM fact_links") as cursor:
             row = await cursor.fetchone()
         assert row is not None
@@ -560,11 +578,11 @@ class TestGuildScoping:
         a2 = await _make_fact(conn, guild_id=GUILD_A, content="a2")
         b1 = await _make_fact(conn, guild_id=GUILD_B, content="b1")
 
-        await link_facts(conn, a1.id, a2.id)
-        with pytest.raises(CrossGuildLinkError):
-            await link_facts(conn, a1.id, b1.id)
+        await link_facts(conn, guild_id=GUILD_A, fact_id_1=a1.id, fact_id_2=a2.id)
+        with pytest.raises(FactNotFoundError):
+            await link_facts(conn, guild_id=GUILD_A, fact_id_1=a1.id, fact_id_2=b1.id)
 
-        linked = await get_linked_facts(conn, a1.id)
+        linked = await get_linked_facts(conn, guild_id=GUILD_A, fact_id=a1.id)
         assert [f.id for f in linked] == [a2.id]
         assert b1.id not in [f.id for f in linked]
 
@@ -591,22 +609,22 @@ class TestGetActiveFacts:
 class TestGetLinkedFacts:
     async def test_fact_with_no_links_returns_empty_list(self, conn: aiosqlite.Connection) -> None:
         fact = await _make_fact(conn)
-        assert await get_linked_facts(conn, fact.id) == []
+        assert await get_linked_facts(conn, guild_id=GUILD_A, fact_id=fact.id) == []
 
     async def test_returns_multiple_linked_facts(self, conn: aiosqlite.Connection) -> None:
         hub = await _make_fact(conn, content="hub")
         leaf_1 = await _make_fact(conn, content="leaf1")
         leaf_2 = await _make_fact(conn, content="leaf2")
-        await link_facts(conn, hub.id, leaf_1.id)
-        await link_facts(conn, hub.id, leaf_2.id)
+        await link_facts(conn, guild_id=GUILD_A, fact_id_1=hub.id, fact_id_2=leaf_1.id)
+        await link_facts(conn, guild_id=GUILD_A, fact_id_1=hub.id, fact_id_2=leaf_2.id)
 
-        linked = await get_linked_facts(conn, hub.id)
-        assert {f.id for f in linked} == {leaf_1.id, leaf_2.id}
+        linked = await get_linked_facts(conn, guild_id=GUILD_A, fact_id=hub.id)
+        assert [f.id for f in linked] == [leaf_1.id, leaf_2.id]  # ordered by id, per the docstring
 
     async def test_nonexistent_fact_id_returns_empty_list_not_an_error(
         self, conn: aiosqlite.Connection
     ) -> None:
-        assert await get_linked_facts(conn, 999999) == []
+        assert await get_linked_facts(conn, guild_id=GUILD_A, fact_id=999999) == []
 
 
 class TestGetFactById:
