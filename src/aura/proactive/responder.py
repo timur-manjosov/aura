@@ -57,6 +57,7 @@ from pydantic import BaseModel
 from aura.config import ModelComponent, Settings
 from aura.db.models import Fact
 from aura.db.proactive_channel_config import is_channel_enabled
+from aura.discord_context import channel_display_name, fact_channel_names
 from aura.embeddings import SYNTHESIS_FACT_LIMIT, find_similar_facts
 from aura.grounding import (
     PROACTIVE_GROUNDING_TIMEOUT_SECONDS,
@@ -245,7 +246,15 @@ async def respond_with_synthesis(
     proactive_model = settings.resolve_model(ModelComponent.PROACTIVE)
     assert proactive_model is not None  # guaranteed by is_llm_configured() above
     result = await synthesize_answer(
-        relevant_facts, message.content, locale, model=proactive_model
+        relevant_facts,
+        message.content,
+        locale,
+        model=proactive_model,
+        question_channel_name=channel_display_name(channel, channel.id),
+        question_asked_at=message.created_at,
+        fact_channel_names=fact_channel_names(
+            guild, {fact.channel_id for fact in relevant_facts}
+        ),
     )
 
     if result is None:

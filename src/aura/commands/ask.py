@@ -13,6 +13,7 @@ import discord
 from discord import app_commands
 
 from aura.config import ModelComponent
+from aura.discord_context import channel_display_name, fact_channel_names
 from aura.embeddings import find_similar_facts
 from aura.grounding import (
     ASK_GROUNDING_TIMEOUT_SECONDS,
@@ -74,6 +75,7 @@ async def _handle_ask_command_error(
 async def ask_command(interaction: discord.Interaction[AuraClient], question: str) -> None:
     """Answer question by synthesizing across the guild's relevant active facts, with sources."""
     assert interaction.guild_id is not None  # guaranteed by guild_only()
+    assert interaction.channel_id is not None  # guaranteed by guild_only(): always a real channel
     locale = str(interaction.locale)
 
     # Discord requires an initial response within 3 seconds; an LLM call
@@ -110,7 +112,17 @@ async def ask_command(interaction: discord.Interaction[AuraClient], question: st
     # above already guaranteed this component resolves to a non-empty model.
     model_name = settings.resolve_model(ModelComponent.SYNTHESIS)
     assert model_name is not None  # guaranteed by is_llm_configured() above
-    result = await synthesize_answer(relevant_facts, question, locale, model=model_name)
+    result = await synthesize_answer(
+        relevant_facts,
+        question,
+        locale,
+        model=model_name,
+        question_channel_name=channel_display_name(interaction.channel, interaction.channel_id),
+        question_asked_at=interaction.created_at,
+        fact_channel_names=fact_channel_names(
+            interaction.guild, {fact.channel_id for fact in relevant_facts}
+        ),
+    )
 
     if result is None:
         await interaction.followup.send(t("ask_error", locale))
