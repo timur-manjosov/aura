@@ -667,3 +667,112 @@ CREATE TABLE IF NOT EXISTS onboarding_sends (
 
 CREATE INDEX IF NOT EXISTS idx_onboarding_sends_guild_day
     ON onboarding_sends(guild_id, send_day);
+
+-- Phase 3b's backfill: one row per backfill run over one channel's EXISTING
+-- message history, carrying the restart-safe cursor that makes a run spanning
+-- several days survive a container restart without re-reading or skipping
+-- anything.
+--
+-- APPEND-ONLY, like every other bookkeeping table below the line at the top of
+-- this file, and for the reason digest_runs gives: what a run covered, when,
+-- and what it produced is a fact about that run rather than about the channel's
+-- current configuration, and a finished run is evidence about whether backfill
+-- earns its cost. A surrogate id plus the partial index below is what lets
+-- several finished runs over one channel coexist while at most one is live.
+--
+-- THE PARTIAL UNIQUE INDEX IS THE CONCURRENCY GUARANTEE, not a convenience. Two
+-- moderators running /aura-backfill start on the same channel at the same
+-- moment race on it, and exactly one INSERT survives -- the same structural
+-- "the database decides, not a prior read" stance try_claim_digest_run takes.
+-- A plain check-then-insert would let both win and leave two runs advancing two
+-- cursors over one channel, each paying for the other's messages.
+--
+-- WHY THERE IS NO QUEUE TABLE HERE, unlike live extraction's extraction_queue.
+-- That table exists because a live batch WAITS -- five minutes of messages have
+-- to be held somewhere durable while the window closes. Backfill never waits:
+-- its input is already written down, in Discord, and (cursor_message_id,
+-- until_message_id) is a complete description of what is left to do. Discord is
+-- the durable store, so a crash mid-batch loses nothing but the work of
+-- re-fetching one page.
+--
+-- THE THREE ID BOUNDS ARE SNOWFLAKES, compared as integers, and that is exact
+-- rather than approximate: a Discord message ID embeds its creation timestamp,
+-- so ordering by ID and ordering by time are the same ordering (verified
+-- against discord.py: Message.created_at is derived FROM the id). Storing
+-- cursor_message_at beside cursor_message_id is therefore redundant for
+-- ordering and kept only so /aura-backfill status can show a moderator where a
+-- run has got to without resolving a snowflake by hand.
+CREATE TABLE IF NOT EXISTS backfill_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    -- 'running'   the worker may advance it
+    -- 'paused'    a moderator stopped it; the cursor is kept and /aura-backfill
+    --             start resumes exactly where it left off
+    -- 'completed' the cursor reached until_message_id; there is nothing left
+    -- 'cancelled' a moderator ended it for good; the cursor is kept as a record
+    --             but never resumed
+    -- 'failed'    the channel became unreadable (deleted, permission revoked).
+    --             Distinct from 'cancelled' because nobody chose it, and it is
+    --             the one terminal state a moderator can meaningfully act on.
+    state TEXT NOT NULL CHECK (
+        state IN ('running', 'paused', 'completed', 'cancelled', 'failed')
+    ),
+    -- THE UPPER BOUND, and the whole of the boundary against live extraction:
+    -- the snowflake of the moment this run was started. A message with an id at
+    -- or above this belongs to the live path (aura.extraction.pipeline), which
+    -- was already watching this channel when the run began, and is never
+    -- fetched here. See aura.backfill.worker for the two per-message checks
+    -- that close the remaining overlap.
+    until_message_id INTEGER NOT NULL,
+    -- The optional `since:` lower bound as a snowflake, exclusive. NULL means
+    -- the whole available history.
+    after_message_id INTEGER,
+    -- THE CURSOR: the newest message id this run has finished with -- scanned,
+    -- filtered, and (if it survived) distilled and staged. NULL until the first
+    -- page completes. Advanced only AFTER the work it covers is committed, so
+    -- a crash re-does one page rather than skipping it.
+    cursor_message_id INTEGER,
+    cursor_message_at TEXT,
+    -- Progress, for /aura-backfill status. Recorded rather than recomputed:
+    -- "how many messages did this run look at" is unanswerable afterwards,
+    -- since nothing else stores it.
+    messages_scanned INTEGER NOT NULL DEFAULT 0,
+    candidates_staged INTEGER NOT NULL DEFAULT 0,
+    calls_spent INTEGER NOT NULL DEFAULT 0,
+    requested_by_id INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    finished_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_backfill_runs_active
+    ON backfill_runs(channel_id) WHERE state IN ('running', 'paused');
+
+CREATE INDEX IF NOT EXISTS idx_backfill_runs_guild
+    ON backfill_runs(guild_id, id DESC);
+
+-- Backfill's own spend ledger: one row per paid distillation call made on
+-- behalf of a backfill run, per guild, per UTC day. The fifth instance of the
+-- shape extraction_calls introduced, and a SEPARATE budget from it for the
+-- reason the phase brief names: sharing EXTRACTION_DAILY_CAP would let one
+-- moderator's backfill of a two-year channel consume the entire day's budget
+-- for extracting the messages members are writing right now. A guild would
+-- experience that as live extraction silently stopping, with nothing in the
+-- logs to distinguish it from extraction being broken.
+--
+-- Carries run_id, where extraction_calls carries only a channel: this call
+-- always belongs to exactly one run, so "what did this run actually spend"
+-- is a join rather than a timestamp correlation -- the same choice, for the
+-- same reason, supersession_calls made with pending_fact_id.
+CREATE TABLE IF NOT EXISTS backfill_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    run_id INTEGER NOT NULL REFERENCES backfill_runs(id),
+    message_count INTEGER NOT NULL,
+    called_at TEXT NOT NULL,
+    call_day TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_backfill_calls_guild_day
+    ON backfill_calls(guild_id, call_day);

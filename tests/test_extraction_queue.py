@@ -25,6 +25,7 @@ from aura.db.extraction_queue import (
     count_queued,
     due_channels,
     enqueue_message,
+    queued_message_ids,
     read_batch,
     remove_queued_message,
 )
@@ -390,3 +391,54 @@ class TestRestartDurability:
             assert [message.message_id for message in batch] == [2]
         finally:
             await second.close()
+
+
+class TestQueuedMessageIds:
+    """The live path's half of Phase 3b's boundary: what is queued right now.
+
+    Backfill asks this to avoid paying for a message the live batch window is
+    already holding -- see aura.backfill.worker. What matters is that the answer
+    is exact in both directions: a message that is queued must be reported, and
+    one that is not must not be.
+    """
+
+    async def test_it_reports_only_the_ids_actually_queued(self, conn) -> None:
+        for message_id in (1, 2, 3):
+            await _enqueue(conn, message_id=message_id)
+
+        assert await queued_message_ids(
+            conn, channel_id=CHANNEL_A, message_ids=[1, 3, 99]
+        ) == {1, 3}
+
+    async def test_an_empty_request_makes_no_query_and_returns_nothing(self, conn) -> None:
+        await _enqueue(conn, message_id=1)
+
+        assert await queued_message_ids(conn, channel_id=CHANNEL_A, message_ids=[]) == set()
+
+    async def test_it_is_scoped_to_one_channel(self, conn) -> None:
+        await _enqueue(conn, message_id=1, channel_id=CHANNEL_A)
+        await _enqueue(conn, message_id=2, channel_id=CHANNEL_B)
+
+        assert await queued_message_ids(
+            conn, channel_id=CHANNEL_A, message_ids=[1, 2]
+        ) == {1}
+
+    async def test_a_message_removed_from_the_queue_is_no_longer_reported(
+        self, conn
+    ) -> None:
+        await _enqueue(conn, message_id=1)
+        await remove_queued_message(conn, channel_id=CHANNEL_A, message_id=1)
+
+        assert await queued_message_ids(conn, channel_id=CHANNEL_A, message_ids=[1]) == set()
+
+    async def test_a_large_request_is_one_query_rather_than_one_per_message(
+        self, conn
+    ) -> None:
+        for message_id in range(1, 201):
+            await _enqueue(conn, message_id=message_id)
+
+        found = await queued_message_ids(
+            conn, channel_id=CHANNEL_A, message_ids=list(range(1, 301))
+        )
+
+        assert found == set(range(1, 201))

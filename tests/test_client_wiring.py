@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 import pytest
 
+from aura.backfill import ClientBackfillGateway
 from aura.config import Settings
 from aura.main import AuraClient, build_intents
 from aura.proactive.gate import ProactiveGateConfig
@@ -305,11 +306,11 @@ class TestBackgroundTasks:
     Closing the database first lets an in-flight sweep or digest hit a closed
     connection and log an exception on the way out of a clean shutdown -- noise
     that reads exactly like a real fault in a container log after a restart.
-    Phase 3e added a second task, so this is also the guard against a future
-    third one being created and never cancelled.
+    Phase 3e added a second task and Phase 3b a third, so this is also the guard
+    against a future fourth one being created and never cancelled.
     """
 
-    _BACKGROUND_TASKS = ("extraction_sweeper", "digest_scheduler")
+    _BACKGROUND_TASKS = ("extraction_sweeper", "digest_scheduler", "backfill_worker")
 
     @pytest.mark.parametrize("attribute", _BACKGROUND_TASKS)
     def test_a_fresh_client_has_no_background_task_yet(self, attribute: str) -> None:
@@ -330,26 +331,21 @@ class TestBackgroundTasks:
                 order.append(name)
                 raise
 
-        sweeper_running, scheduler_running = asyncio.Event(), asyncio.Event()
-        client.extraction_sweeper = asyncio.create_task(
-            forever("extraction_sweeper", sweeper_running)
-        )
-        client.digest_scheduler = asyncio.create_task(
-            forever("digest_scheduler", scheduler_running)
-        )
-        # Both tasks must actually be RUNNING before close(): a task cancelled
+        running = {name: asyncio.Event() for name in self._BACKGROUND_TASKS}
+        for name in self._BACKGROUND_TASKS:
+            setattr(client, name, asyncio.create_task(forever(name, running[name])))
+        # Every task must actually be RUNNING before close(): a task cancelled
         # before its first step never reaches its own except clause, which would
         # make the recorded order an artifact of the scheduler rather than of
         # close()'s own sequencing.
-        await asyncio.gather(sweeper_running.wait(), scheduler_running.wait())
+        await asyncio.gather(*(event.wait() for event in running.values()))
         client.db.close = AsyncMock(side_effect=lambda: order.append("db"))
 
         with patch.object(discord.Client, "close", AsyncMock()):
             await client.close()
 
-        assert order == ["extraction_sweeper", "digest_scheduler", "db"]
-        assert client.extraction_sweeper is None
-        assert client.digest_scheduler is None
+        assert order == [*self._BACKGROUND_TASKS, "db"]
+        assert all(getattr(client, name) is None for name in self._BACKGROUND_TASKS)
 
     async def test_close_works_before_startup_ever_created_the_tasks(self) -> None:
         # A process that fails during setup_hook still gets closed.
@@ -357,3 +353,91 @@ class TestBackgroundTasks:
 
         with patch.object(discord.Client, "close", AsyncMock()):
             await client.close()
+
+
+class TestBackfillWiring:
+    """Phase 3b's worker is started once, with the dependencies it must share.
+
+    The one that matters is the detector. Backfill runs the SAME first filter
+    live extraction runs, so it must be handed the fact-worthiness detector and
+    provably not the question detector -- two instances of the same thing would
+    be two places a future exemplar change has to land, and the wrong instance
+    would silently score history against the wrong exemplars.
+    """
+
+    async def test_setup_hook_starts_the_worker_with_the_shared_detector(self) -> None:
+        client = _client()
+        client.db = MagicMock()
+        client.embedding_model = MagicMock()
+        fact_worthiness = MagicMock(name="fact_worthiness_detector")
+        question = MagicMock(name="question_detector")
+
+        started: dict[str, object] = {}
+
+        async def fake_worker(db, model, gateway, detector, *, settings) -> None:
+            started.update(
+                db=db, model=model, gateway=gateway, detector=detector, settings=settings
+            )
+            await asyncio.Event().wait()
+
+        with (
+            patch("aura.main.aiosqlite.connect", AsyncMock(return_value=client.db)),
+            patch("aura.main.init_schema", AsyncMock()),
+            patch("aura.main.verify_signal_schema", AsyncMock()),
+            patch("aura.main.verify_pending_facts_schema", AsyncMock()),
+            patch("aura.main.asyncio.to_thread", AsyncMock(return_value=client.embedding_model)),
+            patch(
+                "aura.main.QuestionDetector.create", AsyncMock(return_value=question)
+            ),
+            patch(
+                "aura.main.create_fact_worthiness_detector",
+                AsyncMock(return_value=fact_worthiness),
+            ),
+            patch("aura.main.run_extraction_sweeper", AsyncMock()),
+            patch("aura.main.run_digest_scheduler", AsyncMock()),
+            patch("aura.main.run_backfill_worker", fake_worker),
+            patch.object(client.tree, "sync", AsyncMock()),
+        ):
+            await client.setup_hook()
+            # Let the freshly created task reach its first await.
+            await asyncio.sleep(0)
+
+            assert client.backfill_worker is not None
+            assert started["detector"] is fact_worthiness
+            assert started["detector"] is not question
+            assert started["db"] is client.db
+            assert started["model"] is client.embedding_model
+            assert started["settings"] is client.settings
+            assert isinstance(started["gateway"], ClientBackfillGateway)
+
+            client.backfill_worker.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await client.backfill_worker
+
+    async def test_the_backfill_command_group_is_registered(self) -> None:
+        client = _client()
+        client.db = MagicMock()
+        client.embedding_model = MagicMock()
+
+        with (
+            patch("aura.main.aiosqlite.connect", AsyncMock(return_value=client.db)),
+            patch("aura.main.init_schema", AsyncMock()),
+            patch("aura.main.verify_signal_schema", AsyncMock()),
+            patch("aura.main.verify_pending_facts_schema", AsyncMock()),
+            patch("aura.main.asyncio.to_thread", AsyncMock(return_value=MagicMock())),
+            patch("aura.main.QuestionDetector.create", AsyncMock()),
+            patch("aura.main.create_fact_worthiness_detector", AsyncMock()),
+            patch("aura.main.run_extraction_sweeper", AsyncMock()),
+            patch("aura.main.run_digest_scheduler", AsyncMock()),
+            patch("aura.main.run_backfill_worker", AsyncMock()),
+            patch.object(client.tree, "sync", AsyncMock()),
+        ):
+            await client.setup_hook()
+
+        names = {command.name for command in client.tree.get_commands()}
+        assert "aura-backfill" in names
+
+        for task_name in ("extraction_sweeper", "digest_scheduler", "backfill_worker"):
+            task = getattr(client, task_name)
+            if task is not None:
+                task.cancel()

@@ -32,6 +32,7 @@ from aura.db.pending_facts import (
     get_pending_facts,
     record_relationship_judgement,
     stage_pending_fact,
+    staged_message_ids,
     verify_pending_facts_schema,
 )
 from aura.db.repository import create_fact, get_active_facts, init_schema
@@ -39,6 +40,8 @@ from aura.db.repository import create_fact, get_active_facts, init_schema
 GUILD_A = 100000000000000001
 GUILD_B = 200000000000000002
 CHANNEL = 500000000000000005
+# A second channel, added for Phase 3b's staged_message_ids scoping tests.
+CHANNEL_B = 600000000000000006
 MOD_A = 11111
 MOD_B = 22222
 
@@ -57,6 +60,7 @@ async def _stage(
     conn: aiosqlite.Connection,
     *,
     guild_id: int = GUILD_A,
+    channel_id: int = CHANNEL,
     message_id: int = 1,
     content: str = "The server is down for maintenance today at 14:00 UTC.",
     category: FactCategory = FactCategory.STATUS_CHANGE,
@@ -66,7 +70,7 @@ async def _stage(
     return await stage_pending_fact(
         conn,
         guild_id=guild_id,
-        channel_id=CHANNEL,
+        channel_id=channel_id,
         message_id=message_id,
         content=content,
         embedding=EMBEDDING,
@@ -891,3 +895,62 @@ class TestMilestoneFactIds:
         self, conn: aiosqlite.Connection
     ) -> None:
         assert await get_milestone_fact_ids(conn, guild_id=GUILD_A) == set()
+
+
+class TestStagedMessageIds:
+    """The other half of Phase 3b's boundary: what the live path already finished.
+
+    Backfill asks this to avoid re-proposing a message that already produced a
+    candidate -- including one a moderator has already decided on, which is the
+    case that would actively annoy them. It also, unplanned, makes backfill's own
+    crash-retry free: a tick that staged candidates and died before advancing its
+    cursor finds its own work here on the retry.
+    """
+
+    async def test_it_reports_a_pending_candidates_message(self, conn) -> None:
+        await _stage(conn, message_id=1)
+
+        assert await staged_message_ids(
+            conn, channel_id=CHANNEL, message_ids=[1, 2]
+        ) == {1}
+
+    @pytest.mark.parametrize("resolution", ["confirm", "discard"])
+    async def test_a_resolved_candidate_is_still_reported(self, conn, resolution) -> None:
+        """The one that must not come back: a decision someone already made."""
+        staged = await _stage(conn, message_id=1)
+        assert staged is not None
+        if resolution == "confirm":
+            await confirm_pending_fact(
+                conn, guild_id=GUILD_A, pending_id=staged.id, resolved_by_id=MOD_A
+            )
+        else:
+            await discard_pending_fact(
+                conn, guild_id=GUILD_A, pending_id=staged.id, resolved_by_id=MOD_A
+            )
+
+        assert await staged_message_ids(conn, channel_id=CHANNEL, message_ids=[1]) == {1}
+
+    async def test_a_message_that_produced_no_candidate_is_not_reported(self, conn) -> None:
+        """The common case: most chat is not fact-worthy, and re-scanning it is free."""
+        assert await staged_message_ids(
+            conn, channel_id=CHANNEL, message_ids=[1, 2, 3]
+        ) == set()
+
+    async def test_one_message_with_two_candidates_is_reported_once(self, conn) -> None:
+        await _stage(conn, message_id=1, content="The server closes at 14:00.")
+        await _stage(conn, message_id=1, content="Voice chat stays open.")
+
+        assert await staged_message_ids(conn, channel_id=CHANNEL, message_ids=[1]) == {1}
+
+    async def test_it_is_scoped_to_one_channel(self, conn) -> None:
+        await _stage(conn, message_id=1, channel_id=CHANNEL)
+        await _stage(conn, message_id=2, channel_id=CHANNEL_B)
+
+        assert await staged_message_ids(
+            conn, channel_id=CHANNEL, message_ids=[1, 2]
+        ) == {1}
+
+    async def test_an_empty_request_returns_nothing(self, conn) -> None:
+        await _stage(conn, message_id=1)
+
+        assert await staged_message_ids(conn, channel_id=CHANNEL, message_ids=[]) == set()

@@ -424,7 +424,7 @@ async def _flush_channel(
         return True
 
     if distilled:
-        await _stage_distilled(
+        await stage_distilled_candidates(
             db,
             model,
             guild_id=guild_id,
@@ -447,7 +447,7 @@ async def _flush_channel(
     return True
 
 
-async def _stage_distilled(
+async def stage_distilled_candidates(
     db: aiosqlite.Connection,
     model: TextEmbedding,
     *,
@@ -456,8 +456,23 @@ async def _stage_distilled(
     distilled: list[DistilledFact],
     settings: Settings,
     now: datetime,
-) -> None:
+) -> int:
     """Embed, dedup-check, stage and (where flagged) judge every candidate from one batch.
+
+    Returns how many candidates this call actually staged -- which is not
+    len(distilled) whenever the UNIQUE constraint absorbs a repeat, and is what
+    a caller tracking progress (aura.backfill.worker) has to count rather than
+    assume.
+
+    PUBLIC, and shared with backfill on purpose. Phase 3b applies this exact
+    chain to a channel's existing history, and the phase brief is explicit that
+    the recognition logic is reused rather than reimplemented: the dedup
+    comparison, the threshold, the judgement call and its cap all have to behave
+    identically whether a message arrived a minute ago or two years ago, or the
+    two paths would quietly diverge into two definitions of what a candidate is.
+    The only thing backfill supplies differently is where the QueuedMessage
+    values come from -- built in memory from Discord's history rather than read
+    back out of extraction_queue -- which this function never needed to know.
 
     Embeds all candidates in ONE batched inference call rather than one per
     candidate, and reads the guild's active facts ONCE rather than per
@@ -500,6 +515,7 @@ async def _stage_distilled(
         await get_active_fact_variants(db, guild_id)
     )
 
+    staged_count = 0
     for candidate, embedding in zip(distilled, embeddings, strict=True):
         source = by_message_id.get(candidate.message_id)
         if source is None:
@@ -541,6 +557,8 @@ async def _stage_distilled(
             )
             continue
 
+        staged_count += 1
+
         if above_threshold and similar_fact is not None:
             await _judge_staged_candidate(
                 db,
@@ -549,6 +567,8 @@ async def _stage_distilled(
                 settings=settings,
                 now=now,
             )
+
+    return staged_count
 
 
 async def _judge_staged_candidate(

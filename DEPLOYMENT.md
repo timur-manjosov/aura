@@ -155,6 +155,99 @@ suggests running `/aura-supersede` afterwards, a complement says no
 supersession is needed, and an unrelated verdict means the similarity was a
 false positive. **Aura never acts on any of them by itself.**
 
+## Backfilling a channel's existing history (Phase 3b)
+
+Extraction only ever sees messages written *after* a channel was opted in.
+Backfill applies the same chain — first filter, distillation, dedup hint,
+supersession proposal — to what was written before that, on a moderator's
+explicit request.
+
+```
+/aura-backfill start channel:#announcements
+/aura-backfill start channel:#announcements since:2025-03-14
+/aura-backfill status
+/aura-backfill pause  channel:#announcements
+/aura-backfill cancel channel:#announcements
+```
+
+Mod-gated on `manage_guild`, like every other Aura configuration command, and
+it **refuses a channel extraction is not already enabled for** — reading a
+channel's whole history is a separate decision from reading its new messages,
+and one command must not carry both. `since:` is a UTC date written
+`YYYY-MM-DD`; leaving it off reads the whole available history. There is no
+`resume` subcommand: `start` on a paused run resumes it exactly where it
+stopped, and the reply says which of the two happened.
+
+**Three `.env` values, all documented in full in `.env.example`:**
+
+- `BACKFILL_DAILY_CAP` (default 30) — the per-guild ceiling on backfill
+  distillation calls per UTC day, and deliberately **not** a share of
+  `EXTRACTION_DAILY_CAP`. Sharing one number would let a backfill of a
+  two-year channel consume the whole day's budget for extracting the messages
+  members are writing right now, which from the outside is indistinguishable
+  from extraction having broken. `0` stops every backfill without touching
+  live extraction and without losing anyone's place.
+- `BACKFILL_PAGE_PAUSE_SECONDS` (default 1.0) — the wait between two history
+  page requests. discord.py already honours Discord's rate limits underneath
+  this; the pause is what keeps Aura from having to be told.
+- `BACKFILL_CHECK_INTERVAL_SECONDS` (default 30) — how often the worker looks
+  for runs when idle. **Not** how fast a run progresses: an active run
+  advances batch after batch.
+
+**What to expect operationally.** A run over a large channel takes days, on
+purpose. When the daily cap binds, the run keeps its position and resumes
+after midnight UTC — `/aura-backfill status` shows today's budget alongside
+each run's progress precisely so that "waiting on the cap" and "stalled" are
+never the same picture. Progress is reported as a **position**, not a
+percentage: Aura cannot know how many messages a channel holds without reading
+all of them, so it names the date it has read up to and links the message it
+stopped at.
+
+**How long a run takes, and the lever if that is too long.** Measured against a
+2,127-message corpus (`reports/phase-3b.txt` Section 7), scaled linearly:
+
+| history | distillation calls | days at cap 30 | total spend |
+|---|---|---|---|
+| 10,000 messages | ~75 | 3 | ~$0.50 |
+| 50,000 messages | ~376 | 13 | ~$2.49 |
+| 200,000 messages | ~1,500 | 51 | ~$9.95 |
+
+**The days column is the one to look at, not the spend column.** A backfill's
+total cost is fixed by how much history there is; `BACKFILL_DAILY_CAP` only
+decides how many days it takes to spend it. For a one-off backfill of a large
+channel, raise the cap for the duration and put it back afterwards — the cap's
+job is to stop a backfill dominating a day's API usage, not to stop it costing
+$10 once. Spend figures are estimates from a token model at live OpenRouter
+pricing, not billed figures.
+
+**A restart mid-run costs nothing.** The position is written to the database
+after every batch, never held in memory, so a `docker compose up -d --build`
+in the middle of a multi-day backfill continues from exactly where it stopped.
+No message is skipped, and no message is proposed twice.
+
+**Nothing overlaps with live extraction.** A run's upper bound is the moment
+it was started, and messages the live path is already holding — or has already
+produced a candidate from — are skipped individually. A candidate a moderator
+already confirmed or discarded is never put back in front of them.
+
+**Everything it finds goes to `/aura-pending`**, exactly like live extraction,
+and becomes a fact only when a moderator confirms it there. Expect
+substantially more candidates than live traffic produces — a year of
+announcements at once rather than a trickle — which is worth knowing before
+starting a run on a busy channel.
+
+Two states worth recognising in `/aura-backfill status`:
+
+- **Stopped** — the channel could not be read (deleted, or Aura lost *Read
+  Message History* there). Fix the permission and start a new run; the old
+  one's position is kept as a record but is never resumed.
+- **Paused** — a moderator stopped it. Anything it had already found stays in
+  `/aura-pending`; pausing means "read no more", never "undo".
+
+A `.env` that predates Phase 3b starts cleanly with all three values
+defaulted, and the two new tables are created at startup like every other one.
+Nothing runs until a moderator starts a run.
+
 ## Periodic digest (Phase 3e)
 
 The fourth trigger: a summary of what changed in the knowledge model, posted

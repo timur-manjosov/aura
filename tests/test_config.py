@@ -29,6 +29,9 @@ _ENV_KEYS = (
     "VARIANT_AUDIT_MODEL",
     "VARIANT_COUNT",
     "VARIANT_DAILY_CAP",
+    "BACKFILL_DAILY_CAP",
+    "BACKFILL_PAGE_PAUSE_SECONDS",
+    "BACKFILL_CHECK_INTERVAL_SECONDS",
     "DATABASE_PATH",
     "EMBEDDING_MODEL",
     "LOG_LEVEL",
@@ -130,6 +133,32 @@ class TestDefaults:
         assert settings.supersession_daily_cap == 50
         assert settings.supersession_model is None
 
+    def test_backfill_defaults(self) -> None:
+        # Phase 3b's knobs. Pinned here for the same reason the extraction ones
+        # are: the cap bounds real spending, and a drift in it should be a
+        # decision someone made rather than something nobody noticed.
+        settings = _settings(discord_token="valid-token")
+        assert settings.backfill_daily_cap == 30
+        assert settings.backfill_page_pause_seconds == 1.0
+        assert settings.backfill_check_interval_seconds == 30.0
+
+    def test_backfills_budget_sits_under_extractions_on_purpose(self) -> None:
+        # Not a coincidence and not a free choice: on a day where both are
+        # saturated, the always-on mechanism must keep the larger share, because
+        # live extraction has no second chance at a message and backfill has
+        # nothing but second chances. See config.py's backfill_daily_cap comment.
+        settings = _settings(discord_token="valid-token")
+        assert settings.backfill_daily_cap < settings.extraction_daily_cap
+
+    def test_backfill_has_no_model_of_its_own(self) -> None:
+        # Deliberate: backfill runs the extraction chain, so a separate model
+        # value would be a second definition of what a fact looks like. There is
+        # no BACKFILL_MODEL and there should not be one.
+        assert not any(
+            component.value.startswith("backfill") for component in ModelComponent
+        )
+        assert not hasattr(_settings(discord_token="valid-token"), "backfill_model")
+
     def test_the_proactive_gate_bar_may_now_be_looser_than_the_direct_query_bar(self) -> None:
         # Phase 2b-3 deliberately inverted the ordering this test asserted
         # through Phase 2b-2: proactive_similarity_threshold (now further
@@ -185,6 +214,21 @@ class TestProactiveSettingsValidation:
             ("EXTRACTION_FACT_WORTHINESS_THRESHOLD", "-2.0"),
             ("EXTRACTION_FACT_WORTHINESS_THRESHOLD", "2.5"),
             ("EXTRACTION_FACT_WORTHINESS_THRESHOLD", "not-a-number"),
+            # A negative backfill cap is the dangerous one, for the same reason
+            # a negative proactive cap is: read as "no cap" it removes the
+            # limit entirely -- and this one bounds a bulk job over a whole
+            # channel's history.
+            ("BACKFILL_DAILY_CAP", "-1"),
+            ("BACKFILL_DAILY_CAP", "1.5"),
+            ("BACKFILL_DAILY_CAP", "not-a-number"),
+            ("BACKFILL_PAGE_PAUSE_SECONDS", "-1"),
+            ("BACKFILL_PAGE_PAUSE_SECONDS", "3600"),
+            # Zero would spin the worker task against the database in a tight
+            # loop; a value in days would leave a capped run stalled most of a
+            # day after its budget resets at midnight.
+            ("BACKFILL_CHECK_INTERVAL_SECONDS", "0"),
+            ("BACKFILL_CHECK_INTERVAL_SECONDS", "0.5"),
+            ("BACKFILL_CHECK_INTERVAL_SECONDS", "999999"),
         ],
     )
     def test_an_out_of_range_value_is_refused_with_a_readable_error(
@@ -213,6 +257,21 @@ class TestProactiveSettingsValidation:
                 "0.1",
                 "extraction_fact_worthiness_threshold",
                 0.1,
+            ),
+            # Zero is a deliberate off switch for backfill -- it stops every run
+            # in its tracks without losing a cursor and without touching live
+            # extraction -- so it has to be accepted.
+            ("BACKFILL_DAILY_CAP", "0", "backfill_daily_cap", 0),
+            ("BACKFILL_DAILY_CAP", "200", "backfill_daily_cap", 200),
+            # Zero means "as fast as discord.py allows", which is a reasonable
+            # choice against a small private test server.
+            ("BACKFILL_PAGE_PAUSE_SECONDS", "0", "backfill_page_pause_seconds", 0.0),
+            ("BACKFILL_PAGE_PAUSE_SECONDS", "2.5", "backfill_page_pause_seconds", 2.5),
+            (
+                "BACKFILL_CHECK_INTERVAL_SECONDS",
+                "300",
+                "backfill_check_interval_seconds",
+                300.0,
             ),
         ],
     )

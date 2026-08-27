@@ -647,6 +647,95 @@ class Settings(BaseSettings):
     # identically.
     supersession_daily_cap: int = Field(default=50, ge=0, le=1_000_000)
 
+    # --- Backfill over existing history (Phase 3b) --------------------------
+    # Backfill runs the SAME already-hardened chain live extraction runs (first
+    # filter, distillation, dedup hint, supersession proposal) over a channel's
+    # EXISTING messages, on a moderator's explicit request. Nothing about how a
+    # fact is recognised is configured here -- every threshold and model above
+    # applies unchanged. What is configured here is the mechanics: how much it
+    # may spend per day, and how fast it may ask Discord for history.
+
+    # Per-guild, per-UTC-day ceiling on BACKFILL DISTILLATION CALLS -- the fifth
+    # independent spend ledger in this file (see aura.db.backfill_state), and
+    # deliberately NOT a share of extraction_daily_cap above.
+    #
+    # WHY IT MUST BE SEPARATE, since it is the same call against the same model:
+    # a shared budget would let one moderator's backfill of a two-year channel
+    # consume the entire day's allowance within minutes of being started, and
+    # every message written in that guild that day would go unextracted. From
+    # the outside that is indistinguishable from extraction having broken. It is
+    # the same argument supersession_daily_cap already makes one call site
+    # earlier -- two call sites sharing one number leaves neither with a bound of
+    # its own -- with the addition that here the two call sites have genuinely
+    # different shapes: bulk work over a fixed backlog, against a trickle over
+    # live traffic.
+    #
+    # 30, and deliberately BELOW extraction's 50 rather than at or above it,
+    # against the same measured pricing the three caps above use: a full
+    # EXTRACTION_BATCH_MAX_MESSAGES batch costs roughly $0.011, so 30 calls is a
+    # worst case near $0.33 per guild per day, and the run stops there and
+    # resumes tomorrow rather than failing. Sizing it under extraction's cap is
+    # the point of the number as much as the ceiling is: on a day when both are
+    # saturated, the always-on mechanism keeps the larger share, because live
+    # extraction has no second chance at a message and backfill has nothing but
+    # second chances -- its input is Discord's own history, which is not going
+    # anywhere.
+    #
+    # In coverage terms 30 is not tight: 30 batches of up to 20 fact-worthy
+    # messages is up to 600 fact-worthy messages a day, and at the ~10%
+    # fact-worthy rate reports/phase-3a-1b.txt measured by construction, roughly
+    # 6,000 raw messages of history per guild per day. A small server's entire
+    # backlog fits in one day; a large one takes a few, which is exactly the
+    # multi-day run /aura-backfill status and pause exist to make manageable.
+    #
+    # 0 is valid and means "no backfill may spend anything", which stops every
+    # run in its tracks without touching live extraction or losing a cursor.
+    # Revisit alongside the other four before any multi-guild rollout;
+    # CLAUDE.md's Open Items note on a cross-guild shared budget applies here
+    # identically.
+    backfill_daily_cap: int = Field(default=30, ge=0, le=1_000_000)
+
+    # How long the backfill worker waits between two consecutive history page
+    # requests for the same run.
+    #
+    # discord.py already handles Discord's rate limits underneath this -- it
+    # reads the bucket headers, sleeps out a 429's Retry-After, and retries (see
+    # aura.backfill.history for the layer Aura adds on top for the cases it
+    # surfaces as exceptions instead). This value is not that. It is the
+    # difference between a client that stops when it is told to and one that
+    # never had to be told: one page is 100 messages, so a one-second pause caps
+    # a backfill at 100 messages/second per run, orders of magnitude under any
+    # bucket Discord enforces, while costing a 3,000-message channel about
+    # thirty seconds it is in no hurry to save. Nobody is waiting on a backfill;
+    # this is latency it does not need traded for a request rate it does.
+    #
+    # 0 is valid and means "as fast as discord.py allows", which is a reasonable
+    # choice for a one-off run against a small private test server and a poor
+    # one anywhere else.
+    backfill_page_pause_seconds: float = Field(
+        default=1.0, ge=0.0, le=60.0, allow_inf_nan=False
+    )
+
+    # How often the backfill worker wakes to look for runs when it has nothing
+    # to do. NOT how fast a run progresses -- an active run advances batch after
+    # batch without sleeping this long, pausing only backfill_page_pause_seconds
+    # between pages (see aura.backfill.worker).
+    #
+    # The same indirection, for the same reason, that separates
+    # digest_check_interval_seconds from a guild's digest interval: there is no
+    # timer counting down to the next batch that a restart could reset, only a
+    # stored cursor a tick compares against Discord's history. 30 seconds is how
+    # long after /aura-backfill start (or after a daily cap resets at midnight)
+    # a run takes to visibly begin moving, which is well inside "a moderator
+    # ran a command and can see it working".
+    #
+    # Bounded at both ends like every other interval in this file: zero would
+    # spin the worker task against the database in a tight loop, and a value in
+    # days would make a paused-by-cap run resume most of a day after midnight.
+    backfill_check_interval_seconds: float = Field(
+        default=30.0, ge=1.0, le=24 * 60 * 60.0, allow_inf_nan=False
+    )
+
     # --- Multi-representation indexing: variant generation (Part 1) --------
     # The paraphrase generator (see aura.variants_service): given one already-
     # active fact's canonical sentence, write several differently-worded

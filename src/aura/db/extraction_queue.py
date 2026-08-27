@@ -267,3 +267,36 @@ async def count_queued(conn: aiosqlite.Connection, *, channel_id: int | None = N
         async with conn.execute(query, params) as cursor:
             row = await cursor.fetchone()
     return int(row[0]) if row else 0
+
+
+async def queued_message_ids(
+    conn: aiosqlite.Connection, *, channel_id: int, message_ids: list[int]
+) -> set[int]:
+    """Which of message_ids are currently waiting in this channel's live batch.
+
+    Read-only, and one query for a whole page rather than one per message. Its
+    only caller is backfill (see aura.backfill.worker), which uses it to answer a
+    question this module is the authority on: is the LIVE extraction path
+    already holding this message? A message queued here has been claimed by the
+    batch window and will be distilled under EXTRACTION_DAILY_CAP; backfill must
+    not also distill it under its own cap, or one message would be paid for
+    twice and could produce two candidates a moderator has to reject separately.
+
+    Returns a set rather than a list because the caller's only question is
+    membership, and because SQLite's IN clause does not promise an order worth
+    preserving.
+    """
+    if not message_ids:
+        return set()
+
+    placeholders = ",".join("?" for _ in message_ids)
+    async with connection_lock(conn):
+        async with conn.execute(
+            f"""
+            SELECT message_id FROM extraction_queue
+            WHERE channel_id = ? AND message_id IN ({placeholders})
+            """,
+            (channel_id, *message_ids),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return {int(row[0]) for row in rows}

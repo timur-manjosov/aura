@@ -637,3 +637,43 @@ async def discard_pending_fact(
             raise
 
         await conn.commit()
+
+
+async def staged_message_ids(
+    conn: aiosqlite.Connection, *, channel_id: int, message_ids: list[int]
+) -> set[int]:
+    """Which of message_ids already have a candidate staged from them, in any state.
+
+    Read-only, and one query for a whole page rather than one per message.
+    Deliberately ignores `status`: a candidate a moderator already CONFIRMED or
+    DISCARDED is exactly the case this must catch, since re-staging it would put
+    a decision they already made back in front of them as new work.
+
+    Its only caller is backfill (see aura.backfill.worker), where it is the
+    second of two checks that keep one message from being processed by both the
+    live path and a backfill run. The first check asks whether the live path is
+    holding the message right now (aura.db.extraction_queue.queued_message_ids);
+    this one asks whether it already finished with it. Together they cover the
+    whole of the overlap the run's upper bound cannot: a message written minutes
+    before /aura-backfill start, which the live path saw and this run's snowflake
+    bound still includes.
+
+    A message that produced NO candidate -- the overwhelmingly common case, since
+    most chat is not fact-worthy -- is correctly absent here and will simply be
+    re-scanned by backfill for free, which is the right outcome: nothing was
+    spent on it the first time either.
+    """
+    if not message_ids:
+        return set()
+
+    placeholders = ",".join("?" for _ in message_ids)
+    async with connection_lock(conn):
+        async with conn.execute(
+            f"""
+            SELECT DISTINCT message_id FROM pending_facts
+            WHERE channel_id = ? AND message_id IN ({placeholders})
+            """,
+            (channel_id, *message_ids),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return {int(row[0]) for row in rows}

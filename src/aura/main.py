@@ -13,14 +13,17 @@ from fastembed import TextEmbedding
 
 from aura.commands import (
     register_ask_command,
+    register_backfill_command,
     register_config_command,
     register_digest_command,
     register_fact_commands,
+    register_link_commands,
     register_onboarding_command,
     register_pending_command,
     register_proactive_commands,
     register_supersede_command,
 )
+from aura.backfill import ClientBackfillGateway, run_backfill_worker
 from aura.config import ConfigurationError, ModelComponent, Settings, load_settings
 from aura.db import init_schema
 from aura.db.pending_facts import verify_pending_facts_schema
@@ -56,15 +59,18 @@ class AuraClient(discord.Client):
         # they answer different questions and are calibrated against different
         # thresholds (see aura.extraction.fact_worthiness).
         self.fact_worthiness_detector: QuestionDetector | None = None
-        # The two background tasks in the process, both held so close() can stop
+        # The three background tasks in the process, all held so close() can stop
         # them before the database connection they use goes away: the extraction
-        # sweeper closes batches whose window has expired (Phase 3a-2), and the
+        # sweeper closes batches whose window has expired (Phase 3a-2), the
         # digest scheduler posts periodic summaries whose interval has elapsed
-        # (Phase 3e). Separate tasks rather than one shared timer -- they run on
-        # completely different cadences (seconds vs. an hour), and a failure in
-        # either must not be able to stop the other.
+        # (Phase 3e), and the backfill worker advances whatever history runs a
+        # moderator has started (Phase 3b). Separate tasks rather than one shared
+        # timer -- they run on completely different cadences (seconds, an hour,
+        # and as fast as a run's page pause allows), and a failure in any one
+        # must not be able to stop the others.
         self.extraction_sweeper: asyncio.Task[None] | None = None
         self.digest_scheduler: asyncio.Task[None] | None = None
+        self.backfill_worker: asyncio.Task[None] | None = None
         # Onboarding (Phase 3d) has no background task -- it fires once per
         # on_member_join event rather than on a schedule, so there is nothing
         # here for close() to cancel. The gateway is still built once in
@@ -219,14 +225,46 @@ class AuraClient(discord.Client):
             self.settings.onboarding_daily_cap,
         )
 
+        # Phase 3b's backfill worker, the project's third background task. It
+        # shares the fact-worthiness detector built above rather than
+        # constructing a second one: backfill runs the SAME first filter live
+        # extraction runs, against the same threshold, and two instances of it
+        # would be two places a future exemplar change has to land. It starts
+        # unconditionally, like the other two, and does nothing at all until a
+        # moderator opens a run with /aura-backfill -- so an operator reading a
+        # container log can tell "no backfill configured" from "the worker never
+        # started", which are the two situations a conditional start would make
+        # indistinguishable.
+        self.backfill_worker = asyncio.create_task(
+            run_backfill_worker(
+                self.db,
+                self.embedding_model,
+                ClientBackfillGateway(self),
+                self.fact_worthiness_detector,
+                settings=self.settings,
+            )
+        )
+        logger.info(
+            "Backfill worker ready: cap %d call(s)/guild/UTC-day (independent of "
+            "extraction's %d), %.1fs between history pages, checking every %.0fs when "
+            "idle (reads history only where a moderator ran /aura-backfill start, and "
+            "only ever proposes candidates for /aura-pending review)",
+            self.settings.backfill_daily_cap,
+            self.settings.extraction_daily_cap,
+            self.settings.backfill_page_pause_seconds,
+            self.settings.backfill_check_interval_seconds,
+        )
+
         register_fact_commands(self.tree)
         register_ask_command(self.tree)
         register_proactive_commands(self.tree)
         register_config_command(self.tree)
         register_supersede_command(self.tree)
+        register_link_commands(self.tree)
         register_pending_command(self.tree)
         register_digest_command(self.tree)
         register_onboarding_command(self.tree)
+        register_backfill_command(self.tree)
 
         # Global sync; Discord can take up to an hour to propagate new or
         # changed commands globally. Sync to a specific guild instead
@@ -234,15 +272,20 @@ class AuraClient(discord.Client):
         await self.tree.sync()
 
     async def close(self) -> None:
-        """Stop both background tasks, then close the database, then hand off to discord.py.
+        """Stop every background task, then close the database, then hand off to discord.py.
 
         Each task is stopped and awaited BEFORE the connection it uses is
-        closed. Closing first would let an in-flight sweep or digest hit a
-        closed connection and log an exception on the way out of an otherwise
-        clean shutdown -- noise that looks exactly like a real fault when read
-        in a container log after a restart.
+        closed. Closing first would let an in-flight sweep, digest or backfill
+        batch hit a closed connection and log an exception on the way out of an
+        otherwise clean shutdown -- noise that looks exactly like a real fault
+        when read in a container log after a restart.
+
+        Cancelling the backfill worker mid-batch loses nothing: its cursor is
+        only ever advanced after the work it covers is committed, so the next
+        process re-reads one page rather than skipping it (see
+        aura.db.backfill_runs).
         """
-        for task_name in ("extraction_sweeper", "digest_scheduler"):
+        for task_name in ("extraction_sweeper", "digest_scheduler", "backfill_worker"):
             task: asyncio.Task[None] | None = getattr(self, task_name)
             if task is None:
                 continue
