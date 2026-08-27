@@ -196,17 +196,17 @@ class Settings(BaseSettings):
     # CLAUDE.md's "Proactive Relief: Visibly Active by Design" section: Aura is
     # now tuned to let real questions through rather than drop them silently.
     #
-    # TESTING-PHASE OVERRIDE (2026-08-15): -0.15 -> -0.22, the peak-accuracy
-    # point already named (but not shipped) in reports/phase-2b-2.txt Section
-    # 5a/5b/5c: recall 0.982 -> 1.000 (373/380 -> 380/380), accuracy unchanged
-    # (0.868) and F1 essentially unchanged (0.928 -> 0.929), for a specificity
-    # drop from 0.150 to 0.033 -- more non-question traffic reaching Stage 2.
-    # Not a new calibration; no new corpus, no new LLM calls. Same treatment as
-    # EXTRACTION_FACT_WORTHINESS_THRESHOLD's 2026-07-31 override: Stage 1 only
-    # gates one free, local Stage 2 check, so the wider specificity loss costs
-    # nothing on the current single-member test server, while a Stage 1 false
-    # negative is still permanent silence. See reports/testing-threshold-note-2.txt.
-    # REVERT to -0.15 before any real multi-member community rollout.
+    # OPERATIONAL DECISION (2026-08-15, made permanent 2026-08-26): -0.15 -> -0.22,
+    # the peak-accuracy point already named (but not shipped) in
+    # reports/phase-2b-2.txt Section 5a/5b/5c: recall 0.982 -> 1.000 (373/380 ->
+    # 380/380), accuracy unchanged (0.868) and F1 essentially unchanged (0.928 ->
+    # 0.929), for a specificity drop from 0.150 to 0.033 -- more non-question
+    # traffic reaching Stage 2. Stage 1 only gates one free, local Stage 2 check,
+    # so the wider specificity loss costs nothing regardless of server size,
+    # while a Stage 1 false negative is still permanent silence. Timur has
+    # decided this value is the standing production default rather than a
+    # placeholder to revert once real community traffic arrives -- see
+    # reports/operational-values-decision.txt.
     proactive_question_threshold: float = Field(
         default=-0.22, gt=-2.0, le=2.0, allow_inf_nan=False
     )
@@ -264,20 +264,17 @@ class Settings(BaseSettings):
     # this is also the only Stage 2 number left, so it no longer "moves as a
     # pair" with anything.
     #
-    # TESTING-PHASE OVERRIDE (2026-08-15): 0.30 -> 0.20, read off
-    # reports/phase-2b-4.txt Section 7's post-retirement sweep, gap=0.00 column
-    # (the operative column now that PROACTIVE_CONFIDENCE_GAP no longer gates
-    # anything): recall 0.85 -> 0.99, specificity 0.07 -> 0.02, the lowest value
-    # in that sweep table (no data below 0.20 to justify going further). Not a
-    # new calibration. Unlike Stage 1 above, this bar directly gates paid Stage
-    # 3 synthesis calls, so this is a real cost lever, not a free one -- accepted
-    # for the same reason CLAUDE.md's "Proactive Relief: Visibly Active by
-    # Design" already accepts the Phase 2b-3 cost increase: PROACTIVE_DAILY_CAP
-    # is unchanged and still bounds the worst case, and Timur has explicitly
-    # said more visible proactive activity is wanted during this single-member
-    # testing phase, cost aside. See reports/testing-threshold-note-2.txt.
-    # REVERT to 0.30 before any real multi-member community rollout, when the
-    # full-traffic cost math becomes load-bearing again.
+    # OPERATIONAL DECISION (2026-08-15, made permanent 2026-08-26): 0.30 -> 0.20,
+    # read off reports/phase-2b-4.txt Section 7's post-retirement sweep, gap=0.00
+    # column (the operative column now that PROACTIVE_CONFIDENCE_GAP no longer
+    # gates anything): recall 0.85 -> 0.99, specificity 0.07 -> 0.02, the lowest
+    # value in that sweep table (no data below 0.20 to justify going further).
+    # Unlike Stage 1 above, this bar directly gates paid Stage 3 synthesis
+    # calls, so it is a real, ongoing cost lever -- accepted for the reason
+    # CLAUDE.md's "Proactive Relief: Visibly Active by Design" documents: Timur
+    # wants Aura visibly, actively helpful and has accepted the resulting cost
+    # increase as standing production policy, bounded by the unchanged
+    # PROACTIVE_DAILY_CAP. See reports/operational-values-decision.txt.
     proactive_similarity_threshold: float = Field(
         default=0.20, ge=-1.0, le=1.0, allow_inf_nan=False
     )
@@ -370,20 +367,16 @@ class Settings(BaseSettings):
     # second message in the same channel clears cooldown and escalates before
     # the first one's grace period even ends.
     #
-    # TESTING-PHASE OVERRIDE (2026-07-31): 90 -> 13. The 60-120s placeholder
-    # above was sized for the collision this phase exists to avoid -- Aura and
-    # a human both answering the same question -- which needs real
-    # multi-member channel activity to actually happen. Aura is currently
-    # running on a single-member test server, where that collision risk is
-    # close to meaningless, and 90s of silence before an eligible message gets
-    # its proactive answer just reads as slow. 13s keeps a wait long enough to
-    # be a real grace period rather than none at all, while making the
-    # pipeline feel responsive during testing. Not a calibration -- no sweep,
-    # no corpus, same treatment as EXTRACTION_FACT_WORTHINESS_THRESHOLD's
-    # 2026-07-31 override, see reports/testing-threshold-note.txt. REVERT to
-    # a value in the original 60-120s range before real multi-member
-    # operation, when the collision risk this placeholder was sized for
-    # becomes real again.
+    # OPERATIONAL DECISION (2026-07-31, made permanent 2026-08-26): 90 -> 13.
+    # The 60-120s placeholder above was sized for the collision this grace
+    # period exists to avoid -- Aura and a human both answering the same
+    # question -- and 90s of silence before an eligible message gets its
+    # proactive answer reads as slow. 13s keeps a wait long enough to be a real
+    # grace period rather than none at all, while keeping the pipeline
+    # responsive. Timur has accepted the resulting collision risk once real,
+    # concurrent multi-member channel activity arrives, in exchange for Aura
+    # feeling responsive now -- this is a standing production value, not one
+    # to revert later. See reports/operational-values-decision.txt.
     proactive_grace_period_seconds: float = Field(
         default=13.0, ge=0.0, le=24 * 60 * 60.0, allow_inf_nan=False
     )
@@ -459,30 +452,27 @@ class Settings(BaseSettings):
     # of its hedged-speculation cases score above this threshold, the worst
     # hedge leakage of any locale -- see reports/phase-3a-1b.txt.
     #
-    # TESTING-PHASE OVERRIDE (2026-07-31): -0.02 above remains the calibrated,
-    # precision-favouring value this whole comment block justifies, and that
-    # reasoning is unchanged -- it assumed extraction running at real,
-    # full-traffic volume across a community server (reports/phase-3a-2.txt
-    # Section 8's cost math: up to ~$16/guild/month worst case at full daily-
-    # cap utilization). Aura is currently running on a single-member test
-    # server, where that cost model is close to moot and a precision-favouring
-    # bar mostly just means fewer facts to look at while testing. -0.04 is
-    # used here instead, taken directly from the same phase-3a-1b.txt sweep
+    # OPERATIONAL DECISION (2026-07-31, made permanent 2026-08-26): -0.02 above
+    # remains the calibrated, precision-favouring value the rest of this
+    # comment block justifies for extraction running at real, full-traffic
+    # volume across a community server (reports/phase-3a-2.txt Section 8's cost
+    # math: up to ~$16/guild/month worst case at full daily-cap utilization).
+    # -0.04 is used instead, taken directly from the same phase-3a-1b.txt sweep
     # (Section 6) rather than any new calibration: P=0.553, R=0.787,
     # specificity=0.925, F1=0.650 -- a real recall gain over -0.02's R=0.707,
     # at essentially the same F1, and deliberately short of -0.05 (P=0.495,
     # already below half) and -0.06 (P=0.474, F1=0.608, worse than -0.02's),
-    # where the sweep tips into flagging more noise than signal. REVERT to
-    # -0.02 before any real multi-member community rollout, when the
-    # full-volume cost math above becomes load-bearing again.
+    # where the sweep tips into flagging more noise than signal. Timur has
+    # accepted the resulting full-volume cost as standing production policy,
+    # not a testing-phase concession to revert later.
     #
-    # RECONSIDERED (2026-08-15) for further testing-phase loosening and KEPT
-    # UNCHANGED: this is already the recall-favouring value chosen just above,
-    # and the same phase-3a-1b.txt Section 6 sweep this comment already cites
-    # shows the next step, -0.05, crossing into the range that comment itself
-    # already flags as degenerate (precision 0.495, just under half, F1 0.619
-    # below -0.04's own 0.650). No further loosening is proposed here. See
-    # reports/testing-threshold-note-2.txt.
+    # RECONSIDERED (2026-08-15) for further loosening and KEPT UNCHANGED: this
+    # is already the recall-favouring value chosen just above, and the same
+    # phase-3a-1b.txt Section 6 sweep this comment already cites shows the next
+    # step, -0.05, crossing into the range that comment itself already flags as
+    # degenerate (precision 0.495, just under half, F1 0.619 below -0.04's own
+    # 0.650). No further loosening is proposed here. See
+    # reports/operational-values-decision.txt.
     extraction_fact_worthiness_threshold: float = Field(
         default=-0.04, gt=-2.0, le=2.0, allow_inf_nan=False
     )
@@ -599,23 +589,22 @@ class Settings(BaseSettings):
     # it is the supersession recall above that the higher bar was actually
     # giving up.
     #
-    # TESTING-PHASE OVERRIDE (2026-08-15): 0.60 -> 0.53, the "RECALL-LEANING
-    # ALTERNATIVE" reports/extraction-dedup-threshold-calibration.txt Section 4
-    # already names and explicitly declines for production (+0.527 on its
-    # Pareto frontier, folded here into config.py's existing 2-decimal style).
-    # Not a new calibration -- same corpus, same sweep, a different point on it.
-    # Unusually clean trade for this corpus: the hard-negative sweep in that
-    # report shows IDENTICAL false-positive behaviour on the
-    # independent_related category at 0.60 and 0.527 (fp=13, tn=2, specificity
-    # 0.133 at both), while should-mark recall (duplicate + supersession +
-    # contradiction combined) rises from 0.867 to 0.933 (65/75 -> 70/75) --  no
-    # measured cost, in this corpus, for the extra recall. Both of the report's
-    # two named attack cases behave identically to the 0.60 setting (0.698
-    # marked, 0.509 held back at both). This does raise real call volume: more
-    # candidates clear this bar and reach the paid supersession-judgement call,
-    # bounded by SUPERSESSION_DAILY_CAP (unchanged). See
-    # reports/testing-threshold-note-2.txt. REVERT to 0.60 before any real
-    # multi-member community rollout.
+    # OPERATIONAL DECISION (2026-08-15, made permanent 2026-08-26): 0.60 -> 0.53,
+    # the "RECALL-LEANING ALTERNATIVE" reports/extraction-dedup-threshold-
+    # calibration.txt Section 4 names (+0.527 on its Pareto frontier, folded
+    # here into config.py's existing 2-decimal style). Unusually clean trade
+    # for this corpus: the hard-negative sweep in that report shows IDENTICAL
+    # false-positive behaviour on the independent_related category at 0.60 and
+    # 0.527 (fp=13, tn=2, specificity 0.133 at both), while should-mark recall
+    # (duplicate + supersession + contradiction combined) rises from 0.867 to
+    # 0.933 (65/75 -> 70/75) --  no measured cost, in this corpus, for the extra
+    # recall. Both of the report's two named attack cases behave identically to
+    # the 0.60 setting (0.698 marked, 0.509 held back at both). This raises
+    # real call volume: more candidates clear this bar and reach the paid
+    # supersession-judgement call, bounded by SUPERSESSION_DAILY_CAP
+    # (unchanged). Timur has accepted that volume increase as standing
+    # production policy, not a value to revert later. See
+    # reports/operational-values-decision.txt.
     extraction_dedup_similarity_threshold: float = Field(
         default=0.53, ge=-1.0, le=1.0, allow_inf_nan=False
     )
