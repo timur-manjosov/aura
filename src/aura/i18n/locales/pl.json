@@ -176,5 +176,6 @@
     "backfill_state_paused": "Wstrzymane — /aura-backfill start je wznawia.",
     "backfill_state_completed": "Zakończone — dotarło do końca historii.",
     "backfill_state_cancelled": "Zakończone przez moderatora.",
-    "backfill_state_failed": "Zatrzymane: nie udało się odczytać kanału (usunięty albo Aura straciła tam uprawnienie Czytanie historii wiadomości)."
+    "backfill_state_failed": "Zatrzymane: nie udało się odczytać kanału (usunięty albo Aura straciła tam uprawnienie Czytanie historii wiadomości).",
+    "operator_budget_permission_error": "To polecenie jest zastrzeżone dla operatora Aury."
 }

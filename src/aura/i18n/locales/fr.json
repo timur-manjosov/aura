@@ -176,5 +176,6 @@
     "backfill_state_paused": "En pause — /aura-backfill start la reprend.",
     "backfill_state_completed": "Terminée — elle a atteint la fin de l'historique.",
     "backfill_state_cancelled": "Arrêtée par un modérateur.",
-    "backfill_state_failed": "Arrêtée : le salon n'a pas pu être lu (supprimé, ou Aura y a perdu la permission Voir les anciens messages)."
+    "backfill_state_failed": "Arrêtée : le salon n'a pas pu être lu (supprimé, ou Aura y a perdu la permission Voir les anciens messages).",
+    "operator_budget_permission_error": "Cette commande est réservée à l'opérateur d'Aura."
 }

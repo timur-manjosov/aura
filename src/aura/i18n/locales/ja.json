@@ -176,5 +176,6 @@
     "backfill_state_paused": "一時停止中 — /aura-backfill start で再開します。",
     "backfill_state_completed": "完了 — 履歴の最後まで到達しました。",
     "backfill_state_cancelled": "モデレーターによって終了されました。",
-    "backfill_state_failed": "停止しました: チャンネルを読み取れませんでした（削除されたか、Aura がそこでメッセージ履歴を読む権限を失いました）。"
+    "backfill_state_failed": "停止しました: チャンネルを読み取れませんでした（削除されたか、Aura がそこでメッセージ履歴を読む権限を失いました）。",
+    "operator_budget_permission_error": "このコマンドはAuraの運営者専用です。"
 }

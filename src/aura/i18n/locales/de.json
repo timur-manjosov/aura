@@ -176,5 +176,6 @@
     "backfill_state_paused": "Pausiert — /aura-backfill start setzt ihn fort.",
     "backfill_state_completed": "Fertig — das Ende der Historie ist erreicht.",
     "backfill_state_cancelled": "Von einem Moderator beendet.",
-    "backfill_state_failed": "Gestoppt: Der Kanal konnte nicht gelesen werden (gelöscht, oder Aura hat dort das Recht „Nachrichtenverlauf lesen“ verloren)."
+    "backfill_state_failed": "Gestoppt: Der Kanal konnte nicht gelesen werden (gelöscht, oder Aura hat dort das Recht „Nachrichtenverlauf lesen“ verloren).",
+    "operator_budget_permission_error": "Dieser Befehl ist Auras Betreiber vorbehalten."
 }

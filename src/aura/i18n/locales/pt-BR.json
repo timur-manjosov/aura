@@ -176,5 +176,6 @@
     "backfill_state_paused": "Pausada — /aura-backfill start retoma.",
     "backfill_state_completed": "Concluída — chegou ao fim do histórico.",
     "backfill_state_cancelled": "Encerrada por um moderador.",
-    "backfill_state_failed": "Parada: o canal não pôde ser lido (excluído, ou a Aura perdeu ali a permissão Ver histórico de mensagens)."
+    "backfill_state_failed": "Parada: o canal não pôde ser lido (excluído, ou a Aura perdeu ali a permissão Ver histórico de mensagens).",
+    "operator_budget_permission_error": "Este comando é restrito ao operador do Aura."
 }

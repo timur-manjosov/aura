@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from fastembed import TextEmbedding
 
-from aura.config import Settings
+from aura.config import CrossGuildBudgetMode, Settings
 from aura.db.proactive_channel_config import is_channel_enabled, set_channel_enabled
 from aura.db.proactive_signals import GateVerdict, GracePeriodOutcome, get_recent_signals
 from aura.db.proactive_state import count_escalations_on, try_acquire_escalation_slot, utc_day
@@ -39,6 +39,8 @@ CONFIG = ProactiveGateConfig(
     similarity_threshold=0.5,
     cooldown_seconds=900.0,
     daily_cap=5,
+    cross_guild_daily_budget_usd=1_000_000.0,
+    cross_guild_budget_mode=CrossGuildBudgetMode.WARN,
 )
 
 # 0.0 rather than a small positive number: asyncio.sleep(0.0) still yields

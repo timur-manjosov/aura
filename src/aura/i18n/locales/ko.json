@@ -176,5 +176,6 @@
     "backfill_state_paused": "일시 중지됨 — /aura-backfill start로 다시 시작합니다.",
     "backfill_state_completed": "완료 — 기록의 끝에 도달했습니다.",
     "backfill_state_cancelled": "모더레이터가 종료했습니다.",
-    "backfill_state_failed": "중지됨: 채널을 읽을 수 없었습니다(삭제되었거나 Aura가 그곳에서 메시지 기록 보기 권한을 잃었습니다)."
+    "backfill_state_failed": "중지됨: 채널을 읽을 수 없었습니다(삭제되었거나 Aura가 그곳에서 메시지 기록 보기 권한을 잃었습니다).",
+    "operator_budget_permission_error": "이 명령어는 Aura 운영자만 사용할 수 있어요."
 }

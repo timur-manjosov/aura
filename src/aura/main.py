@@ -19,6 +19,7 @@ from aura.commands import (
     register_fact_commands,
     register_link_commands,
     register_onboarding_command,
+    register_operator_commands,
     register_pending_command,
     register_proactive_commands,
     register_supersede_command,
@@ -265,6 +266,7 @@ class AuraClient(discord.Client):
         register_digest_command(self.tree)
         register_onboarding_command(self.tree)
         register_backfill_command(self.tree)
+        register_operator_commands(self.tree)
 
         # Global sync; Discord can take up to an hour to propagate new or
         # changed commands globally. Sync to a specific guild instead

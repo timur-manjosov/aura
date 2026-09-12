@@ -176,5 +176,6 @@
     "backfill_state_paused": "Paused — /aura-backfill start resumes it.",
     "backfill_state_completed": "Finished — it reached the end of the history.",
     "backfill_state_cancelled": "Ended by a moderator.",
-    "backfill_state_failed": "Stopped: the channel could not be read (deleted, or Aura lost Read Message History there)."
+    "backfill_state_failed": "Stopped: the channel could not be read (deleted, or Aura lost Read Message History there).",
+    "operator_budget_permission_error": "This command is restricted to Aura's operator."
 }

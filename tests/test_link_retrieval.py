@@ -33,7 +33,7 @@ import pytest
 from fastembed import TextEmbedding
 
 from aura.commands.ask import ask_command
-from aura.config import Settings
+from aura.config import CrossGuildBudgetMode, Settings
 from aura.db.models import Fact
 from aura.db.proactive_channel_config import set_channel_enabled
 from aura.db.repository import (
@@ -228,6 +228,8 @@ class TestTheGateIsNotWidened:
             similarity_threshold=0.95,  # nothing here can clear this
             cooldown_seconds=0.0,
             daily_cap=20,
+            cross_guild_daily_budget_usd=1_000_000.0,
+            cross_guild_budget_mode=CrossGuildBudgetMode.WARN,
         )
         from datetime import datetime, timezone
 

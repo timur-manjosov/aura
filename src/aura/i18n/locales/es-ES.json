@@ -176,5 +176,6 @@
     "backfill_state_paused": "En pausa — /aura-backfill start la reanuda.",
     "backfill_state_completed": "Terminada — llegó al final del historial.",
     "backfill_state_cancelled": "Finalizada por un moderador.",
-    "backfill_state_failed": "Detenida: no se pudo leer el canal (eliminado, o Aura perdió allí el permiso Leer historial de mensajes)."
+    "backfill_state_failed": "Detenida: no se pudo leer el canal (eliminado, o Aura perdió allí el permiso Leer historial de mensajes).",
+    "operator_budget_permission_error": "Este comando está restringido al operador de Aura."
 }

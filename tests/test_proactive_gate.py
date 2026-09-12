@@ -28,10 +28,14 @@ import pytest
 from fastembed import TextEmbedding
 from pydantic import ValidationError
 
-from aura.config import Settings
+from aura.config import CrossGuildBudgetMode, Settings
 from aura.db.fact_variants import store_fact_variants
 from aura.db.proactive_signals import GateVerdict
-from aura.db.proactive_state import EscalationOutcome, count_escalations_on
+from aura.db.proactive_state import (
+    EscalationOutcome,
+    count_escalations_on,
+    try_acquire_escalation_slot,
+)
 from aura.db.repository import init_schema
 from aura.embeddings import EMBEDDING_DTYPE, embed_texts
 from aura.facts_service import add_fact
@@ -57,6 +61,12 @@ CONFIG = ProactiveGateConfig(
     similarity_threshold=0.5,
     cooldown_seconds=900.0,
     daily_cap=5,
+    # Effectively unbounded and WARN-mode, so pre-existing tests here exercise
+    # only the per-guild gate this file is actually about; Phase 4a-2's own
+    # cross-guild behavior is covered separately (see test_cross_guild_budget.py
+    # and TestCrossGuildBudget below).
+    cross_guild_daily_budget_usd=1_000_000.0,
+    cross_guild_budget_mode=CrossGuildBudgetMode.WARN,
 )
 
 
@@ -549,6 +559,54 @@ class TestBudgetIsClaimedAtTheRightMoment:
         # later must fail here instead of degrading quietly in production.
         assert set(_ESCALATION_VERDICTS) == set(EscalationOutcome)
         assert len(set(_ESCALATION_VERDICTS.values())) == len(EscalationOutcome)
+
+
+class TestCrossGuildBudget:
+    """Phase 4a-2's operator-wide brake, checked ahead of this guild's own
+    per-guild daily_cap -- see aura.db.cross_guild_budget."""
+
+    async def test_hard_mode_over_budget_is_reported_as_daily_cap_reached(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        # An unrelated guild's unrelated ledger spend, pushing the combined
+        # cross-guild total above a budget smaller than even one such spend.
+        await try_acquire_escalation_slot(
+            conn, guild_id=GUILD_B, channel_id=9999, message_id=1,
+            cooldown_seconds=0.0, daily_cap=1_000_000, now=NOON,
+        )
+        model = await _seed_scored_facts(conn, [0.9, 0.1])
+        hard_and_tiny = CONFIG.model_copy(
+            update={
+                "cross_guild_budget_mode": CrossGuildBudgetMode.HARD,
+                "cross_guild_daily_budget_usd": 0.001,
+            }
+        )
+
+        decision = await _evaluate(conn, model, _stub_detector(0.5), config=hard_and_tiny)
+
+        assert decision.verdict is GateVerdict.DAILY_CAP_REACHED
+        assert decision.stage2_passed is True  # it earned an answer; the operator budget said no
+        assert await count_escalations_on(conn, guild_id=GUILD_A, day="2026-07-24") == 0
+
+    async def test_warn_mode_over_budget_still_escalates(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        await try_acquire_escalation_slot(
+            conn, guild_id=GUILD_B, channel_id=9999, message_id=1,
+            cooldown_seconds=0.0, daily_cap=1_000_000, now=NOON,
+        )
+        model = await _seed_scored_facts(conn, [0.9, 0.1])
+        warn_and_tiny = CONFIG.model_copy(
+            update={
+                "cross_guild_budget_mode": CrossGuildBudgetMode.WARN,
+                "cross_guild_daily_budget_usd": 0.001,
+            }
+        )
+
+        decision = await _evaluate(conn, model, _stub_detector(0.5), config=warn_and_tiny)
+
+        assert decision.verdict is GateVerdict.ELIGIBLE
+        assert await count_escalations_on(conn, guild_id=GUILD_A, day="2026-07-24") == 1
 
 
 class TestConcurrentEligibleMessages:

@@ -20,7 +20,7 @@ import discord
 import pytest
 from fastembed import TextEmbedding
 
-from aura.config import ModelComponent, Settings
+from aura.config import CrossGuildBudgetMode, ModelComponent, Settings
 from aura.db.extraction_channel_config import set_extraction_enabled
 from aura.db.extraction_queue import count_queued, enqueue_message
 from aura.db.extraction_state import count_extraction_calls_on
@@ -652,6 +652,62 @@ class TestDailyCapBehaviour:
         assert (
             await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 2
         )
+
+
+class TestExtractionCrossGuildBudget:
+    """Phase 4a-2's operator-wide brake, checked ahead of this guild's own
+    per-guild cap (see aura.db.cross_guild_budget)."""
+
+    async def test_hard_mode_refuses_once_a_prior_call_already_cleared_the_budget(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        # First batch spends $0.011 on this guild's own extraction ledger --
+        # a real per-guild row, exactly like any other day. It is allowed
+        # because the combined cross-guild total was $0 *before* it.
+        await _queue(conn, message_id=1, content="first batch")
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=[])):
+            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW)
+        assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 1
+
+        # Second batch: the combined total is now $0.011, already over a
+        # $0.005 operator budget, so this call is refused before distill_facts
+        # ever runs and before a second per-guild row is ever claimed.
+        await _queue(conn, message_id=2, content="second batch")
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock()) as distiller:
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(
+                    cross_guild_budget_mode=CrossGuildBudgetMode.HARD,
+                    cross_guild_daily_budget_usd=0.005,
+                ),
+                now=NOW,
+            )
+
+        distiller.assert_not_awaited()
+        assert await count_queued(conn) == 0
+        assert await get_pending_facts(conn, guild_id=GUILD_A, limit=10) == []
+        # Unchanged from before the second, refused attempt.
+        assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 1
+
+    async def test_warn_mode_over_budget_still_proceeds(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        await _queue(conn, message_id=1, content="something")
+        distiller = AsyncMock(return_value=[])
+        with patch("aura.extraction.pipeline.distill_facts", distiller):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(
+                    cross_guild_budget_mode=CrossGuildBudgetMode.WARN,
+                    cross_guild_daily_budget_usd=0.0,
+                ),
+                now=NOW,
+            )
+
+        distiller.assert_awaited_once()
+        assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 1
 
 
 class TestDedupHint:
@@ -1453,6 +1509,111 @@ class TestSupersessionJudgement:
         assert [fact.id for fact in active] == [existing.id]
         assert active[0].superseded_by_id is None
         assert active[0].status is FactStatus.ACTIVE
+
+
+class TestSupersessionCrossGuildBudget:
+    """Phase 4a-2's operator-wide brake, checked ahead of this guild's own
+    per-guild cap (see aura.db.cross_guild_budget) -- the same gate
+    TestExtractionCrossGuildBudget covers one call site earlier."""
+
+    @staticmethod
+    async def _maintenance_fact(conn: aiosqlite.Connection, model: TextEmbedding):
+        return await add_fact(
+            conn,
+            model,
+            guild_id=GUILD_A,
+            channel_id=CHANNEL_A,
+            message_id=900,
+            content="Der Server wird um 14 Uhr einer Wartung ausgesetzt.",
+        )
+
+    @staticmethod
+    def _judgement() -> RelationshipJudgement:
+        return RelationshipJudgement(
+            relationship=SupersessionRelationship.SUPERSESSION,
+            reasoning="Beide nennen dieselbe Wartung zur selben Uhrzeit.",
+            change_signal="wurde verschoben",
+        )
+
+    async def test_hard_mode_refuses_once_this_batchs_own_extraction_call_cleared_the_budget(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        await self._maintenance_fact(conn, embedding_model)
+
+        # An unrelated batch first, spending $0.011 on this guild's own
+        # extraction ledger -- allowed, since the combined total was $0
+        # before it, and $0.011 alone does not yet clear a $0.015 budget.
+        await _queue(conn, message_id=1, content="unrelated batch")
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=[])):
+            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW)
+
+        # The maintenance-duplicate batch: its OWN extraction call is still
+        # allowed (total-so-far is $0.011, under the $0.015 budget), but that
+        # call itself pushes the combined total to $0.022 -- so by the time
+        # _judge_staged_candidate runs its own cross-guild check a few lines
+        # later in the same flush, the judgment call is the one refused.
+        # Exactly like this class's own daily-cap test one section up, the
+        # candidate still stages with the plain similarity hint.
+        await _queue(conn, message_id=2, content="wartung heute")
+        distilled = [
+            DistilledFact(
+                message_id=2,
+                content="Der Server wird heute um 14 Uhr gewartet.",
+                category=FactCategory.STATUS_CHANGE,
+            )
+        ]
+        judge = AsyncMock(return_value=self._judgement())
+        with (
+            patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)),
+            patch("aura.extraction.pipeline.judge_relationship", judge),
+        ):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(
+                    cross_guild_budget_mode=CrossGuildBudgetMode.HARD,
+                    cross_guild_daily_budget_usd=0.015,
+                ),
+                now=NOW,
+            )
+
+        judge.assert_not_awaited()
+        staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
+        assert len(staged) == 1
+        assert staged[0].relationship is None
+        assert staged[0].similar_fact_id is not None
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 0
+        # The extraction call itself, unlike the judgment call, was not refused.
+        assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 2
+
+    async def test_warn_mode_over_budget_still_judges(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        await self._maintenance_fact(conn, embedding_model)
+        await _queue(conn, message_id=1, content="wartung heute")
+        distilled = [
+            DistilledFact(
+                message_id=1,
+                content="Der Server wird heute um 14 Uhr gewartet.",
+                category=FactCategory.STATUS_CHANGE,
+            )
+        ]
+        judge = AsyncMock(return_value=self._judgement())
+        with (
+            patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)),
+            patch("aura.extraction.pipeline.judge_relationship", judge),
+        ):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(
+                    cross_guild_budget_mode=CrossGuildBudgetMode.WARN,
+                    cross_guild_daily_budget_usd=0.0,
+                ),
+                now=NOW,
+            )
+
+        judge.assert_awaited_once()
 
 
 class TestRetrySafety:

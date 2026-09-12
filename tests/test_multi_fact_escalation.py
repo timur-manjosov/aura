@@ -40,7 +40,7 @@ import numpy as np
 import pytest
 from fastembed import TextEmbedding
 
-from aura.config import Settings
+from aura.config import CrossGuildBudgetMode, Settings
 from aura.db.proactive_channel_config import set_channel_enabled
 from aura.db.proactive_signals import GateVerdict
 from aura.db.repository import init_schema
@@ -60,6 +60,8 @@ CONFIG = ProactiveGateConfig(
     similarity_threshold=0.5,
     cooldown_seconds=900.0,
     daily_cap=50,
+    cross_guild_daily_budget_usd=1_000_000.0,
+    cross_guild_budget_mode=CrossGuildBudgetMode.WARN,
 )
 
 # --- The two real cases from 2026-07-27, copied out of the live database -----

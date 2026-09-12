@@ -54,7 +54,8 @@ import numpy as np
 from fastembed import TextEmbedding
 
 from aura.config import ModelComponent, Settings
-from aura.db.connection import utc_now
+from aura.db.connection import utc_day, utc_now
+from aura.db.cross_guild_budget import enforce_cross_guild_budget
 from aura.db.extraction_channel_config import is_extraction_enabled
 from aura.db.extraction_queue import (
     QueuedMessage,
@@ -370,6 +371,26 @@ async def _flush_channel(
     guild_id = batch[0].guild_id
     message_ids = [message.message_id for message in batch]
 
+    # Phase 4a-2's operator-wide brake, checked ahead of this guild's own
+    # daily cap below -- see aura.db.cross_guild_budget. A HARD-mode refusal
+    # here is handled exactly like this function's own DAILY_CAP_REACHED case
+    # a few lines down: the batch is dropped, never held, for the same reason
+    # this function's own docstring already gives for the per-guild cap.
+    if not await enforce_cross_guild_budget(
+        db,
+        day=utc_day(now),
+        budget_usd=settings.cross_guild_daily_budget_usd,
+        mode=settings.cross_guild_budget_mode,
+    ):
+        logger.warning(
+            "Dropping a %d-message extraction batch in channel %s: the operator's "
+            "cross-guild daily budget is exceeded (mode=hard)",
+            len(batch),
+            channel_id,
+        )
+        await clear_batch(db, channel_id=channel_id, message_ids=message_ids)
+        return False
+
     attempt = await try_acquire_extraction_call_slot(
         db,
         guild_id=guild_id,
@@ -605,6 +626,26 @@ async def _judge_staged_candidate(
         return
 
     try:
+        # Phase 4a-2's operator-wide brake, checked ahead of this guild's own
+        # daily cap below -- see aura.db.cross_guild_budget. A HARD-mode
+        # refusal here is handled exactly like the daily-cap refusal a few
+        # lines down: the candidate stays staged and reviewable with the
+        # plain similarity hint, it just carries no judgment today.
+        if not await enforce_cross_guild_budget(
+            db,
+            day=utc_day(now),
+            budget_usd=settings.cross_guild_daily_budget_usd,
+            mode=settings.cross_guild_budget_mode,
+        ):
+            logger.warning(
+                "Not judging candidate %s against fact %s: the operator's cross-guild "
+                "daily budget is exceeded (mode=hard); it stays reviewable with the "
+                "plain similarity hint",
+                candidate.id,
+                predecessor.id,
+            )
+            return
+
         attempt = await try_acquire_supersession_call_slot(
             db,
             guild_id=candidate.guild_id,

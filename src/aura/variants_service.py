@@ -42,7 +42,8 @@ from litellm.types.utils import ModelResponse
 from pydantic import BaseModel, ValidationError
 
 from aura.config import ModelComponent, load_settings
-from aura.db.connection import utc_now
+from aura.db.connection import utc_day, utc_now
+from aura.db.cross_guild_budget import enforce_cross_guild_budget
 from aura.db.fact_variants import FactVariant, store_fact_variants
 from aura.db.models import Fact
 from aura.db.variant_state import try_acquire_variant_call_slot
@@ -457,12 +458,37 @@ async def generate_variants_for_fact(
         if audit_model is None or settings.llm_api_key is None:
             return []
 
+        # One clock read for both the cross-guild check and the per-guild
+        # acquire just below, matching every other ledger's own "one `now`
+        # produces both the timestamp and the day key" convention -- two
+        # separate reads could straddle midnight and check one UTC day's
+        # cross-guild total against a slot claimed under another.
+        now = utc_now()
+
+        # Phase 4a-2's operator-wide brake, checked ahead of this guild's own
+        # daily cap below -- see aura.db.cross_guild_budget. A HARD-mode
+        # refusal here degrades to "zero variants stored", the exact same
+        # outcome this function's own docstring already documents for every
+        # other refusal in this function.
+        if not await enforce_cross_guild_budget(
+            conn,
+            day=utc_day(now),
+            budget_usd=settings.cross_guild_daily_budget_usd,
+            mode=settings.cross_guild_budget_mode,
+        ):
+            logger.warning(
+                "Not generating variants for fact %s: the operator's cross-guild "
+                "daily budget is exceeded (mode=hard)",
+                fact.id,
+            )
+            return []
+
         attempt = await try_acquire_variant_call_slot(
             conn,
             guild_id=fact.guild_id,
             fact_id=fact.id,
             daily_cap=settings.variant_daily_cap,
-            now=utc_now(),
+            now=now,
         )
         if not attempt.granted:
             logger.warning(

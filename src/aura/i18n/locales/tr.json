@@ -176,5 +176,6 @@
     "backfill_state_paused": "Duraklatıldı — /aura-backfill start devam ettirir.",
     "backfill_state_completed": "Bitti — geçmişin sonuna ulaştı.",
     "backfill_state_cancelled": "Bir moderatör tarafından sonlandırıldı.",
-    "backfill_state_failed": "Durdu: kanal okunamadı (silinmiş ya da Aura orada Mesaj Geçmişini Gör yetkisini kaybetmiş)."
+    "backfill_state_failed": "Durdu: kanal okunamadı (silinmiş ya da Aura orada Mesaj Geçmişini Gör yetkisini kaybetmiş).",
+    "operator_budget_permission_error": "Bu komut yalnızca Aura'nın operatörüne özeldir."
 }
