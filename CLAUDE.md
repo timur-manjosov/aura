@@ -149,14 +149,23 @@ Therefore, for every implementation, without exception:
 
 ## Open Items (deferred, tracked here so they are not lost)
 
-- **Cross-guild shared budget for a future hosted free tier.** The proactive
-  daily cap (Phase 2a-2) is per-guild, which is correct when each deployment
-  brings its own OpenRouter key. A future hosted free tier would put many
-  guilds behind one shared key, where per-guild caps no longer bound the
-  operator's total spend — one busy guild, or many guilds together, could run
-  up a shared bill. A cross-guild budget layer would be needed above the
-  per-guild cap before offering that. Explicitly out of scope until such a tier
-  exists; noted here so it is designed for, not discovered.
+- **Cross-guild shared budget — RESOLVED in Phase 4a-2.** The note that used to
+  stand here said the five per-guild daily caps bound one guild's worst case
+  but nothing bounded the SUM across every guild sharing one operator-funded
+  key. Phase 4a-2 closed that gap for the flat-subscription model Timur chose
+  (Option A in `reports/phase-4a-multitenancy-audit.txt` Section 4, not
+  metered billing): `aura.db.cross_guild_budget` sums each of the five
+  ledgers' calls across ALL guilds for the current UTC day, converts the total
+  to a rough estimate using the same worst-case per-call costs each cap's own
+  comment in `config.py` already documents, and compares it against one
+  operator-wide `CROSS_GUILD_DAILY_BUDGET_USD`. `CROSS_GUILD_BUDGET_MODE`
+  (default `warn`) logs a crossed budget without refusing anything; `hard`
+  refuses new calls at all five call sites until the next UTC day.
+  `/aura-operator-budget` (bot-owner-only, gated on `OPERATOR_DISCORD_USER_ID`)
+  shows the live numbers. See `reports/phase-4a-2.txt` for the verification
+  run. Still explicitly deferred, and not touched by this phase: the
+  cent-accurate cost/token metering Option B would need, and the payment
+  integration itself.
 
 # GitHub-Workflow
 - Arbeite bei GitHub-Aufgaben eigenständig über gh-CLI/GitHub-MCP-Tools, wie ein Senior Developer.

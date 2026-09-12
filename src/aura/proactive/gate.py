@@ -71,6 +71,9 @@ import aiosqlite
 from fastembed import TextEmbedding
 from pydantic import BaseModel, ConfigDict, Field
 
+from aura.config import CrossGuildBudgetMode
+from aura.db.connection import utc_day
+from aura.db.cross_guild_budget import enforce_cross_guild_budget
 from aura.db.proactive_signals import DecisionTrail, GateVerdict
 from aura.db.proactive_state import (
     MAX_COOLDOWN_SECONDS,
@@ -105,7 +108,7 @@ _ESCALATION_VERDICTS: dict[EscalationOutcome, GateVerdict] = {
 
 
 class ProactiveGateConfig(BaseModel):
-    """The four numbers the gate decides with, validated once instead of per message.
+    """The numbers the gate decides with, validated once instead of per message.
 
     A separate model rather than passing Settings straight through, for two
     reasons: the gate stays independently testable with explicit values (no
@@ -113,11 +116,15 @@ class ProactiveGateConfig(BaseModel):
     nonsensical threshold fails at startup where an operator sees it rather
     than silently disabling proactive relief in production.
 
-    Four, not five: Phase 2b-4 removed minimum_confidence_gap from this model
-    entirely rather than keeping it here unused, so nothing can read it back
-    and assume it still gates something. See this module's docstring for why
-    the gap stopped being a gate; PROACTIVE_CONFIDENCE_GAP survives in Settings
-    only so an existing .env carrying it does not fail to start.
+    Four, not five, THROUGH Phase 2b-4: that phase removed minimum_confidence_gap
+    from this model entirely rather than keeping it here unused, so nothing can
+    read it back and assume it still gates something. See this module's
+    docstring for why the gap stopped being a gate; PROACTIVE_CONFIDENCE_GAP
+    survives in Settings only so an existing .env carrying it does not fail to
+    start. Phase 4a-2 then added two more fields of its own (the cross-guild
+    operator budget) -- unrelated to the gap this comment is about, and not a
+    reason to revisit the count above; it is recorded here only so a reader
+    who remembers "four" is not left wondering where the other two came from.
 
     Bounds are the mathematical limits of what each number is compared
     against, not taste: a contrastive score cannot leave [-2, 2] (a
@@ -141,6 +148,13 @@ class ProactiveGateConfig(BaseModel):
     # MAX_DAILY_CAP for the arithmetic that overflows past them.
     cooldown_seconds: float = Field(ge=0.0, le=MAX_COOLDOWN_SECONDS, allow_inf_nan=False)
     daily_cap: int = Field(ge=0, le=MAX_DAILY_CAP)
+    # Phase 4a-2's operator-wide brake, checked ahead of this guild's own
+    # per-guild daily_cap above -- see aura.db.cross_guild_budget. Carried
+    # through this config, like every other threshold here, so the gate stays
+    # testable with explicit values and so a nonsensical budget fails at
+    # startup rather than silently never binding.
+    cross_guild_daily_budget_usd: float = Field(ge=0.0, allow_inf_nan=False)
+    cross_guild_budget_mode: CrossGuildBudgetMode
 
     @classmethod
     def from_settings(cls, settings: Settings) -> ProactiveGateConfig:
@@ -154,6 +168,8 @@ class ProactiveGateConfig(BaseModel):
             similarity_threshold=settings.proactive_similarity_threshold,
             cooldown_seconds=settings.proactive_cooldown_seconds,
             daily_cap=settings.proactive_daily_cap,
+            cross_guild_daily_budget_usd=settings.cross_guild_daily_budget_usd,
+            cross_guild_budget_mode=settings.cross_guild_budget_mode,
         )
 
 
@@ -209,6 +225,29 @@ async def evaluate_message(
             stage2_runner_up_score=runner_up_score,
             stage2_gap=gap,
             stage2_passed=False,
+        )
+
+    # Phase 4a-2: the operator-wide brake, checked before this guild's own
+    # per-guild slot is claimed -- see aura.db.cross_guild_budget. In the
+    # default WARN mode this never refuses anything; in HARD mode, a message
+    # that would otherwise be ELIGIBLE is held back here, exactly like a
+    # DAILY_CAP_REACHED refusal from the per-guild ledger just below, because
+    # from this message's point of view both mean the same thing: no slot.
+    if not await enforce_cross_guild_budget(
+        conn,
+        day=utc_day(now),
+        budget_usd=config.cross_guild_daily_budget_usd,
+        mode=config.cross_guild_budget_mode,
+    ):
+        return DecisionTrail(
+            verdict=GateVerdict.DAILY_CAP_REACHED,
+            stage1_score=stage1_score,
+            stage1_passed=True,
+            stage2_top_score=top_score,
+            stage2_runner_up_score=runner_up_score,
+            stage2_gap=gap,
+            stage2_passed=True,
+            daily_cap=config.daily_cap,
         )
 
     attempt = await try_acquire_escalation_slot(

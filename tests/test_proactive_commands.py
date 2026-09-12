@@ -30,6 +30,7 @@ from aura.commands.proactive import (
     _handle_debug_signals_error,
     debug_signals_command,
 )
+from aura.config import CrossGuildBudgetMode
 from aura.db.proactive_signals import (
     DecisionTrail,
     GateVerdict,
@@ -51,6 +52,8 @@ CONFIG = ProactiveGateConfig(
     similarity_threshold=0.5,
     cooldown_seconds=900.0,
     daily_cap=20,
+    cross_guild_daily_budget_usd=1_000_000.0,
+    cross_guild_budget_mode=CrossGuildBudgetMode.WARN,
 )
 
 ELIGIBLE_TRAIL = DecisionTrail(

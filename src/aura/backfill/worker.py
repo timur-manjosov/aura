@@ -116,6 +116,7 @@ from aura.db.backfill_state import (
     try_acquire_backfill_call_slot,
 )
 from aura.db.connection import utc_day, utc_now
+from aura.db.cross_guild_budget import enforce_cross_guild_budget
 from aura.db.extraction_queue import QueuedMessage, queued_message_ids
 from aura.db.pending_facts import staged_message_ids
 from aura.discord_context import channel_display_name
@@ -569,6 +570,25 @@ async def _distill_and_stage(
             "re-sorting before distillation",
             run.id,
         )
+
+    # Phase 4a-2's operator-wide brake, checked ahead of this guild's own
+    # daily cap below -- see aura.db.cross_guild_budget. A HARD-mode refusal
+    # here is handled exactly like the daily-cap refusal a few lines down:
+    # the run pauses with its cursor unchanged, exactly as if this guild's own
+    # cap had been the one that bound.
+    if not await enforce_cross_guild_budget(
+        db,
+        day=utc_day(now),
+        budget_usd=settings.cross_guild_daily_budget_usd,
+        mode=settings.cross_guild_budget_mode,
+    ):
+        logger.info(
+            "Backfill run %s is paused: the operator's cross-guild daily budget is "
+            "exceeded (mode=hard); it resumes at the next UTC day with its cursor "
+            "unchanged",
+            run.id,
+        )
+        return None
 
     attempt = await try_acquire_backfill_call_slot(
         db,

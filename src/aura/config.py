@@ -30,6 +30,29 @@ class ModelComponent(StrEnum):
     GROUNDING_CHECK = "grounding_check"
 
 
+class CrossGuildBudgetMode(StrEnum):
+    """How aura.db.cross_guild_budget reacts once the combined cross-guild
+    daily estimate clears the operator's budget (Phase 4a-2).
+
+    WARN (the default): log loudly at WARNING level every time the combined
+    estimate is over budget, but refuse nothing -- see
+    cross_guild_daily_budget_usd's own comment for why this, not HARD, is the
+    safer default for a single self-funded operator.
+
+    HARD: refuse new calls at all five ledgers (proactive escalation,
+    extraction, supersession judgment, variant generation, backfill
+    distillation) once today's combined estimate is already at or above
+    budget, until the next UTC day resets it. Each refusal is handled exactly
+    like that ledger's own existing DAILY_CAP_REACHED case -- dropped, paused,
+    or skipped per that call site's own established behavior -- so choosing
+    HARD changes nothing structurally, only whether the operator-wide ceiling
+    can ever actually bind.
+    """
+
+    WARN = "warn"
+    HARD = "hard"
+
+
 class ConfigurationError(Exception):
     """Raised when application configuration is missing or invalid.
 
@@ -346,9 +369,10 @@ class Settings(BaseSettings):
     # community servers Aura realistically runs on right now, and explicitly
     # accepted by Timur as the cost of visible activity (see CLAUDE.md). This
     # is a value to revisit before any large multi-guild rollout: the math
-    # here is per-guild and changes once many guilds share one operator key
-    # (see CLAUDE.md's Open Items on a cross-guild shared budget), even though
-    # it doesn't change yet.
+    # here is per-guild, and Phase 4a-2's cross_guild_daily_budget_usd below
+    # is the layer that now bounds the SUM once many guilds share one
+    # operator key (see CLAUDE.md's Open Items) -- this field's own worst
+    # case is unchanged either way.
     proactive_daily_cap: int = Field(default=60, ge=0, le=1_000_000)
 
     # Phase 2b-1: how long Aura waits, after a message becomes eligible for
@@ -531,9 +555,10 @@ class Settings(BaseSettings):
     # tighter bound in call terms than proactive_daily_cap's 60 despite
     # extraction being the higher-volume trigger: batching means one call here
     # covers many messages, so 50 calls a day is a great deal more coverage
-    # than 60 escalations a day is. Revisit alongside proactive_daily_cap
-    # before any multi-guild rollout -- CLAUDE.md's Open Items note about a
-    # cross-guild shared budget applies to this cap identically.
+    # than 60 escalations a day is. This cap's own per-guild worst case is
+    # unchanged by Phase 4a-2's cross-guild budget below, which bounds the SUM
+    # across every guild sharing one operator key rather than replacing this
+    # number (see CLAUDE.md's Open Items).
     extraction_daily_cap: int = Field(default=50, ge=0, le=1_000_000)
 
     # Similarity at or above which a freshly distilled candidate is flagged as
@@ -642,9 +667,10 @@ class Settings(BaseSettings):
     # hint instead of a judgment. 0 is valid and disables the judgment call
     # entirely while leaving the rest of extraction working.
     #
-    # Revisit alongside the other two before any multi-guild rollout;
-    # CLAUDE.md's Open Items note on a cross-guild shared budget applies here
-    # identically.
+    # This cap's own per-guild worst case is unchanged by Phase 4a-2's
+    # cross-guild budget below, which bounds the SUM across every guild
+    # sharing one operator key rather than replacing this number (see
+    # CLAUDE.md's Open Items).
     supersession_daily_cap: int = Field(default=50, ge=0, le=1_000_000)
 
     # --- Backfill over existing history (Phase 3b) --------------------------
@@ -690,9 +716,10 @@ class Settings(BaseSettings):
     #
     # 0 is valid and means "no backfill may spend anything", which stops every
     # run in its tracks without touching live extraction or losing a cursor.
-    # Revisit alongside the other four before any multi-guild rollout;
-    # CLAUDE.md's Open Items note on a cross-guild shared budget applies here
-    # identically.
+    # This cap's own per-guild worst case is unchanged by Phase 4a-2's
+    # cross-guild budget below, which bounds the SUM across every guild
+    # sharing one operator key rather than replacing this number (see
+    # CLAUDE.md's Open Items).
     backfill_daily_cap: int = Field(default=30, ge=0, le=1_000_000)
 
     # How long the backfill worker waits between two consecutive history page
@@ -806,10 +833,72 @@ class Settings(BaseSettings):
     # added -- every paid call site in this project carries its own
     # independent cost safety net, per the pattern set by the three ledgers
     # above -- but it is set generously rather than swept from a corpus, since
-    # there is no realistic scenario at today's usage where it binds. Revisit
-    # alongside the other three before any multi-guild rollout; CLAUDE.md's
-    # Open Items note on a cross-guild shared budget applies here identically.
+    # there is no realistic scenario at today's usage where it binds. This
+    # cap's own per-guild worst case is unchanged by Phase 4a-2's cross-guild
+    # budget below, which bounds the SUM across every guild sharing one
+    # operator key rather than replacing this number (see CLAUDE.md's Open
+    # Items).
     variant_daily_cap: int = Field(default=200, ge=0, le=1_000_000)
+
+    # --- Cross-guild operator budget (Phase 4a-2) ---------------------------
+    # CLAUDE.md's Open Items section named this gap before any code existed for
+    # it, and every one of the five daily-cap comments above already points
+    # here ("revisit alongside the other N before any multi-guild rollout"):
+    # PROACTIVE_DAILY_CAP, EXTRACTION_DAILY_CAP, SUPERSESSION_DAILY_CAP,
+    # VARIANT_DAILY_CAP and BACKFILL_DAILY_CAP each bound one guild's worst
+    # case, which says nothing about the SUM across every guild sharing one
+    # operator-funded key. See aura.db.cross_guild_budget for the mechanism
+    # this pair of settings drives, and reports/phase-4a-multitenancy-audit.txt
+    # Section 3 for the gap as it stood before this phase closed it.
+    #
+    # Timur chose a flat, per-guild subscription price over metered billing
+    # (Option A, that audit's Section 4), which is why this is ONE combined
+    # ceiling across all five ledgers rather than five more per-ledger caps: a
+    # flat-fee operator's real question is "is total spend still inside what
+    # subscription revenue covers", not "which ledger, on which guild, spent
+    # what" -- the five existing per-guild caps already answer that second
+    # question, independently, the way CLAUDE.md's "every paid call site
+    # carries its own safety net" principle asks them to.
+    cross_guild_budget_mode: CrossGuildBudgetMode = CrossGuildBudgetMode.WARN
+
+    # A rough, conservative dollar ceiling on TODAY's combined estimated spend
+    # across all five ledgers and every guild sharing this deployment's key --
+    # not a real-time cost meter (see aura.db.cross_guild_budget for the fixed,
+    # documented worst-case per-call figures this reuses from each cap's own
+    # comment rather than measuring real tokens or dollars).
+    #
+    # 15.00 is sized against the same worst-case-at-full-cap-utilization math
+    # every per-guild cap above already uses, summed per guild and then scaled
+    # to the "handful of test and community servers" CLAUDE.md's Proactive
+    # Relief section names as Aura's realistic near-term footprint: roughly
+    # $0.18/day proactive (60 * $0.003) + $0.55/day extraction (50 * $0.011) +
+    # $0.05/day supersession (50 * $0.001) + $0.40/day variant (200 * $0.002)
+    # + $0.33/day backfill (30 * $0.011) = ~$1.51/guild/day if every ledger's
+    # cap were fully saturated every single day, which the individual caps'
+    # own comments already call an extreme rather than a realistic case. $15
+    # covers roughly ten such guilds at that extreme simultaneously -- a
+    # deliberately generous multiple of "a handful" rather than a tight fit,
+    # since this ceiling's job is catching a genuine runaway (a bug, or far
+    # more paying guilds than expected), not policing normal variance.
+    #
+    # MUST be revisited before any rollout past a handful of guilds: this
+    # default does not scale itself, and CLAUDE.md's Open Items note on this
+    # exact gap already said so before this field existed.
+    cross_guild_daily_budget_usd: float = Field(default=15.0, ge=0.0, allow_inf_nan=False)
+
+    # The Discord user ID allowed to run /aura-operator-budget (see
+    # aura.commands.operator) -- the one command that shows the cross-guild
+    # totals above are actually measuring, across every guild this process
+    # serves. Deliberately a single configured ID rather than Discord's own
+    # application-owner/team concept: this project runs as a single
+    # self-hosted process for a single operator, not a published multi-team
+    # app, and comparing against a plain configured ID needs no extra API call
+    # and no team-vs-solo-owner branching to get subtly wrong. Left unset by
+    # default, which means the command refuses everyone -- a deployment that
+    # never sets this loses only a diagnostic view, never budget enforcement
+    # itself, which runs unconditionally through cross_guild_budget_mode
+    # above regardless of whether anyone can see the numbers.
+    operator_discord_user_id: int | None = None
 
     # --- The independent grounding check on every answer Aura sends ---------
     # The last step before /aura-ask replies or the proactive responder posts:
@@ -929,6 +1018,29 @@ class Settings(BaseSettings):
         if not stripped:
             raise ValueError(f"DISCORD_TOKEN is missing or blank. {ENV_EXAMPLE_HINT}")
         return stripped
+
+    @field_validator("operator_discord_user_id", mode="before")
+    @classmethod
+    def _blank_operator_id_means_unset(cls, value: object) -> object:
+        """Treat a blank OPERATOR_DISCORD_USER_ID the same as an absent one.
+
+        Every other optional field in this file is a `str | None`, where a
+        blank env value parses harmlessly to `""` (falsy, read the same as
+        unset by every caller). This is the first optional `int | None`
+        field, and pydantic does NOT extend that same courtesy to numbers: an
+        empty string fails int coercion outright, so `OPERATOR_DISCORD_USER_ID=`
+        left blank in .env -- exactly what .env.example ships, and exactly what
+        an operator clearing a previously-set ID by blanking rather than
+        deleting the line would produce -- would otherwise crash the whole
+        process at startup on a field that gates one diagnostic command. That
+        is precisely the "routine `git pull` becomes an outage" failure mode
+        CLAUDE.md's grounding_check_model comment already names for a
+        different field; this validator is the same fix, applied here before
+        pydantic's own int parsing ever sees the value.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     def resolve_model(self, component: ModelComponent) -> str | None:
         """Resolve the model a given LLM-calling component should use.

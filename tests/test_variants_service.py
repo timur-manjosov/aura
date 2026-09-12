@@ -23,6 +23,7 @@ import pytest
 
 from aura.db.connection import utc_day, utc_now
 from aura.db.fact_variants import get_variants_for_fact
+from aura.db.proactive_state import try_acquire_escalation_slot
 from aura.db.repository import init_schema
 from aura.db.variant_state import count_variant_calls_on
 from aura.embeddings import EMBEDDING_DTYPE
@@ -40,6 +41,7 @@ GENERATION_MODEL = "openrouter/anthropic/claude-haiku-4.5"
 AUDIT_MODEL = "openrouter/openai/gpt-4o-mini"
 
 GUILD_A = 100000000000000001
+GUILD_B = 200000000000000002
 CANONICAL = "Uploads in #trading are capped at 5MB, except on Saturdays."
 
 
@@ -627,3 +629,65 @@ class TestGenerateVariantsForFact:
         vector = np.frombuffer(stored[0].embedding, dtype=EMBEDDING_DTYPE)
         assert vector.shape == (384,)
         assert np.linalg.norm(vector) > 0.0
+
+
+class TestCrossGuildBudget:
+    """Phase 4a-2's operator-wide brake, checked ahead of this guild's own
+    variant_daily_cap -- see aura.db.cross_guild_budget."""
+
+    async def test_hard_mode_over_budget_stores_nothing_and_never_calls_the_model(
+        self, conn: aiosqlite.Connection, embedding_model, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SYNTHESIS_MODEL", GENERATION_MODEL)
+        monkeypatch.setenv("VARIANT_AUDIT_MODEL", AUDIT_MODEL)
+        monkeypatch.setenv("CROSS_GUILD_BUDGET_MODE", "hard")
+        # Below what a single proactive escalation ($0.003) already costs, so
+        # the prior spend below is what pushes the combined total over --
+        # $0.00 exactly is never "over budget" on its own (see
+        # aura.db.cross_guild_budget's own strictly-greater-than semantics).
+        monkeypatch.setenv("CROSS_GUILD_DAILY_BUDGET_USD", "0.001")
+
+        # An unrelated guild's unrelated ledger spend, real and durable,
+        # exactly the shape a shared operator key would actually see.
+        await try_acquire_escalation_slot(
+            conn, guild_id=GUILD_B, channel_id=1, message_id=1,
+            cooldown_seconds=0.0, daily_cap=1_000_000, now=utc_now(),
+        )
+
+        fact = await _fact_without_scheduling(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content=CANONICAL
+        )
+
+        mock = _mock_llm(
+            {"variants": ["variant a", "variant b"]},
+            {"verdicts": [_verdict(1), _verdict(2)]},
+        )
+        with patch("litellm.acompletion", mock):
+            stored = await generate_variants_for_fact(conn, embedding_model, fact)
+
+        assert stored == []
+        mock.assert_not_awaited()
+        assert await get_variants_for_fact(conn, fact.id) == []
+        assert await count_variant_calls_on(conn, guild_id=GUILD_A, day=utc_day(utc_now())) == 0
+
+    async def test_warn_mode_over_budget_still_generates_and_stores(
+        self, conn: aiosqlite.Connection, embedding_model, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SYNTHESIS_MODEL", GENERATION_MODEL)
+        monkeypatch.setenv("VARIANT_AUDIT_MODEL", AUDIT_MODEL)
+        monkeypatch.setenv("CROSS_GUILD_BUDGET_MODE", "warn")
+        monkeypatch.setenv("CROSS_GUILD_DAILY_BUDGET_USD", "0")
+
+        fact = await _fact_without_scheduling(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content=CANONICAL
+        )
+
+        mock = _mock_llm(
+            {"variants": ["variant a", "variant b"]},
+            {"verdicts": [_verdict(1), _verdict(2)]},
+        )
+        with patch("litellm.acompletion", mock):
+            stored = await generate_variants_for_fact(conn, embedding_model, fact)
+
+        assert [v.content for v in stored] == ["variant a", "variant b"]
+        assert await count_variant_calls_on(conn, guild_id=GUILD_A, day=utc_day(utc_now())) == 1

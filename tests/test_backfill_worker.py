@@ -53,6 +53,7 @@ from aura.db.pending_facts import (
     confirm_pending_fact,
     get_pending_facts,
 )
+from aura.db.proactive_state import try_acquire_escalation_slot
 from aura.db.repository import get_active_facts, get_fact_by_id, init_schema
 from aura.db.supersession_state import count_supersession_calls_on
 from aura.embeddings import embed_text
@@ -1190,6 +1191,71 @@ class TestCapIndependence:
         assert flushed == 1, "a live batch was refused because a backfill spent its own cap"
         assert live_distiller.seen_message_ids == [live_message.id]
         assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 1
+
+
+class TestCrossGuildBudget:
+    """Phase 4a-2's operator-wide brake, checked ahead of this guild's own
+    backfill_daily_cap -- see aura.db.cross_guild_budget."""
+
+    async def test_hard_mode_over_budget_pauses_the_run_with_its_cursor_unchanged(
+        self, conn, embedding_model
+    ) -> None:
+        # An unrelated guild's unrelated ledger spend, pushing the combined
+        # cross-guild total above a budget smaller than even one such spend.
+        await try_acquire_escalation_slot(
+            conn, guild_id=GUILD_B, channel_id=1, message_id=1,
+            cooldown_seconds=0.0, daily_cap=1_000_000, now=NOW,
+        )
+
+        corpus = [_message(FIRST_ID + index) for index in range(10)]
+        gateway = FakeGateway()
+        gateway.add(FakeChannel(corpus))
+        distiller = RecordingDistiller()
+        await _start(conn)
+
+        with patch("aura.backfill.worker.distill_facts", distiller):
+            await _drain(
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=_settings(
+                    cross_guild_budget_mode="hard", cross_guild_daily_budget_usd=0.001
+                ),
+            )
+
+        assert distiller.calls == 0
+        assert await count_backfill_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 0
+        run = await get_active_run(conn, channel_id=CHANNEL_A)
+        assert run is not None
+        assert run.state is BackfillState.RUNNING  # paused for today, not ended
+        assert run.cursor_message_id is None  # never advanced past its starting point
+
+    async def test_warn_mode_over_budget_still_advances(self, conn, embedding_model) -> None:
+        await try_acquire_escalation_slot(
+            conn, guild_id=GUILD_B, channel_id=1, message_id=1,
+            cooldown_seconds=0.0, daily_cap=1_000_000, now=NOW,
+        )
+
+        corpus = [_message(FIRST_ID + index) for index in range(10)]
+        gateway = FakeGateway()
+        gateway.add(FakeChannel(corpus))
+        distiller = RecordingDistiller()
+        await _start(conn)
+
+        with patch("aura.backfill.worker.distill_facts", distiller):
+            await _drain(
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=_settings(
+                    cross_guild_budget_mode="warn", cross_guild_daily_budget_usd=0.001
+                ),
+            )
+
+        assert distiller.calls > 0
+        assert await count_backfill_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) > 0
 
 
 class TestSupersessionChainOverHistory:
