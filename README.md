@@ -14,7 +14,7 @@ This repository is currently at **Phase 0**: the bot skeleton. It connects to Di
    cp .env.example .env
    ```
 
-   At minimum, set `DISCORD_TOKEN` to a bot token from the [Discord Developer Portal](https://discord.com/developers/applications). Under **Bot > Privileged Gateway Intents**, enable **Message Content Intent** and **Server Members Intent** — the bot also enables both in code, but they must be turned on in the portal too. Message Content's absence fails the connection outright; Server Members' absence is quieter — `on_member_join` (the onboarding trigger) simply never fires, with no error anywhere.
+   At minimum, set `DISCORD_TOKEN` to a bot token from the [Discord Developer Portal](https://discord.com/developers/applications). Under **Bot > Privileged Gateway Intents**, enable **Message Content Intent** and **Server Members Intent** *before* starting the bot — the code also requests both, but both are privileged, and if the portal setting is off for either one, Discord refuses the entire gateway connection (`discord.errors.PrivilegedIntentsRequired`). That takes down the **whole bot**, not just the feature needing the missing intent (message reading for Message Content; `on_member_join`, the onboarding trigger, for Server Members) — confirmed in production on 2026-08-27, see `reports/deployment-2026-08-27.txt`.
 
 2. Build and start the bot:
 

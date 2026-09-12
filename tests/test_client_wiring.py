@@ -54,10 +54,11 @@ class TestIntents:
         assert build_intents().message_content is True
 
     def test_members_intent_is_requested(self) -> None:
-        # Without it, on_member_join (Phase 3d's onboarding trigger) never
-        # fires at all -- no error, no log line, the bot just silently never
-        # welcomes anyone. Both this and message_content must ALSO be enabled
-        # in the Discord Developer Portal; see build_intents' docstring.
+        # Privileged, same as message_content above: if the Discord Developer
+        # Portal setting is off, Discord refuses the whole gateway connection
+        # (PrivilegedIntentsRequired), not just on_member_join / Phase 3d's
+        # onboarding trigger. Both must ALSO be enabled in the portal; see
+        # build_intents' docstring.
         assert build_intents().members is True
 
 

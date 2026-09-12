@@ -456,13 +456,20 @@ class AuraClient(discord.Client):
 def build_intents() -> discord.Intents:
     """Build the gateway intents Aura requires.
 
-    Message Content Intent and Server Members Intent are both requested here,
-    but BOTH must ALSO be enabled for this bot in the Discord Developer
-    Portal, under Bot > Privileged Gateway Intents. Message Content's absence
-    fails the connection outright with an intent-related error; Members'
-    absence is quieter and easy to miss -- on_member_join (Phase 3d's
-    onboarding trigger) simply never fires, with no error anywhere, and the
-    bot otherwise looks completely healthy.
+    Message Content Intent and Server Members Intent are both privileged and
+    both requested here, and BOTH must ALSO be enabled for this bot in the
+    Discord Developer Portal, under Bot > Privileged Gateway Intents --
+    checked and enabled *before* deploying code that requests either one, not
+    after a failed deploy. Discord's gateway refuses the ENTIRE connection
+    (discord.errors.PrivilegedIntentsRequired) if a privileged intent is
+    requested in code but not approved on the portal side. This takes down
+    the whole bot, not just the feature that depends on the missing intent
+    (Message Content for reading message text at all; Server Members for
+    on_member_join, Phase 3d's onboarding trigger) -- under
+    `restart: unless-stopped` this becomes a crash-loop. Confirmed in
+    production on 2026-08-27 when Server Members was requested here but not
+    yet enabled on the portal (see reports/deployment-2026-08-27.txt); the
+    same failure mode applies to Message Content.
     """
     intents = discord.Intents.default()
     intents.message_content = True

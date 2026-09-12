@@ -98,6 +98,24 @@ rebuilds. No `.env` changes are needed unless the change itself requires a
 new variable (in which case, repeat the `scp` step above with the updated
 file).
 
+**Pre-deploy intent check.** Before deploying any change that adds a new
+gateway intent, confirm the matching setting is already enabled under Bot >
+Privileged Gateway Intents in the Discord Developer Portal — *before*
+running the deploy, not after it crash-loops. `build_intents()` in
+`src/aura/main.py` currently requests:
+
+| Intent (code) | Portal setting | Required by |
+|---|---|---|
+| `intents.message_content` | Message Content Intent | reading message text (fact capture, extraction, backfill) |
+| `intents.members` | Server Members Intent | `on_member_join` (Phase 3d onboarding) |
+
+Both are privileged: requesting either in code while its portal setting is
+off makes Discord refuse the entire gateway connection
+(`discord.errors.PrivilegedIntentsRequired`), taking down the whole bot in a
+crash-loop under `restart: unless-stopped` — not just the feature that
+needed it. This is not a hypothetical; it happened on 2026-08-27 (see
+`reports/deployment-2026-08-27.txt`).
+
 ## Automatic fact extraction (Phase 3a)
 
 Extraction runs as a sibling to Trigger 2 (proactive relief), not on top of
@@ -313,8 +331,14 @@ structured, so there is no LLM call, no model to configure, and no grounding
 check needed.
 
 Requires the **Server Members Intent** enabled in the Discord Developer
-Portal (see the README) — without it, `on_member_join` never fires and no
-onboarding message is ever posted, with nothing in the logs to say why.
+Portal *before* deploying this feature (see the README). This is a
+privileged intent: if the code requests it and the portal setting is off,
+Discord refuses the entire gateway connection
+(`discord.errors.PrivilegedIntentsRequired`) — the **whole bot** goes down in
+a crash-loop under `restart: unless-stopped`, not just onboarding. This is
+not a hypothetical: it took production down on 2026-08-27 (see
+`reports/deployment-2026-08-27.txt`). Enable and confirm the intent before
+running the deploy, not after it fails.
 
 No new `.env` values are required; two optional ones tune it:
 
@@ -419,7 +443,14 @@ again.
 ## Troubleshooting checklist
 
 - **Container won't start / exits immediately:** `docker logs aura-aura-1`
-  first. Most likely cause is a missing or malformed `.env` value.
+  first. Most likely cause is a missing or malformed `.env` value. If the log
+  instead shows `discord.errors.PrivilegedIntentsRequired`, this deploy added
+  or already contains a request for a privileged intent (Message Content,
+  Server Members) that isn't enabled yet under Bot > Privileged Gateway
+  Intents in the Discord Developer Portal — see the pre-deploy intent check
+  below. This takes down the **whole bot** in a crash-loop, not just the one
+  feature that needed the intent; enable the portal setting and redeploy,
+  it is not a code bug.
 - **`/aura-ask` returns nothing / errors:** check `LLM_API_KEY` and
   `LLM_PROVIDER` in `.env`, and confirm the OpenRouter key is funded.
 - **`/aura-pending` always reports nothing to review:** confirm the channel
@@ -443,13 +474,15 @@ again.
   container is live on the token (below); two processes sharing the same
   database file are still safe, but two processes on two *different* databases
   are not.
-- **No onboarding message ever arrives:** in order of likelihood — the
-  **Server Members Intent** is not enabled in the Discord Developer Portal
-  (see the README; this fails silently, with no error anywhere), the guild
-  was never opted in (`/aura-onboarding channel:#…`), the guild currently has
-  no eligible active facts (rules, status changes or other non-milestone
-  facts), or Aura cannot post in the chosen channel.
-  `docker logs aura-aura-1 | grep -i onboarding` distinguishes the last three.
+- **No onboarding message ever arrives, but the bot is otherwise up and
+  healthy:** the **Server Members Intent** being disabled is *not* this
+  case — see "Container won't start" above, since that failure takes the
+  whole bot down instead. With the container confirmed running, in order of
+  likelihood: the guild was never opted in
+  (`/aura-onboarding channel:#…`), the guild currently has no eligible active
+  facts (rules, status changes or other non-milestone facts), or Aura cannot
+  post in the chosen channel. `docker logs aura-aura-1 | grep -i onboarding`
+  distinguishes the three.
 - **An onboarding message arrived twice for the same join:** should be
   impossible — the send is claimed atomically before anything is posted,
   keyed on the member's actual join event. A member who left and rejoined
