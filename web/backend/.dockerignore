@@ -1,0 +1,20 @@
+# Test-only code. fake_discord.py in particular must never ship: it is a
+# credential-accepting stand-in for Discord, and there is no deployment in
+# which shipping one is right.
+tests/
+fake_discord.py
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+.env
+.env.*
+!.env.example
+*.md
+Dockerfile
+.dockerignore

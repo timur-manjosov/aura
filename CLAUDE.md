@@ -44,6 +44,17 @@ Do not add, even if it seems like a natural extension:
 - `APScheduler` — scheduled digest generation
 - `pytest`, `pytest-asyncio` — testing
 
+The web interface (Phase 4b, `web/`) is a **separate service** with its own
+stack, its own container and its own configuration. It imports nothing from
+`src/aura` and opens no database — see `web/README.md` for why:
+
+- `fastapi`, `uvicorn` — the OAuth2 backend
+- `httpx` — the only outbound calls it makes, all to Discord
+- `Next.js` / `React` — the frontend shell
+
+Its tests live in `web/backend/tests` and run in the repository's single
+`pytest` invocation alongside the bot's.
+
 ## LLM Usage & Model Selection
 
 Aura calls a large language model at several distinct points in the pipeline — fact extraction and supersession detection, answer synthesis from multiple linked facts, and later digest formatting. These are genuinely different tasks with different requirements, not one generic "the LLM does language stuff" job.
@@ -166,6 +177,28 @@ Therefore, for every implementation, without exception:
   run. Still explicitly deferred, and not touched by this phase: the
   cent-accurate cost/token metering Option B would need, and the payment
   integration itself.
+
+- **The web container holds the bot token (Phase 4b).** Deciding which guilds
+  Aura actually runs on is a question Aura's own database cannot answer —
+  every `guild_id` in it is a side effect of activity, so a freshly invited
+  guild has no rows and a guild Aura was removed from keeps its rows forever.
+  Phase 4b therefore asks Discord instead of the database, which means the web
+  container is configured with `AURA_WEB_DISCORD_BOT_TOKEN`. That token is full
+  bot authority; Discord has no narrower "list my guilds" credential. Bounded
+  by: one read-only call site, no published host port, no database, no volume.
+  NOT bounded: an attacker holding that token can use it against Discord
+  directly. Revisit if this ever runs somewhere less controlled than one VPS;
+  the alternative (a membership table the bot writes and the web service reads
+  read-only) is written up with its own trade-offs in `web/README.md`.
+
+- **Web sessions are in memory only (Phase 4b).** A backend restart logs
+  everyone out, and the store's size ceiling can evict the oldest live session
+  under load. Accepted for 4b because it means no Discord token is ever
+  written to disk and no new table exists; `aura_web.sessions` keeps both
+  stores behind small interfaces so 4c/4d can make them durable without
+  touching the flow. No request-rate limiting exists either — the stores bound
+  memory, not request rate; a reverse proxy is the right place for that and
+  there is none in local development.
 
 # GitHub-Workflow
 - Arbeite bei GitHub-Aufgaben eigenständig über gh-CLI/GitHub-MCP-Tools, wie ein Senior Developer.

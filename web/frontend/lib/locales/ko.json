@@ -1,0 +1,16 @@
+{
+  "app_name": "Aura",
+  "app_tagline": "Aura는 당신의 서버를 알고 있습니다.",
+  "phase_notice": "지금은 로그인만 가능합니다. 지식과 설정 관리는 나중에 추가됩니다.",
+  "login_button": "Discord로 로그인",
+  "logout_button": "로그아웃",
+  "loading": "불러오는 중…",
+  "signed_in_as": "{name}(으)로 로그인됨",
+  "guilds_heading": "관리할 수 있는 서버",
+  "guilds_empty_title": "아직 표시할 항목이 없습니다",
+  "guilds_empty_body": "이 목록에는 회원님에게 서버 관리 권한이 있고 Aura가 참여 중인 서버가 표시됩니다. 두 조건이 모두 충족되어야 여기에 나타납니다.",
+  "guild_icon_alt": "{name} 서버 아이콘",
+  "error_discord_unavailable": "Discord에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+  "error_generic": "문제가 발생했습니다. 다시 시도해 주세요.",
+  "retry_button": "다시 시도"
+}

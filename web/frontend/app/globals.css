@@ -1,0 +1,174 @@
+/* A deliberately small stylesheet: this sub-phase ships a shell, not a design
+   system. Colours are defined once as custom properties so 4d can restyle
+   without hunting through components, and the dark scheme is a media query
+   rather than a toggle because there is no place yet to store a preference. */
+
+:root {
+  color-scheme: light dark;
+  --surface: #ffffff;
+  --surface-raised: #f6f7f9;
+  --border: #e2e5ea;
+  --text: #16181d;
+  --text-muted: #5c6270;
+  --accent: #5865f2;
+  --accent-text: #ffffff;
+  --danger: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #16181d;
+    --surface-raised: #1e2127;
+    --border: #2c3039;
+    --text: #f2f3f5;
+    --text-muted: #9aa1ae;
+    --accent: #5865f2;
+    --accent-text: #ffffff;
+    --danger: #f2b8b5;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--surface);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "Noto Sans", "Noto Sans JP", "Noto Sans KR", sans-serif;
+  line-height: 1.55;
+}
+
+.page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 3rem 1.25rem 4rem;
+}
+
+.masthead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1rem;
+  margin-bottom: 2rem;
+}
+
+.masthead h1 {
+  font-size: 1.6rem;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.tagline {
+  color: var(--text-muted);
+  margin: 0.25rem 0 0;
+}
+
+.notice {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin-bottom: 2rem;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--accent);
+  color: var(--accent-text);
+  border: none;
+  border-radius: 0.5rem;
+  padding: 0.65rem 1.1rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.button.secondary {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  padding: 0.4rem 0.8rem;
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.guild-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.guild {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface-raised);
+}
+
+.guild-icon,
+.guild-initial {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  flex: none;
+}
+
+.guild-initial {
+  display: grid;
+  place-items: center;
+  background: var(--border);
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.guild-name {
+  font-weight: 600;
+  /* A server name is user-supplied; long ones must not stretch the layout. */
+  overflow-wrap: anywhere;
+}
+
+.empty {
+  border: 1px dashed var(--border);
+  border-radius: 0.6rem;
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.empty h3 {
+  margin: 0 0 0.5rem;
+  color: var(--text);
+}
+
+.error {
+  color: var(--danger);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}

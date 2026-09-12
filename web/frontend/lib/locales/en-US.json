@@ -1,0 +1,16 @@
+{
+  "app_name": "Aura",
+  "app_tagline": "Aura knows your server.",
+  "phase_notice": "Sign-in only for now. Managing facts and settings from here comes later.",
+  "login_button": "Sign in with Discord",
+  "logout_button": "Sign out",
+  "loading": "Loading…",
+  "signed_in_as": "Signed in as {name}",
+  "guilds_heading": "Servers you can manage",
+  "guilds_empty_title": "Nothing to show yet",
+  "guilds_empty_body": "This list shows servers where you have the Manage Server permission and Aura is a member. Both have to be true for a server to appear here.",
+  "guild_icon_alt": "{name} server icon",
+  "error_discord_unavailable": "Discord could not be reached. Please try again in a moment.",
+  "error_generic": "Something went wrong. Please try again.",
+  "retry_button": "Try again"
+}
