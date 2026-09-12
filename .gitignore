@@ -1,5 +1,6 @@
 # Environment / secrets
 .env
+web/.env
 
 # Local data (SQLite DB, etc.) — the directory is tracked, its contents are not
 data/*
@@ -28,3 +29,10 @@ dist/
 
 # OS
 .DS_Store
+
+# Web frontend (Phase 4b) build output and dependencies
+web/frontend/node_modules/
+web/frontend/.next/
+web/frontend/out/
+web/frontend/next-env.d.ts
+web/frontend/tsconfig.tsbuildinfo

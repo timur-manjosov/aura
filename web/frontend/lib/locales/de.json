@@ -1,0 +1,16 @@
+{
+  "app_name": "Aura",
+  "app_tagline": "Aura kennt deinen Server.",
+  "phase_notice": "Vorerst nur die Anmeldung. Fakten und Einstellungen lassen sich später hier verwalten.",
+  "login_button": "Mit Discord anmelden",
+  "logout_button": "Abmelden",
+  "loading": "Wird geladen…",
+  "signed_in_as": "Angemeldet als {name}",
+  "guilds_heading": "Server, die du verwalten kannst",
+  "guilds_empty_title": "Noch nichts anzuzeigen",
+  "guilds_empty_body": "Diese Liste zeigt Server, auf denen du die Berechtigung „Server verwalten“ hast und Aura Mitglied ist. Beides muss zutreffen, damit ein Server hier erscheint.",
+  "guild_icon_alt": "Serversymbol von {name}",
+  "error_discord_unavailable": "Discord war nicht erreichbar. Bitte versuche es gleich noch einmal.",
+  "error_generic": "Etwas ist schiefgelaufen. Bitte versuche es erneut.",
+  "retry_button": "Erneut versuchen"
+}

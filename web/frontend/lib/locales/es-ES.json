@@ -1,0 +1,16 @@
+{
+  "app_name": "Aura",
+  "app_tagline": "Aura conoce tu servidor.",
+  "phase_notice": "Por ahora solo el inicio de sesión. La gestión de datos y ajustes llegará más adelante.",
+  "login_button": "Iniciar sesión con Discord",
+  "logout_button": "Cerrar sesión",
+  "loading": "Cargando…",
+  "signed_in_as": "Sesión iniciada como {name}",
+  "guilds_heading": "Servidores que puedes administrar",
+  "guilds_empty_title": "Todavía no hay nada que mostrar",
+  "guilds_empty_body": "Esta lista muestra los servidores en los que tienes el permiso Gestionar servidor y Aura es miembro. Deben cumplirse ambas condiciones para que un servidor aparezca aquí.",
+  "guild_icon_alt": "Icono del servidor {name}",
+  "error_discord_unavailable": "No se ha podido contactar con Discord. Inténtalo de nuevo en un momento.",
+  "error_generic": "Algo ha salido mal. Inténtalo de nuevo.",
+  "retry_button": "Reintentar"
+}

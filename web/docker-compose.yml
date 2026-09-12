@@ -1,0 +1,56 @@
+# The web interface, as its own compose project.
+#
+# Not a pair of services added to the repository root's docker-compose.yml, on
+# purpose. Aura and Epiphyte are already isolated from each other as separate
+# compose projects with separate lifecycles, and this follows the same shape:
+# `docker compose -f web/docker-compose.yml up -d` starts, stops and restarts
+# the web interface without touching the running bot, and a crash-looping web
+# container cannot take the bot's process down with it.
+#
+# The isolation is structural rather than conventional:
+#   * a project name of its own, so `docker compose down` here can never
+#     remove the bot's container;
+#   * a network of its own, with no link to the bot's;
+#   * NO volume mount of ../data. This service never opens Aura's SQLite file
+#     -- see web/README.md for why it does not need to, and what it asks
+#     Discord instead;
+#   * the backend publishes no host port at all. It is reachable only from the
+#     frontend container over the internal network, so the OAuth callback and
+#     every session cookie travel through exactly one origin.
+name: aura-web
+
+services:
+  backend:
+    build:
+      context: ./backend
+    env_file: .env
+    environment:
+      AURA_WEB_HOST: "0.0.0.0"
+      AURA_WEB_PORT: "8080"
+    expose:
+      - "8080"
+    networks:
+      - aura-web
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # A BUILD argument, not a runtime environment variable: Next bakes
+        # rewrites into the build output, so a value supplied only at start-up
+        # is ignored (see frontend/next.config.mjs). The service name, not
+        # localhost -- inside the frontend container, 127.0.0.1 is itself.
+        AURA_WEB_BACKEND_ORIGIN: "http://backend:8080"
+    ports:
+      - "${AURA_WEB_FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - aura-web
+    restart: unless-stopped
+
+networks:
+  aura-web:
+    driver: bridge

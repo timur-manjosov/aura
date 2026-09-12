@@ -1,0 +1,16 @@
+{
+  "app_name": "Aura",
+  "app_tagline": "Aura sunucunuzu tanır.",
+  "phase_notice": "Şimdilik yalnızca giriş. Bilgileri ve ayarları buradan yönetmek daha sonra gelecek.",
+  "login_button": "Discord ile giriş yap",
+  "logout_button": "Çıkış yap",
+  "loading": "Yükleniyor…",
+  "signed_in_as": "{name} olarak giriş yapıldı",
+  "guilds_heading": "Yönetebileceğiniz sunucular",
+  "guilds_empty_title": "Henüz gösterilecek bir şey yok",
+  "guilds_empty_body": "Bu liste, Sunucuyu Yönet yetkinizin bulunduğu ve Aura’nın üye olduğu sunucuları gösterir. Bir sunucunun burada görünmesi için her iki koşulun da sağlanması gerekir.",
+  "guild_icon_alt": "{name} sunucu simgesi",
+  "error_discord_unavailable": "Discord’a ulaşılamadı. Lütfen birazdan tekrar deneyin.",
+  "error_generic": "Bir şeyler ters gitti. Lütfen tekrar deneyin.",
+  "retry_button": "Tekrar dene"
+}
