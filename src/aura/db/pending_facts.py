@@ -24,6 +24,7 @@ rowcount decides whether the caller won, inside the same transaction as the
 fact insert, so a loser's insert is rolled back rather than left behind as a
 duplicate active fact.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -207,6 +208,19 @@ def _row_to_pending_fact(row: sqlite3.Row) -> PendingFact:
 async def verify_pending_facts_schema(conn: aiosqlite.Connection) -> None:
     """Add Phase 3a-3's judgment columns to a pending_facts table that predates them.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Idempotent: the columns are added only when absent, so this is safe on every
+    startup and on a fresh database alike.
     Called once at startup, after init_schema, for the same reason
     verify_signal_schema is: `CREATE TABLE IF NOT EXISTS` cannot reshape a table
     that already exists, so a database created by Phase 3a-2 would keep its
@@ -261,8 +275,34 @@ async def stage_pending_fact(
     similar_fact_id: int | None = None,
     similar_fact_score: float | None = None,
 ) -> PendingFact | None:
-    """Stage one distilled candidate for review, or return None if it is already staged.
+    """Stage one distilled candidate for review.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id, channel_id, message_id
+        The origin reference. `(channel_id, message_id)` is the idempotency key.
+    content
+        The distilled sentence.
+    embedding
+        `content`'s vector.
+    category
+        What kind of thing the candidate asserts, as judged by the model.
+    similar_fact_id
+        The existing active fact this most resembles, or None if none cleared
+        the dedup threshold.
+    similar_fact_score
+        That fact's similarity, or None when `similar_fact_id` is None.
+
+    Returns
+    -------
+    PendingFact or None
+        The staged row, or None if this message already has a candidate staged
+        from it.
+
+    Notes
+    -----
     Idempotent by (channel_id, message_id, content), absorbed by name through
     the UNIQUE constraint rather than by a blanket INSERT OR IGNORE -- the same
     distinction record_signal documents: OR IGNORE would also swallow a CHECK
@@ -328,8 +368,29 @@ async def record_relationship_judgement(
     relationship: SupersessionRelationship,
     reasoning: str,
 ) -> bool:
-    """Attach Phase 3a-3's judgment to a staged candidate. Returns whether it applied.
+    """Attach a supersession judgment to a staged candidate.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild the candidate must belong to.
+    pending_id
+        The candidate to annotate.
+    relationship
+        What the dedup hit means.
+    reasoning
+        The model's one-sentence explanation, shown to the reviewing moderator.
+
+    Returns
+    -------
+    bool
+        Whether the judgment was written. False when the candidate is missing
+        from this guild or has already been resolved.
+
+    Notes
+    -----
     Deliberately a separate write from stage_pending_fact rather than two more
     arguments to it, because the judgment is paid for and staging is not: the
     candidate must land in the review queue whether or not the judgment call
@@ -369,8 +430,31 @@ async def record_relationship_judgement(
 async def get_pending_facts(
     conn: aiosqlite.Connection, *, guild_id: int, limit: int
 ) -> list[PendingFact]:
-    """Return guild_id's unresolved candidates, oldest first.
+    """Return a guild's unresolved candidates, oldest first.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+    limit
+        Maximum rows. Must not be negative -- SQLite reads LIMIT -1 as "no
+        limit".
+
+    Returns
+    -------
+    list[PendingFact]
+        Up to `limit` unresolved candidates, oldest first: this is a work queue,
+        so the oldest is the one that has waited longest.
+
+    Raises
+    ------
+    ValueError
+        If `limit` is negative.
+
+    Notes
+    -----
     Oldest first, unlike the newest-first diagnostic views elsewhere: this is a
     work queue, and the correct order to review a queue in is the order it
     arrived, so nothing sits at the bottom forever while newer candidates keep
@@ -397,7 +481,20 @@ async def get_pending_facts(
 
 
 async def count_pending_facts(conn: aiosqlite.Connection, *, guild_id: int) -> int:
-    """Return how many candidates are still awaiting review in guild_id."""
+    """Return how many candidates are still awaiting review in a guild.
+
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to count.
+
+    Returns
+    -------
+    int
+        Unresolved candidates; 0 if there are none.
+    """
     async with connection_lock(conn):
         async with conn.execute(
             "SELECT COUNT(*) FROM pending_facts WHERE guild_id = ? AND status = ?",
@@ -410,8 +507,25 @@ async def count_pending_facts(conn: aiosqlite.Connection, *, guild_id: int) -> i
 async def get_pending_fact(
     conn: aiosqlite.Connection, *, guild_id: int, pending_id: int
 ) -> PendingFact | None:
-    """Return one candidate by ID within guild_id, or None if it isn't there.
+    """Return one candidate by ID within a guild.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild the candidate must belong to.
+    pending_id
+        The candidate to fetch.
+
+    Returns
+    -------
+    PendingFact or None
+        The candidate whatever its status; None if this guild has no candidate
+        with that ID.
+
+    Notes
+    -----
     Guild-scoped, not just ID-scoped, for the same isolation reason
     get_fact_by_id is.
     """
@@ -425,8 +539,23 @@ async def get_pending_fact(
 
 
 async def get_milestone_fact_ids(conn: aiosqlite.Connection, *, guild_id: int) -> set[int]:
-    """Return the IDs of this guild's facts that came from a MILESTONE candidate.
+    """Return the IDs of a guild's facts that came from a MILESTONE candidate.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+
+    Returns
+    -------
+    set[int]
+        Fact IDs, for the digest's milestone section. Empty if the guild has
+        none.
+
+    Notes
+    -----
     The periodic digest's only use of this table, and the first place the
     milestone category is read by anything other than the review embed it was
     written for -- reports/phase-3a-2.txt designed that category explicitly with
@@ -467,8 +596,23 @@ async def get_milestone_fact_ids(conn: aiosqlite.Connection, *, guild_id: int) -
 async def get_confirmed_fact_categories(
     conn: aiosqlite.Connection, *, guild_id: int
 ) -> dict[int, FactCategory]:
-    """Return every guild's confirmed fact ID mapped to the category it was extracted as.
+    """Map each of a guild's confirmed facts to the category it was extracted as.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+
+    Returns
+    -------
+    dict[int, FactCategory]
+        Keyed by fact ID. A fact created by hand rather than by extraction has
+        no category and is simply absent.
+
+    Notes
+    -----
     A generalisation of get_milestone_fact_ids to the full FactCategory
     vocabulary, added for onboarding's category-priority ordering (rules and
     status changes first, milestones excluded entirely -- see
@@ -506,6 +650,31 @@ async def confirm_pending_fact(
 ) -> Fact:
     """Turn one staged candidate into a real active fact, atomically.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild the candidate must belong to.
+    pending_id
+        The candidate to confirm.
+    resolved_by_id
+        The moderator confirming it.
+
+    Returns
+    -------
+    Fact
+        The newly created active fact.
+
+    Raises
+    ------
+    PendingFactNotFoundError
+        If this guild has no candidate with that ID.
+    PendingFactAlreadyResolvedError
+        If someone else confirmed or discarded it first. Nothing is written.
+
+    Notes
+    -----
     The whole operation -- claiming the candidate, inserting the fact, and
     linking the two -- happens in one transaction under one held lock, and the
     claim comes FIRST. That ordering is what makes the two-moderator race
@@ -589,6 +758,30 @@ async def discard_pending_fact(
 ) -> None:
     """Reject one staged candidate, atomically and without writing any fact.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild the candidate must belong to.
+    pending_id
+        The candidate to discard.
+    resolved_by_id
+        The moderator discarding it.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    PendingFactNotFoundError
+        If this guild has no candidate with that ID.
+    PendingFactAlreadyResolvedError
+        If someone else confirmed or discarded it first. Nothing is written.
+
+    Notes
+    -----
     The same guarded claim confirm_pending_fact makes, which is what settles
     the mixed race -- one moderator confirming while another discards. Whoever
     reaches the UPDATE first decides the candidate's outcome for good; the
@@ -642,8 +835,26 @@ async def discard_pending_fact(
 async def staged_message_ids(
     conn: aiosqlite.Connection, *, channel_id: int, message_ids: list[int]
 ) -> set[int]:
-    """Which of message_ids already have a candidate staged from them, in any state.
+    """Return which of `message_ids` already have a candidate staged from them.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    channel_id
+        Channel the messages belong to.
+    message_ids
+        Candidates to test. An empty list is a no-op.
+
+    Returns
+    -------
+    set[int]
+        The subset already staged, in ANY state -- unresolved, confirmed or
+        discarded -- because a discarded candidate is a decision a moderator
+        made, and re-staging it would ask them the same question again.
+
+    Notes
+    -----
     Read-only, and one query for a whole page rather than one per message.
     Deliberately ignores `status`: a candidate a moderator already CONFIRMED or
     DISCARDED is exactly the case this must catch, since re-staging it would put

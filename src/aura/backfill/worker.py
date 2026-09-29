@@ -91,6 +91,7 @@ allowed to do, and backfill has nothing to hold anyway -- its input is not going
 anywhere. A run over a large channel therefore takes several days, on purpose,
 which is what /aura-backfill status and pause exist to make legible.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -159,8 +160,39 @@ async def advance_due_backfills(
     now: datetime,
     plan_gate: PlanGate,
 ) -> int:
-    """Advance every running backfill by one batch. Returns how many actually moved.
+    """Advance every running backfill by one batch.
 
+    Parameters
+    ----------
+    db
+        Open database connection.
+    model
+        The loaded embedding model.
+    gateway
+        Resolves each run's source channel.
+    detector
+        The question detector, used by the fact-worthiness filter.
+    settings
+        Loaded configuration: batch sizes, caps, models.
+    now
+        Timezone-aware moment. One reading drives the daily-cap day key, the
+        cursor timestamp and the run's `updated_at` for a whole tick, so they
+        cannot straddle midnight and disagree.
+    plan_gate
+        Decides whether each run's guild may use this Pro trigger.
+
+    Returns
+    -------
+    int
+        How many runs actually moved their cursor this tick.
+
+    Raises
+    ------
+    ValueError
+        If `now` is naive.
+
+    Notes
+    -----
     One run at a time, sequentially rather than concurrently, for the reasons
     flush_due_batches and send_due_digests both give: the per-connection lock
     serializes the database work anyway, nothing is waiting on a backfill, and a
@@ -171,11 +203,6 @@ async def advance_due_backfills(
     so one channel whose permissions were revoked cannot starve every other run
     on the deployment -- the exact failure shape a single shared try block would
     produce.
-
-    Requires a timezone-aware `now`, injected rather than read here, matching
-    every other time-sensitive function in this project: one reading drives the
-    daily-cap day key, the cursor timestamp and the run's updated_at for a whole
-    tick, so they cannot straddle midnight and disagree.
     """
     if now.tzinfo is None:
         raise ValueError(f"now must be a timezone-aware datetime, got {now!r}")
@@ -311,8 +338,13 @@ async def _advance_one(
     calls_spent = 0
     if scan.candidates:
         outcome = await _distill_and_stage(
-            db, model, channel=channel, run=run, candidates=scan.candidates,
-            settings=settings, now=now,
+            db,
+            model,
+            channel=channel,
+            run=run,
+            candidates=scan.candidates,
+            settings=settings,
+            now=now,
         )
         if outcome is None:
             # The daily cap refused the call. The cursor stays put, so this exact
@@ -394,11 +426,28 @@ class _ScanResult:
 
     @property
     def scanned_any(self) -> bool:
-        """Whether this scan saw any message at all, and so has a cursor to commit."""
+        """Report whether this scan saw any message at all.
+
+        Returns
+        -------
+        bool
+            True once the cursor has moved, which is what makes the scan's progress
+            worth committing.
+        """
         return self.cursor_message_id is not None
 
     def cover(self, message: discord.Message) -> None:
-        """Record that this scan is finished with `message`, moving the cursor to it."""
+        """Record that this scan is finished with a message, moving the cursor to it.
+
+        Parameters
+        ----------
+        message
+            The message just processed. Its id and timestamp become the new cursor.
+
+        Returns
+        -------
+        None
+        """
         self.cursor_message_id = message.id
         self.cursor_message_at = message.created_at
 
@@ -511,12 +560,8 @@ async def _select_candidates(
         return []
 
     message_ids = [message.id for message in eligible]
-    already_queued = await queued_message_ids(
-        db, channel_id=channel_id, message_ids=message_ids
-    )
-    already_staged = await staged_message_ids(
-        db, channel_id=channel_id, message_ids=message_ids
-    )
+    already_queued = await queued_message_ids(db, channel_id=channel_id, message_ids=message_ids)
+    already_staged = await staged_message_ids(db, channel_id=channel_id, message_ids=message_ids)
     owned_by_live_path = already_queued | already_staged
     if owned_by_live_path:
         logger.info(
@@ -579,9 +624,7 @@ async def _distill_and_stage(
     things happened.
     """
     ordered = sorted(candidates, key=lambda queued: (queued.message_created_at, queued.message_id))
-    if [queued.message_id for queued in ordered] != [
-        queued.message_id for queued in candidates
-    ]:
+    if [queued.message_id for queued in ordered] != [queued.message_id for queued in candidates]:
         logger.warning(
             "A backfill batch for run %s was assembled out of chronological order; "
             "re-sorting before distillation",
@@ -691,9 +734,7 @@ async def _fail(db: aiosqlite.Connection, *, run: BackfillRun, now: datetime) ->
     )
 
 
-async def _complete(
-    db: aiosqlite.Connection, *, run: BackfillRun, now: datetime
-) -> None:
+async def _complete(db: aiosqlite.Connection, *, run: BackfillRun, now: datetime) -> None:
     """Mark a run finished, if it is still the running run it was a moment ago."""
     if await set_run_state(
         db,
@@ -720,6 +761,28 @@ async def run_backfill_worker(
 ) -> None:
     """Advance whatever backfills are running, forever. Runs for the process's life.
 
+    Parameters
+    ----------
+    db
+        Open database connection.
+    model
+        The loaded embedding model.
+    gateway
+        Resolves each run's source channel.
+    detector
+        The fact-worthiness detector.
+    settings
+        Loaded configuration.
+    plan_gate
+        Decides whether each guild may use this Pro trigger.
+
+    Returns
+    -------
+    None
+        Runs until cancelled.
+
+    Notes
+    -----
     The project's third background task, and it follows the shape the extraction
     sweeper set and the digest scheduler confirmed: one `while True` per process,
     created in setup_hook, cancelled in close(), never dying of an exception it

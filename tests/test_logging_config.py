@@ -4,6 +4,7 @@ Not part of the knowledge model, but exercised here because it has real
 branching behavior (an invalid LOG_LEVEL must be visible, not silently
 swallowed) and no Discord dependency, so it's cheap to verify directly.
 """
+
 from __future__ import annotations
 
 import logging

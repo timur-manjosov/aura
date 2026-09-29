@@ -8,6 +8,7 @@ non-negotiable property: no Discord access token, refresh token, or client
 secret appears in any field. The session record holds those; these responses
 project only what the shell renders.
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,6 +30,14 @@ router = APIRouter(prefix="/api", tags=["dashboard"])
 async def health() -> Response:
     """Liveness for the container healthcheck. Reaches nothing external on purpose.
 
+    Returns
+    -------
+    Response
+        Always 200. Reaches nothing external on purpose, so the healthcheck
+        reports on this container and not on Discord or Stripe.
+
+    Notes
+    -----
     A healthcheck that called Discord would report this service as unhealthy
     during a Discord outage and let the orchestrator restart a process that is
     working perfectly -- turning somebody else's downtime into our own.
@@ -40,6 +49,21 @@ async def health() -> Response:
 async def me(request: Request, context: ServiceContext = Depends(get_context)) -> Response:
     """Return the signed-in user's public identity, or 401.
 
+    Parameters
+    ----------
+    request
+        The incoming request.
+    context
+        The shared context: settings, stores and clients.
+
+    Returns
+    -------
+    Response
+        The signed-in user's public identity, or 401 when there is no usable
+        session.
+
+    Notes
+    -----
     The avatar is returned as Discord's raw hash plus the user ID rather than
     as an assembled CDN URL, so the browser does the assembling and this
     service is not in the business of emitting third-party URLs it would then
@@ -68,6 +92,21 @@ async def me(request: Request, context: ServiceContext = Depends(get_context)) -
 async def guilds(request: Request, context: ServiceContext = Depends(get_context)) -> Response:
     """Return the guilds this user may manage AND Aura is in. Possibly none.
 
+    Parameters
+    ----------
+    request
+        The incoming request.
+    context
+        The shared context: settings, stores and clients.
+
+    Returns
+    -------
+    Response
+        The guilds this user may manage AND Aura is in, possibly an empty
+        list; 401 without a session.
+
+    Notes
+    -----
     An empty list is a normal, successful answer -- a user who moderates
     nothing, or whose servers have not invited Aura, gets ``[]`` and HTTP 200.
     Reporting that as an error would be both wrong and, for anyone probing,
@@ -85,14 +124,18 @@ async def guilds(request: Request, context: ServiceContext = Depends(get_context
         # The access token was accepted at login and is refused now: it was
         # revoked, or the user removed the authorization. The session is dead
         # either way, so it is ended rather than left to fail on every load.
-        logger.info("Discord refused a user's token while listing guilds (%s); ending the session", exc)
+        logger.info(
+            "Discord refused a user's token while listing guilds (%s); ending the session", exc
+        )
         context.sessions.delete(request.cookies.get(context.settings.session_cookie_name))
         return error_response(ErrorCode.NOT_AUTHENTICATED, status_code=401)
     except DiscordAPIError as exc:
         # Fail closed. Without a trustworthy membership list there is no way
         # to apply the second half of the filter, and answering with the
         # user's full guild list would show servers Aura is not in.
-        logger.warning("Could not build the guild list from Discord (%s); refusing the request", exc)
+        logger.warning(
+            "Could not build the guild list from Discord (%s); refusing the request", exc
+        )
         return error_response(ErrorCode.DISCORD_UNAVAILABLE, status_code=503)
 
     manageable = select_manageable_guilds(user_guilds, bot_guild_ids)

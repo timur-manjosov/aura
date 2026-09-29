@@ -1,14 +1,32 @@
 """Semantic embedding and similarity search over a guild's active facts.
 
 Ranking only -- this module decides how similar two pieces of text are, not
-whether a result is similar *enough* to act on. That threshold belongs to
-each caller (Phase 1e's direct query, Phase 2's much stricter proactive-relief
-bar), so it's deliberately absent here.
+whether a result is similar *enough* to act on. That threshold belongs to each
+caller (Phase 1e's direct query, Phase 2's much stricter proactive-relief bar),
+so it is deliberately absent here.
+
+Invariants this module maintains
+--------------------------------
+* Every vector produced or read uses `EMBEDDING_DTYPE`, so serialization
+  (`ndarray.tobytes`) and deserialization (`np.frombuffer`) can never silently
+  disagree about how many bytes make one float.
+* Every inference call is offloaded off the event loop, per CLAUDE.md's
+  Performance rule -- fastembed is blocking, CPU-bound ONNX work.
+* Ranking is totally ordered: ties break by fact ID, so the same question over
+  the same data always selects the same facts.
+* A corrupted vector can lower a fact's score but can never raise it, and can
+  never make a search fail.
+
+Imports the DB layer (`aura.db.repository`, `aura.db.fact_variants`) and
+fastembed; imports no Discord and no LLM code, so similarity is testable as a
+pure ranking problem.
 """
+
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from typing import Final
 
 import aiosqlite
 import numpy as np
@@ -22,7 +40,7 @@ from aura.db.repository import get_active_facts
 # (ndarray.tobytes()) and deserialization (np.frombuffer(..., dtype=...))
 # can never silently disagree about how many bytes represent one float --
 # see Fact.embedding's docstring, the other place this same dtype matters.
-EMBEDDING_DTYPE = np.float32
+EMBEDDING_DTYPE: Final = np.float32
 
 # How many facts either answering trigger may carry into one synthesis call.
 #
@@ -51,12 +69,27 @@ EMBEDDING_DTYPE = np.float32
 # hundreds of active facts and an unbounded prompt, while that one bounds a set
 # that only grows with deliberate moderator effort. See its comment for the
 # arithmetic.
-SYNTHESIS_FACT_LIMIT = 5
+SYNTHESIS_FACT_LIMIT: Final = 5
 
 
 async def embed_text(model: TextEmbedding, text: str) -> np.ndarray:
     """Compute one text's embedding vector as a fixed-dtype numpy array.
 
+    Parameters
+    ----------
+    model
+        The loaded embedding model. Shared process-wide; loading it is the
+        expensive part, inference is not.
+    text
+        Text to embed. Any length and any script; no validation happens here.
+
+    Returns
+    -------
+    np.ndarray
+        One vector, dtype `EMBEDDING_DTYPE`.
+
+    Notes
+    -----
     fastembed's inference is blocking, CPU-bound work (an ONNX Runtime
     session call); running it directly on the event loop would stall every
     other coroutine -- including unrelated Discord events -- for its
@@ -81,6 +114,27 @@ async def embed_text(model: TextEmbedding, text: str) -> np.ndarray:
 async def embed_texts(model: TextEmbedding, texts: Sequence[str]) -> list[np.ndarray]:
     """Compute one embedding vector per text, in one batched inference call.
 
+    Parameters
+    ----------
+    model
+        The loaded embedding model.
+    texts
+        One or more texts. Must be non-empty.
+
+    Returns
+    -------
+    list[np.ndarray]
+        One vector per input, in input order, each of dtype `EMBEDDING_DTYPE`.
+
+    Raises
+    ------
+    ValueError
+        If `texts` is empty, or if the model returns a different number of
+        vectors than texts given -- at which point results can no longer be
+        matched to their inputs, so failing is the only safe answer.
+
+    Notes
+    -----
     One call into fastembed for the whole sequence rather than a loop over
     embed_text, per CLAUDE.md's Performance section: the fixed per-call cost
     of an ONNX Runtime invocation dominates at these batch sizes, so N
@@ -112,8 +166,23 @@ async def embed_texts(model: TextEmbedding, texts: Sequence[str]) -> list[np.nda
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Cosine similarity between two vectors, normalizing both first.
+    """Compute cosine similarity between two vectors, normalizing both first.
 
+    Parameters
+    ----------
+    a, b
+        Vectors of equal length. Converted to float64 internally, so the
+        result does not depend on the storage dtype.
+
+    Returns
+    -------
+    float
+        The cosine similarity, in [-1.0, 1.0]; exactly 0.0 if either vector is
+        all-zero. NaN propagates from a non-finite input, which
+        `best_similarity` relies on to skip a corrupted vector.
+
+    Notes
+    -----
     Normalizes unconditionally instead of trusting the embedding model to
     already return unit vectors: verified empirically that
     paraphrase-multilingual-MiniLM-L12-v2 does not (raw norms observed
@@ -138,8 +207,21 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def group_variants_by_fact(variants: Sequence[FactVariant]) -> dict[int, list[FactVariant]]:
-    """Group a flat list of variants by the fact_id each one paraphrases.
+    """Group a flat list of variants by the fact ID each one paraphrases.
 
+    Parameters
+    ----------
+    variants
+        Variants for any number of facts, in any order.
+
+    Returns
+    -------
+    dict[int, list[FactVariant]]
+        Variants keyed by `fact_id`; within a key, input order is preserved.
+        Facts with no variants are simply absent.
+
+    Notes
+    -----
     A plain lookup table, built once per search rather than once per fact
     scored: every caller here fetches all of a guild's active variants in one
     query (see aura.db.fact_variants.get_active_fact_variants) and then needs
@@ -157,8 +239,29 @@ def best_similarity(
     fact: Fact,
     variants_by_fact: dict[int, list[FactVariant]] | None = None,
 ) -> float:
-    """Max cosine similarity between query_embedding and fact's canonical sentence OR any of its variants.
+    """Score a fact by its best-matching representation.
 
+    Parameters
+    ----------
+    query_embedding
+        The query's vector.
+    fact
+        The fact to score. Its `embedding` is the canonical representation.
+    variants_by_fact
+        Optional grouped variants, as returned by `group_variants_by_fact`.
+        Omitting it -- or passing a mapping with no entry for this fact --
+        scores against the canonical vector alone, which is exactly the
+        pre-Part-2 behaviour.
+
+    Returns
+    -------
+    float
+        The maximum cosine similarity across the canonical vector and this
+        fact's variants, ignoring any candidate that scores non-finite. NaN if
+        every candidate for this fact, canonical included, is unusable.
+
+    Notes
+    -----
     Multi-Representation Indexing Part 2 (see aura.variants_service and
     reports/variant-indexing-part1.txt): a fact is findable through any of its
     audited, meaning-preserving paraphrasings, not only through its one
@@ -174,18 +277,13 @@ def best_similarity(
     -- a variant is only ever the reason a fact was found, never the text
     displayed.
 
-    variants_by_fact is optional so a caller that has not fetched any variants
-    (or a fact with none stored) degrades cleanly to comparing against the
-    canonical vector alone, the exact pre-Part-2 behaviour.
-
-    A vector whose stored bytes decode to a non-finite score (a corrupted
-    embedding) is skipped rather than allowed to win or silently poison the
-    max -- one bad variant must not sink a fact that is otherwise perfectly
-    findable through its canonical sentence or its other variants. Returns
-    NaN, matching cosine_similarity's non-finite passthrough, only if every
-    candidate vector for this fact -- canonical included -- is unusable;
-    callers that already guard against a non-finite score (e.g.
-    aura.extraction.pipeline._best_matching_fact) see the same signal they did
+    Skipping a non-finite candidate rather than letting it win or poison the
+    max is what keeps one corrupted variant from sinking a fact that is
+    otherwise perfectly findable through its canonical sentence or its other
+    variants. The all-unusable case still yields NaN rather than a sentinel
+    score, matching cosine_similarity's own passthrough, so callers that
+    already guard against a non-finite score (e.g.
+    aura.extraction.pipeline._best_matching_fact) see the signal they saw
     before this helper existed.
     """
     candidates = [np.frombuffer(fact.embedding, dtype=EMBEDDING_DTYPE)]
@@ -210,8 +308,32 @@ async def find_similar_facts(
     query: str,
     top_k: int = SYNTHESIS_FACT_LIMIT,
 ) -> list[tuple[Fact, float]]:
-    """Rank guild_id's active facts by similarity to query, most similar first.
+    """Rank a guild's active facts by similarity to a query, most similar first.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    model
+        The loaded embedding model.
+    guild_id
+        Guild whose facts to search. Passed explicitly, never inferred, so
+        no call site can accidentally search across guilds.
+    query
+        Text to match against.
+    top_k
+        How many results to return at most.
+
+    Returns
+    -------
+    list[tuple[Fact, float]]
+        Up to `top_k` (fact, score) pairs, highest score first, ties broken by
+        ascending fact ID. Fewer pairs -- possibly none -- if the guild has
+        fewer active facts. No threshold is applied: filtering by score is the
+        caller's decision.
+
+    Notes
+    -----
     A linear scan over every active fact in the guild is the correct design
     at this project's data volume, not a placeholder for a future vector
     database -- CLAUDE.md's Performance section already rules that out as
@@ -242,8 +364,6 @@ async def find_similar_facts(
     facts = await get_active_facts(conn, guild_id)
     variants_by_fact = group_variants_by_fact(await get_active_fact_variants(conn, guild_id))
 
-    scored = [
-        (fact, best_similarity(query_embedding, fact, variants_by_fact)) for fact in facts
-    ]
+    scored = [(fact, best_similarity(query_embedding, fact, variants_by_fact)) for fact in facts]
     scored.sort(key=lambda pair: (-pair[1], pair[0].id))
     return scored[:top_k]

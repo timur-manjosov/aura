@@ -15,10 +15,11 @@ Restart durability is demonstrated on a real file with a genuinely new
 connection, not asserted: an in-memory database loses its data on close whether
 or not the design was durable, so the test would pass for the wrong reason.
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 import pytest
@@ -43,7 +44,7 @@ CHANNEL_B = 400000000000000004
 MODERATOR = 4242
 OTHER_MODERATOR = 4343
 
-NOW = datetime(2026, 8, 26, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 26, 12, 0, 0, tzinfo=UTC)
 LATER = NOW + timedelta(minutes=5)
 
 # Plausible snowflakes: the lower bound is genuinely below the upper one, which
@@ -195,14 +196,10 @@ class TestOneLiveRunPerChannel:
 
     async def test_ten_concurrent_starts_produce_exactly_one_run(self, conn) -> None:
         """The partial unique index is the guarantee, not the read in front of it."""
-        results = await asyncio.gather(
-            *(_start(conn) for _ in range(10)), return_exceptions=True
-        )
+        results = await asyncio.gather(*(_start(conn) for _ in range(10)), return_exceptions=True)
 
         winners = [result for result in results if not isinstance(result, BaseException)]
-        losers = [
-            result for result in results if isinstance(result, BackfillAlreadyActiveError)
-        ]
+        losers = [result for result in results if isinstance(result, BackfillAlreadyActiveError)]
         assert len(winners) == 1
         assert len(losers) == 9
         assert len(await get_recent_runs(conn, guild_id=GUILD_A, limit=20)) == 1

@@ -17,6 +17,7 @@ History was revoked. Those end a run rather than deferring it (see
 aura.backfill.history.ChannelUnreadable), so this gateway distinguishes them
 instead of flattening everything into None.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,9 +36,21 @@ class BackfillGateway(Protocol):
     async def resolve_channel(self, channel_id: int) -> discord.TextChannel:
         """Return the text channel to read history from.
 
-        Raises ChannelUnreadable when the channel is permanently unusable.
-        Returns normally, or raises, and never returns None -- a backfill run
-        with no channel has nothing to defer to.
+        Parameters
+        ----------
+        channel_id
+            The stored channel ID a run is walking.
+
+        Returns
+        -------
+        discord.TextChannel
+            The channel to read history from. Never None -- a backfill run with no
+            channel has nothing to defer to.
+
+        Raises
+        ------
+        ChannelUnreadable
+            When the channel is permanently unusable.
         """
         ...
 
@@ -56,8 +69,27 @@ class ClientBackfillGateway:
         self._client = client
 
     async def resolve_channel(self, channel_id: int) -> discord.TextChannel:
-        """Return channel_id as a readable text channel, or raise ChannelUnreadable.
+        """Return a channel ID as a readable text channel.
 
+        Parameters
+        ----------
+        channel_id
+            The stored channel ID a run is walking.
+
+        Returns
+        -------
+        discord.TextChannel
+            The resolved channel, from the client cache when possible and over HTTP
+            otherwise.
+
+        Raises
+        ------
+        ChannelUnreadable
+            For every failure: a deleted channel, revoked access, a transient API
+            error, or an ID that now names a type with no readable history.
+
+        Notes
+        -----
         Every failure here is treated as permanent, and that is a deliberate
         difference from the digest gateway rather than an oversight. A digest
         whose channel is temporarily unresolvable simply arrives next hour; a

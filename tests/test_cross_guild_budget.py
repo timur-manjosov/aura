@@ -7,11 +7,12 @@ silently drift from what production actually writes. Real SQLite throughout,
 matching every other ledger test in this project (see test_proactive_state.py's
 own docstring for why): the guarantees under test are the database's.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiosqlite
 import pytest
@@ -39,9 +40,9 @@ GUILD_C = 300000000000000003
 MODERATOR = 4242
 UNTIL = 900000000000000000
 
-NOON = datetime(2026, 9, 12, 12, 0, 0, tzinfo=timezone.utc)
+NOON = datetime(2026, 9, 12, 12, 0, 0, tzinfo=UTC)
 DAY = utc_day(NOON)
-TOMORROW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=timezone.utc)
+TOMORROW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
 
 EMBEDDING = b"\x00" * 16
 
@@ -69,8 +70,12 @@ async def _spend_proactive(conn: aiosqlite.Connection, *, guild_id: int, message
 
 async def _spend_extraction(conn: aiosqlite.Connection, *, guild_id: int, channel_id: int) -> None:
     attempt = await try_acquire_extraction_call_slot(
-        conn, guild_id=guild_id, channel_id=channel_id, message_count=5,
-        daily_cap=1_000_000, now=NOON,
+        conn,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        message_count=5,
+        daily_cap=1_000_000,
+        now=NOON,
     )
     assert attempt.granted
 
@@ -91,8 +96,11 @@ async def _spend_supersession(
     )
     assert staged is not None
     attempt = await try_acquire_supersession_call_slot(
-        conn, guild_id=guild_id, pending_fact_id=staged.id,
-        daily_cap=1_000_000, now=NOON,
+        conn,
+        guild_id=guild_id,
+        pending_fact_id=staged.id,
+        daily_cap=1_000_000,
+        now=NOON,
     )
     assert attempt.granted
 
@@ -103,11 +111,19 @@ async def _spend_variant(
     """Create a real active fact first -- variant_calls.fact_id is a REFERENCES
     constraint, the same reasoning _spend_supersession's own comment gives."""
     fact = await add_fact(
-        conn, embedding_model, guild_id=guild_id, channel_id=1,
-        message_id=message_id, content=f"fact number {message_id}",
+        conn,
+        embedding_model,
+        guild_id=guild_id,
+        channel_id=1,
+        message_id=message_id,
+        content=f"fact number {message_id}",
     )
     attempt = await try_acquire_variant_call_slot(
-        conn, guild_id=guild_id, fact_id=fact.id, daily_cap=1_000_000, now=NOON,
+        conn,
+        guild_id=guild_id,
+        fact_id=fact.id,
+        daily_cap=1_000_000,
+        now=NOON,
     )
     assert attempt.granted
 
@@ -118,12 +134,21 @@ async def _spend_backfill(
     """Start a real run first -- backfill_calls.run_id is a REFERENCES constraint,
     the same reasoning _spend_supersession's own comment gives."""
     run = await start_backfill_run(
-        conn, guild_id=guild_id, channel_id=channel_id, until_message_id=UNTIL,
-        after_message_id=None, requested_by_id=MODERATOR, now=NOON,
+        conn,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        until_message_id=UNTIL,
+        after_message_id=None,
+        requested_by_id=MODERATOR,
+        now=NOON,
     )
     attempt = await try_acquire_backfill_call_slot(
-        conn, guild_id=guild_id, run_id=run.id, message_count=5,
-        daily_cap=1_000_000, now=NOON,
+        conn,
+        guild_id=guild_id,
+        run_id=run.id,
+        message_count=5,
+        daily_cap=1_000_000,
+        now=NOON,
     )
     assert attempt.granted
 
@@ -147,9 +172,7 @@ class TestGetCrossGuildStatusOnAnEmptyDatabase:
         self, conn: aiosqlite.Connection
     ) -> None:
         for mode in (CrossGuildBudgetMode.WARN, CrossGuildBudgetMode.HARD):
-            assert await enforce_cross_guild_budget(
-                conn, day=DAY, budget_usd=0.0, mode=mode
-            )
+            assert await enforce_cross_guild_budget(conn, day=DAY, budget_usd=0.0, mode=mode)
 
 
 class TestCrossGuildSummingIsActuallyCrossGuild:
@@ -236,7 +259,9 @@ class TestWarnModeNeverRefuses:
             await enforce_cross_guild_budget(
                 conn, day=DAY, budget_usd=0.0, mode=CrossGuildBudgetMode.WARN
             )
-        assert any("Cross-guild operator budget exceeded" in record.message for record in caplog.records)
+        assert any(
+            "Cross-guild operator budget exceeded" in record.message for record in caplog.records
+        )
 
     async def test_being_under_budget_logs_nothing(
         self, conn: aiosqlite.Connection, caplog: pytest.LogCaptureFixture
@@ -249,9 +274,7 @@ class TestWarnModeNeverRefuses:
 
 
 class TestHardModeActuallyRefuses:
-    async def test_enforce_returns_false_once_over_budget(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_enforce_returns_false_once_over_budget(self, conn: aiosqlite.Connection) -> None:
         await _spend_proactive(conn, guild_id=GUILD_A, message_id=1)  # $0.003
 
         assert not await enforce_cross_guild_budget(
@@ -288,8 +311,13 @@ class TestHardModeActuallyRefuses:
         # comfortably under the cross-guild budget can still be refused by its
         # own daily_cap, unrelated to anything here.
         attempt = await try_acquire_escalation_slot(
-            conn, guild_id=GUILD_A, channel_id=1, message_id=1,
-            cooldown_seconds=0.0, daily_cap=0, now=NOON,
+            conn,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            cooldown_seconds=0.0,
+            daily_cap=0,
+            now=NOON,
         )
         assert not attempt.granted
 
@@ -396,9 +424,7 @@ class TestConcurrentAccessAcrossGuildsAndLedgers:
                 await _spend_proactive(conn, guild_id=guild_id, message_id=message_id)
             return allowed
 
-        results = await asyncio.gather(
-            *(_race_one_guild(1_000_000 + i, i) for i in range(10))
-        )
+        results = await asyncio.gather(*(_race_one_guild(1_000_000 + i, i) for i in range(10)))
 
         # The bug this test exists to prove: more than one guild raced past a
         # budget only one spend should have cleared.

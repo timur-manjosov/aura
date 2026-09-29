@@ -7,9 +7,10 @@ place directly, at the unit level, rather than relying on inheriting coverage
 through whichever caller's suite happens to exercise it -- a regression here
 should fail here, not two callers over.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -26,7 +27,7 @@ from aura.rendering import (
 
 GUILD_A = 100000000000000001
 CHANNEL = 300000000000000003
-NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=UTC)
 
 
 def fact(fact_id: int = 1, content: str = "x") -> Fact:
@@ -108,9 +109,7 @@ class TestSourceLink:
     def test_the_link_points_at_the_facts_own_message(self) -> None:
         subject = fact(1, "x")
         link = source_link(subject)
-        assert link == (
-            f"https://discord.com/channels/{GUILD_A}/{CHANNEL}/{subject.message_id}"
-        )
+        assert link == (f"https://discord.com/channels/{GUILD_A}/{CHANNEL}/{subject.message_id}")
 
 
 class TestDiscordTimestamp:
@@ -120,7 +119,9 @@ class TestDiscordTimestamp:
 
 class TestFitLines:
     def test_all_lines_fit_when_short(self) -> None:
-        result = fit_lines(["a", "b", "c"], "en-US", max_items=10, more_items_key="digest_more_items")
+        result = fit_lines(
+            ["a", "b", "c"], "en-US", max_items=10, more_items_key="digest_more_items"
+        )
         assert result == "a\nb\nc"
 
     def test_more_than_max_items_is_truncated_with_a_count(self) -> None:

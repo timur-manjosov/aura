@@ -3,6 +3,7 @@
 Mirrors ``python -m aura.main`` in the bot container, so both services in this
 repository start the same way.
 """
+
 from __future__ import annotations
 
 import os

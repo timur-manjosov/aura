@@ -37,10 +37,12 @@ ledger chose -- for a spend limit, erring toward "already spent" is the only
 safe way to err -- and the duplicate CANDIDATES such a retry would otherwise
 produce are prevented one layer up, by pending_facts' own UNIQUE constraint.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Final
 
 import aiosqlite
 from pydantic import BaseModel
@@ -63,7 +65,7 @@ WHERE (
 # reason: the value is bound into SQL, and sqlite3 refuses a Python int that
 # does not fit a signed 64-bit integer, so a value past this would raise on
 # every sweep instead of being refused once where an operator can see it.
-MAX_DAILY_CAP = 1_000_000
+MAX_DAILY_CAP: Final = 1_000_000
 
 
 class ExtractionCallOutcome(StrEnum):
@@ -89,17 +91,38 @@ class ExtractionCallAttempt(BaseModel):
 
     @property
     def granted(self) -> bool:
-        """Whether this attempt actually took a slot from the budget."""
+        """Report whether this attempt actually took a slot from the budget.
+
+        Returns
+        -------
+        bool
+            True only for a GRANTED outcome -- that is, only when a slot was
+            actually taken from the budget.
+        """
         return self.outcome is ExtractionCallOutcome.GRANTED
 
 
-async def count_extraction_calls_on(
-    conn: aiosqlite.Connection, *, guild_id: int, day: str
-) -> int:
-    """Return how many distillation calls guild_id has already spent on a UTC day.
+async def count_extraction_calls_on(conn: aiosqlite.Connection, *, guild_id: int, day: str) -> int:
+    """Return how many distillation calls a guild has already spent on a UTC day.
 
-    Read-only. Takes the day as a string produced by utc_day so the caller's
-    clock, not this function's, defines "today".
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild whose ledger to count.
+    day
+        A UTC day key as produced by `utc_day`, so the caller's clock --
+        not this function's -- defines "today".
+
+    Returns
+    -------
+    int
+        Rows in `extraction_calls` for that guild and day; 0 if there are none.
+
+    Notes
+    -----
+    Read-only; takes no slot and changes nothing.
     """
     async with connection_lock(conn):
         async with conn.execute(
@@ -121,18 +144,52 @@ async def try_acquire_extraction_call_slot(
 ) -> ExtractionCallAttempt:
     """Atomically take one slot from the guild's daily distillation budget.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild whose budget to spend from.
+    channel_id
+        Channel whose batch is being distilled, recorded on the row.
+    message_count
+        How many messages the batch covers. Must not be negative.
+    daily_cap
+        Today's ceiling. 0 is valid and means "never spend".
+    now
+        Timezone-aware moment; supplies both the timestamp and the UTC day
+        key, so the two can never straddle midnight in opposite directions.
+
+    Returns
+    -------
+    ExtractionCallAttempt
+        GRANTED with the post-write count when a slot was taken;
+        DAILY_CAP_REACHED with the current count when it was not.
+
+    Raises
+    ------
+    ValueError
+        If `daily_cap` is outside [0, MAX_DAILY_CAP], `message_count` is
+        negative, or `now` is naive.
+
+    Notes
+    -----
+    Atomic against concurrent callers, including a second process sharing
+    the database file: the cap is re-checked inside the INSERT's own WHERE
+    clause, so there is no window between deciding and writing.
+
     Call this the moment a batch is known to be worth distilling and *before*
     the LLM call it authorizes -- the same ordering, for the same reason, that
     aura.proactive.gate uses. A slot is recorded when it is claimed, not when
     the work it authorizes succeeds, so a crash or an API failure downstream
     spends the slot instead of quietly refunding it.
 
-    Never raises on a normal refusal: being out of budget is an expected
-    outcome, not an error. A daily_cap of 0 is valid and means "never distill",
-    which is a useful off switch rather than a misconfiguration.
+    Being out of budget is an expected outcome, not an error, so a refusal is
+    a return value rather than an exception. A cap of 0 is a useful off switch,
+    not a misconfiguration.
 
-    Requires a timezone-aware `now`, injected rather than read from the clock
-    here, so the daily boundary is testable at the exact moment it matters.
+    `now` is injected rather than read from the clock here so the daily
+    boundary is testable at the exact moment it matters.
     """
     if not 0 <= daily_cap <= MAX_DAILY_CAP:
         raise ValueError(f"daily_cap must be between 0 and {MAX_DAILY_CAP}, got {daily_cap}")

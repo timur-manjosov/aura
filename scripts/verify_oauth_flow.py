@@ -22,6 +22,7 @@ that without weakening the server's configuration.
 
 Usage:  python scripts/verify_oauth_flow.py [--out reports/phase-4b-verification.txt]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,7 +47,7 @@ for extra_path in (str(BACKEND_DIR), str(SCRIPTS_DIR)):
     if extra_path not in sys.path:
         sys.path.insert(0, extra_path)
 
-from verify_oauth_fixtures import (  # imported after the sys.path setup above
+from verify_oauth_fixtures import (  # noqa: E402  -- needs the sys.path edit above
     BOT_TOKEN,
     CLIENT_SECRET,
     MODERATOR_ID,
@@ -117,7 +118,9 @@ def free_port() -> int:
         return int(probe.getsockname()[1])
 
 
-def wait_until_listening(port: int, *, process: subprocess.Popen[bytes], timeout: float = 30.0) -> None:
+def wait_until_listening(
+    port: int, *, process: subprocess.Popen[bytes], timeout: float = 30.0
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -238,7 +241,11 @@ def run_verification(report: Report, base_url: str, discord_url: str) -> None:
 
     report.note()
     report.check("redirects (307) to Discord's authorize page", login.status == 307, location)
-    report.check("authorize URL is on discord.com", location.startswith("https://discord.com/oauth2/authorize"), location)
+    report.check(
+        "authorize URL is on discord.com",
+        location.startswith("https://discord.com/oauth2/authorize"),
+        location,
+    )
     report.check(
         "requests exactly the scopes identify+guilds",
         re.search(r"scope=guilds\+identify|scope=identify\+guilds", location) is not None,
@@ -347,8 +354,12 @@ def run_verification(report: Report, base_url: str, discord_url: str) -> None:
     report.check("issues an aura_session cookie", bool(session_cookie_header))
     for flag, present in flags_of(session_cookie_header).items():
         report.check(f"session cookie carries {flag}", present, session_cookie_header)
-    report.check("clears the spent state cookie", callback.set_cookie("aura_oauth_state") is not None)
-    report.check("response is marked Cache-Control: no-store", callback.header("cache-control") == "no-store")
+    report.check(
+        "clears the spent state cookie", callback.set_cookie("aura_oauth_state") is not None
+    )
+    report.check(
+        "response is marked Cache-Control: no-store", callback.header("cache-control") == "no-store"
+    )
 
     session_cookie = cookie_value(session_cookie_header) if session_cookie_header else ""
 
@@ -370,7 +381,11 @@ def run_verification(report: Report, base_url: str, discord_url: str) -> None:
     me = record(curl(f"{base_url}/api/me", "-H", f"Cookie: aura_session={session_cookie}"))
     report.note()
     report.check("HTTP 200", me.status == 200, me.raw)
-    report.check("returns the signed-in identity", '"id": "5000"' in me.body or '"id":"5000"' in me.body, me.body)
+    report.check(
+        "returns the signed-in identity",
+        '"id": "5000"' in me.body or '"id":"5000"' in me.body,
+        me.body,
+    )
 
     # ---------------------------------------------------------------- step 8
     report.section("STEP 8 -- GET /api/guilds  (attack 3: the two-condition filter)")
@@ -381,9 +396,15 @@ def run_verification(report: Report, base_url: str, discord_url: str) -> None:
     guilds = record(curl(f"{base_url}/api/guilds", "-H", f"Cookie: aura_session={session_cookie}"))
     report.note()
     report.check("HTTP 200", guilds.status == 200, guilds.raw)
-    report.check('includes guild 1000 (manageable AND Aura present)', '"1000"' in guilds.body)
-    report.check('EXCLUDES guild 2000 (manageable but Aura absent)', '"2000"' not in guilds.body, guilds.body)
-    report.check('EXCLUDES guild 3000 (Aura present but not manageable)', '"3000"' not in guilds.body, guilds.body)
+    report.check("includes guild 1000 (manageable AND Aura present)", '"1000"' in guilds.body)
+    report.check(
+        "EXCLUDES guild 2000 (manageable but Aura absent)", '"2000"' not in guilds.body, guilds.body
+    )
+    report.check(
+        "EXCLUDES guild 3000 (Aura present but not manageable)",
+        '"3000"' not in guilds.body,
+        guilds.body,
+    )
 
     # ---------------------------------------------------------------- step 9
     report.section("STEP 9 -- a user with MANAGE_GUILD nowhere (attack 3, empty case)")
@@ -422,7 +443,13 @@ def run_verification(report: Report, base_url: str, discord_url: str) -> None:
     # --------------------------------------------------------------- step 11
     report.section("STEP 11 -- POST /api/auth/logout")
     logout = record(
-        curl("-X", "POST", f"{base_url}/api/auth/logout", "-H", f"Cookie: aura_session={session_cookie}")
+        curl(
+            "-X",
+            "POST",
+            f"{base_url}/api/auth/logout",
+            "-H",
+            f"Cookie: aura_session={session_cookie}",
+        )
     )
     after_logout = record(
         curl(f"{base_url}/api/me", "-H", f"Cookie: aura_session={session_cookie}")
@@ -432,7 +459,9 @@ def run_verification(report: Report, base_url: str, discord_url: str) -> None:
     report.check("logout answers 204", logout.status == 204, logout.raw)
     report.check("logout clears the session cookie", logout.set_cookie("aura_session") is not None)
     report.check("the old identifier no longer authenticates", after_logout.status == 401)
-    report.check("logout is not reachable by GET (CSRF)", logout_by_get.status == 405, logout_by_get.raw)
+    report.check(
+        "logout is not reachable by GET (CSRF)", logout_by_get.status == 405, logout_by_get.raw
+    )
 
     # --------------------------------------------------------------- step 12
     report.section("STEP 12 -- ATTACK 2: no Discord token anywhere on the wire")

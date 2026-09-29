@@ -16,6 +16,7 @@ configured for. Importing the production one keeps a single source of truth for
 provider quirks -- if that parser learns about a new quirk, this tooling gets it
 for free.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -149,4 +150,6 @@ async def complete_json(
             last_error = f"unparseable JSON: {exc}"
             logger.warning("attempt %d/%d %s", attempt, max_attempts, last_error)
 
-    raise GenerationError(f"{model} produced no usable JSON in {max_attempts} attempts: {last_error}")
+    raise GenerationError(
+        f"{model} produced no usable JSON in {max_attempts} attempts: {last_error}"
+    )

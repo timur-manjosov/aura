@@ -21,6 +21,7 @@ Stripe refused the request itself (a 4xx: a revoked key, an unknown price, a
 subscription from another account -- retrying will not help, an operator must
 look). Neither carries a response body or a credential in its message.
 """
+
 from __future__ import annotations
 
 import logging
@@ -66,7 +67,16 @@ SUBSCRIPTION_LIST_PAGE_SIZE = 100
 MAX_SUBSCRIPTION_LIST_PAGES = 50
 
 KNOWN_SUBSCRIPTION_STATUSES = frozenset(
-    {"active", "trialing", "past_due", "unpaid", "canceled", "incomplete", "incomplete_expired", "paused"}
+    {
+        "active",
+        "trialing",
+        "past_due",
+        "unpaid",
+        "canceled",
+        "incomplete",
+        "incomplete_expired",
+        "paused",
+    }
 )
 KNOWN_INVOICE_STATUSES = frozenset({"draft", "open", "paid", "uncollectible", "void"})
 
@@ -101,7 +111,21 @@ class StripeRejectedError(StripeAPIError):
 
 
 def is_stripe_id(value: object, prefix: str) -> TypeGuard[str]:
-    """Whether value is a Stripe ID with the given prefix and a plain alphanumeric body."""
+    """Whether value is a Stripe ID with the given prefix and a plain alphanumeric body.
+
+    Parameters
+    ----------
+    value
+        The candidate, whose JSON type is not guaranteed.
+    prefix
+        The expected Stripe prefix, e.g. ``sub_``.
+
+    Returns
+    -------
+    TypeGuard[str]
+        True only for a string with that prefix and a plain alphanumeric body,
+        which is what makes it safe to interpolate into a URL path.
+    """
     return (
         isinstance(value, str)
         and value.startswith(f"{prefix}_")
@@ -159,7 +183,19 @@ class SubscriptionSnapshot:
     livemode: bool
 
     def internal_api_payload(self) -> dict[str, Any]:
-        """The snapshot in the bot internal API's wire shape. Requires a guild."""
+        """The snapshot in the bot internal API's wire shape. Requires a guild.
+
+        Returns
+        -------
+        dict[str, Any]
+            The snapshot in the bot internal API's wire shape.
+
+        Raises
+        ------
+        ValueError
+            If the snapshot carries no guild. A subscription with no guild cannot
+            be applied to one, and sending it would be a silent no-op.
+        """
         if self.guild_id is None:
             raise ValueError("a snapshot without an Aura guild is never sent to the bot")
         return {
@@ -178,7 +214,9 @@ class SubscriptionSnapshot:
         }
 
 
-def _discord_id_from_metadata(metadata: dict[str, Any], key: str, subscription_id: str) -> str | None:
+def _discord_id_from_metadata(
+    metadata: dict[str, Any], key: str, subscription_id: str
+) -> str | None:
     raw = metadata.get(key)
     if raw is None:
         return None
@@ -202,6 +240,24 @@ def _discord_id_from_metadata(metadata: dict[str, Any], key: str, subscription_i
 def parse_subscription(payload: object) -> SubscriptionSnapshot:
     """Validate a Subscription object (API version 2026-08-26.dahlia) into a snapshot.
 
+    Parameters
+    ----------
+    payload
+        A Stripe Subscription object (API version 2026-08-26.dahlia).
+
+    Returns
+    -------
+    SubscriptionSnapshot
+        The fields Aura stores, with every ID and timestamp validated.
+
+    Raises
+    ------
+    StripeAPIError
+        If any required field is missing, is the wrong type, or carries an ID
+        that does not look like a Stripe ID. Nothing is guessed or defaulted.
+
+    Notes
+    -----
     An unrecognised status is a refusal, not a guess: a status this code has
     never seen could mean "paid" or "not paid", and the caller answers Stripe
     with a retryable failure so the last known state stays in force while an
@@ -223,7 +279,9 @@ def parse_subscription(payload: object) -> SubscriptionSnapshot:
 
     customer_id = _object_id(payload.get("customer"), "cus")
     if customer_id is None:
-        raise StripeUnavailableError(f"Stripe subscription {subscription_id} has no usable customer")
+        raise StripeUnavailableError(
+            f"Stripe subscription {subscription_id} has no usable customer"
+        )
 
     cancel_at_period_end = payload.get("cancel_at_period_end")
     livemode = payload.get("livemode")
@@ -231,11 +289,15 @@ def parse_subscription(payload: object) -> SubscriptionSnapshot:
         raise StripeUnavailableError(f"Stripe subscription {subscription_id} has malformed flags")
 
     raw_cancel_at = payload.get("cancel_at")
-    cancel_at = None if raw_cancel_at is None else _unix_seconds(raw_cancel_at, field_name="cancel_at")
+    cancel_at = (
+        None if raw_cancel_at is None else _unix_seconds(raw_cancel_at, field_name="cancel_at")
+    )
 
     pause_collection = payload.get("pause_collection")
     if pause_collection is not None and not isinstance(pause_collection, dict):
-        raise StripeUnavailableError(f"Stripe subscription {subscription_id} has malformed pause_collection")
+        raise StripeUnavailableError(
+            f"Stripe subscription {subscription_id} has malformed pause_collection"
+        )
 
     latest_invoice = payload.get("latest_invoice")
     latest_invoice_status: str | None = None
@@ -248,7 +310,9 @@ def parse_subscription(payload: object) -> SubscriptionSnapshot:
         if latest_invoice.get("billing_reason") in PERIOD_BILLING_REASONS:
             latest_invoice_status = raw_invoice_status
     elif latest_invoice is not None and not isinstance(latest_invoice, str):
-        raise StripeUnavailableError(f"Stripe subscription {subscription_id} has a malformed latest_invoice")
+        raise StripeUnavailableError(
+            f"Stripe subscription {subscription_id} has a malformed latest_invoice"
+        )
 
     items = payload.get("items")
     item_data = items.get("data") if isinstance(items, dict) else None
@@ -258,8 +322,12 @@ def parse_subscription(payload: object) -> SubscriptionSnapshot:
     ends: list[int] = []
     for item in item_data:
         if not isinstance(item, dict):
-            raise StripeUnavailableError(f"Stripe subscription {subscription_id} has a malformed item")
-        starts.append(_unix_seconds(item.get("current_period_start"), field_name="current_period_start"))
+            raise StripeUnavailableError(
+                f"Stripe subscription {subscription_id} has a malformed item"
+            )
+        starts.append(
+            _unix_seconds(item.get("current_period_start"), field_name="current_period_start")
+        )
         ends.append(_unix_seconds(item.get("current_period_end"), field_name="current_period_end"))
     # With several items the EARLIEST end is taken: access may only rely on the
     # part of the subscription that is paid for longest being paid for at all
@@ -268,7 +336,9 @@ def parse_subscription(payload: object) -> SubscriptionSnapshot:
     period_start = min(starts)
     period_end = min(ends)
     if period_end < period_start:
-        raise StripeUnavailableError(f"Stripe subscription {subscription_id} has an inverted period")
+        raise StripeUnavailableError(
+            f"Stripe subscription {subscription_id} has an inverted period"
+        )
 
     metadata = payload.get("metadata")
     metadata = metadata if isinstance(metadata, dict) else {}
@@ -277,7 +347,9 @@ def parse_subscription(payload: object) -> SubscriptionSnapshot:
         subscription_id=subscription_id,
         customer_id=customer_id,
         guild_id=_discord_id_from_metadata(metadata, GUILD_METADATA_KEY, subscription_id),
-        purchaser_user_id=_discord_id_from_metadata(metadata, PURCHASER_METADATA_KEY, subscription_id),
+        purchaser_user_id=_discord_id_from_metadata(
+            metadata, PURCHASER_METADATA_KEY, subscription_id
+        ),
         status=status,
         cancel_at_period_end=cancel_at_period_end,
         cancel_at=cancel_at,
@@ -293,13 +365,34 @@ def _https_url_on(value: object, hosts: frozenset[str], *, context: str) -> str:
     if not isinstance(value, str):
         raise StripeUnavailableError(f"Stripe's {context} has no URL")
     parsed = urlparse(value)
-    if parsed.scheme != "https" or parsed.hostname not in hosts or parsed.username or parsed.password:
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in hosts
+        or parsed.username
+        or parsed.password
+    ):
         raise StripeUnavailableError(f"Stripe's {context} URL is not on an expected Stripe host")
     return value
 
 
 def parse_checkout_session(payload: object) -> CheckoutSession:
-    """Validate a created Checkout Session down to its ID and its hosted URL."""
+    """Validate a created Checkout Session down to its ID and its hosted URL.
+
+    Parameters
+    ----------
+    payload
+        A created Stripe Checkout Session object.
+
+    Returns
+    -------
+    CheckoutSession
+        Its ID and its hosted URL, which are the only two fields used.
+
+    Raises
+    ------
+    StripeAPIError
+        If either is missing or malformed.
+    """
     if not isinstance(payload, dict) or payload.get("object") != "checkout.session":
         raise StripeUnavailableError("Stripe did not return a checkout session")
     session_id = payload.get("id")
@@ -339,6 +432,30 @@ class StripeClient:
     ) -> CheckoutSession:
         """Create a Stripe-hosted subscription checkout bound to one guild, server-side.
 
+        Parameters
+        ----------
+        guild_id
+            The guild the subscription will be bound to, written into Stripe
+            metadata server-side so a browser cannot choose it.
+        purchaser_user_id
+            Who is paying, recorded for the billing portal.
+        idempotency_key
+            Stripe's own replay guard, so a double-submitted checkout creates one
+            session rather than two.
+
+        Returns
+        -------
+        CheckoutSession
+            The created session's ID and hosted URL.
+
+        Raises
+        ------
+        StripeAPIError
+            For a transport failure, an error status, or a body Stripe returned in
+            a shape this code refuses to guess at.
+
+        Notes
+        -----
         Everything that decides what is bought and for whom is set here, from
         values the caller already validated: the price comes from configuration,
         the guild and the purchaser from the session and the authorization
@@ -377,7 +494,25 @@ class StripeClient:
         return parse_checkout_session(payload)
 
     async def retrieve_subscription(self, subscription_id: str) -> SubscriptionSnapshot:
-        """Fetch one subscription's current state, with its latest invoice expanded."""
+        """Fetch one subscription's current state, with its latest invoice expanded.
+
+        Parameters
+        ----------
+        subscription_id
+            Stripe's subscription identifier.
+
+        Returns
+        -------
+        SubscriptionSnapshot
+            Its current state, with the latest invoice expanded so the payment
+            status is known in the same round trip.
+
+        Raises
+        ------
+        StripeAPIError
+            For a transport failure, an error status, or a body Stripe returned in
+            a shape this code refuses to guess at.
+        """
         if not is_stripe_id(subscription_id, "sub"):
             raise ValueError("not a subscription ID")
         payload = await self._request(
@@ -388,12 +523,28 @@ class StripeClient:
         )
         snapshot = parse_subscription(payload)
         if snapshot.subscription_id != subscription_id:
-            raise StripeUnavailableError("Stripe returned a different subscription than was asked for")
+            raise StripeUnavailableError(
+                "Stripe returned a different subscription than was asked for"
+            )
         return snapshot
 
     async def list_aura_subscription_ids(self) -> list[str]:
         """Every subscription in the account that carries Aura guild metadata, for reconciliation.
 
+        Returns
+        -------
+        list[str]
+            Every subscription in the account carrying Aura guild metadata, for
+            reconciliation. Paged through in full.
+
+        Raises
+        ------
+        StripeAPIError
+            For a transport failure, an error status, or a body Stripe returned in
+            a shape this code refuses to guess at.
+
+        Notes
+        -----
         Only IDs: the reconciler re-fetches each one individually, through the
         same compare-and-swap an event uses, so a listing that is minutes old by
         the time a page is processed can never be what gets stored.
@@ -404,7 +555,9 @@ class StripeClient:
             params = [("status", "all"), ("limit", str(SUBSCRIPTION_LIST_PAGE_SIZE))]
             if starting_after is not None:
                 params.append(("starting_after", starting_after))
-            payload = await self._request("GET", "/v1/subscriptions", params=params, context="subscription listing")
+            payload = await self._request(
+                "GET", "/v1/subscriptions", params=params, context="subscription listing"
+            )
             if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
                 raise StripeUnavailableError("Stripe's subscription listing was not a list")
             entries = payload["data"]
@@ -426,7 +579,25 @@ class StripeClient:
         return found
 
     async def create_portal_session(self, *, customer_id: str) -> str:
-        """Create a Stripe billing portal session for one customer and return its URL."""
+        """Create a Stripe billing portal session for one customer and return its URL.
+
+        Parameters
+        ----------
+        customer_id
+            The Stripe customer to open the portal for.
+
+        Returns
+        -------
+        str
+            The portal URL to redirect the browser to. Single-use and short-lived,
+            which is why it is never cached.
+
+        Raises
+        ------
+        StripeAPIError
+            For a transport failure, an error status, or a body Stripe returned in
+            a shape this code refuses to guess at.
+        """
         if not is_stripe_id(customer_id, "cus"):
             raise ValueError("not a customer ID")
         payload = await self._request(
@@ -437,7 +608,9 @@ class StripeClient:
         )
         if not isinstance(payload, dict) or payload.get("object") != "billing_portal.session":
             raise StripeUnavailableError("Stripe did not return a billing portal session")
-        return _https_url_on(payload.get("url"), BILLING_PORTAL_HOSTS, context="billing portal session")
+        return _https_url_on(
+            payload.get("url"), BILLING_PORTAL_HOSTS, context="billing portal session"
+        )
 
     async def _request(
         self,
@@ -467,17 +640,23 @@ class StripeClient:
             # The exception type only: an httpx error's text can include the
             # request URL, and this module never lets anything request-shaped
             # reach a log line.
-            raise StripeUnavailableError(f"Could not reach Stripe for {context} ({type(exc).__name__})") from exc
+            raise StripeUnavailableError(
+                f"Could not reach Stripe for {context} ({type(exc).__name__})"
+            ) from exc
 
         if response.status_code == 429 or response.status_code >= 500:
-            raise StripeUnavailableError(f"Stripe returned HTTP {response.status_code} for {context}")
+            raise StripeUnavailableError(
+                f"Stripe returned HTTP {response.status_code} for {context}"
+            )
         if response.status_code >= 400:
             raise StripeRejectedError(
                 f"Stripe rejected {context} (HTTP {response.status_code}{_error_summary(response)})",
                 status_code=response.status_code,
             )
         if response.status_code >= 300:
-            raise StripeUnavailableError(f"Stripe answered {context} with a redirect, which is never followed")
+            raise StripeUnavailableError(
+                f"Stripe answered {context} with a redirect, which is never followed"
+            )
         try:
             return response.json()
         except ValueError as exc:

@@ -11,6 +11,7 @@ Uses the real embedding model (the session-scoped embedding_model fixture in
 conftest.py): whether fact-worthy text actually separates from ordinary chat
 in this embedding space is the entire point, and no mock can exercise it.
 """
+
 from __future__ import annotations
 
 from fastembed import TextEmbedding

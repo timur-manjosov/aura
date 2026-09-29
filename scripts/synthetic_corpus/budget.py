@@ -17,6 +17,7 @@ Spend is computed from the provider's own reported token usage against a price
 table captured at run time, not from an estimate: an estimate that drifts is
 exactly the failure a cap exists to catch.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -50,8 +51,7 @@ class ModelPrice:
     def cost(self, *, input_tokens: int, output_tokens: int) -> float:
         """USD for one call with this token usage."""
         return (
-            input_tokens * self.usd_per_million_input
-            + output_tokens * self.usd_per_million_output
+            input_tokens * self.usd_per_million_input + output_tokens * self.usd_per_million_output
         ) / _USD_PER_TOKEN_SCALE
 
 

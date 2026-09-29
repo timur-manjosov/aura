@@ -16,6 +16,7 @@ button press), and generating variants costs two sequential LLM round trips
 nothing in that path is waiting on. See _schedule_variant_generation for the
 fire-and-forget mechanics and why they are safe.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -47,8 +48,25 @@ _background_tasks: set[asyncio.Task[list[FactVariant]]] = set()
 def _schedule_variant_generation(
     conn: aiosqlite.Connection, model: TextEmbedding, fact: Fact
 ) -> None:
-    """Fire-and-forget aura.variants_service.generate_variants_for_fact for fact.
+    """Fire-and-forget variant generation for one newly active fact.
 
+    Parameters
+    ----------
+    conn
+        Open database connection, handed to the background task.
+    model
+        The loaded embedding model.
+    fact
+        The fact to enrich. Already committed and fully citable without a
+        single variant.
+
+    Returns
+    -------
+    None
+        Returns as soon as the task is scheduled; the work happens later.
+
+    Notes
+    -----
     Deliberately not awaited: both callers below (add_fact, confirm_fact) are
     invoked from a Discord interaction that is about to send its own response
     (a modal's on_submit, a button's callback), and generation costs two
@@ -75,17 +93,34 @@ async def add_fact(
 ) -> Fact:
     """Create a new active fact from a Discord message, embedding included.
 
-    Embeds content before touching the database, then makes exactly one
-    repository call that writes content and embedding together in the same
-    row. Two separate writes -- insert, then a follow-up update with the
-    embedding -- would leave a window where a fact exists without one, the
-    same atomicity reasoning supersede_fact already applies to its own
-    two-statement transaction.
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    model
+        The loaded embedding model.
+    guild_id, channel_id, message_id
+        The origin reference.
+    content
+        The sentence a moderator entered.
 
-    Schedules variant generation as background enrichment once the fact
-    exists (see _schedule_variant_generation) -- the manual "Add as Aura
-    Fact" half of Multi-Representation Indexing Part 1's single trigger
-    point.
+    Returns
+    -------
+    Fact
+        The newly created active fact, embedding already stored.
+
+    Notes
+    -----
+    Embeds `content` before touching the database, then makes exactly one
+    repository call that writes content and embedding together in the same row.
+    Two separate writes -- insert, then a follow-up update with the embedding --
+    would leave a window where a fact exists without one, the same atomicity
+    reasoning `supersede_fact` already applies to its own two-statement
+    transaction.
+
+    Schedules variant generation as background enrichment once the fact exists
+    (see `_schedule_variant_generation`) -- the manual "Add as Aura Fact" half of
+    Multi-Representation Indexing Part 1's single trigger point.
     """
     embedding = await embed_text(model, content)
     fact = await create_fact(
@@ -110,18 +145,43 @@ async def confirm_fact(
 ) -> Fact:
     """Confirm a staged extraction candidate into a real active fact.
 
-    A thin wrapper around aura.db.pending_facts.confirm_pending_fact that adds
-    exactly one thing: scheduling variant generation once the fact exists,
-    the automatic /aura-pending half of the same single trigger point
-    add_fact serves for the manual path (see this module's docstring). The
-    embedding itself is unaffected -- confirm_pending_fact reuses the
-    embedding computed back when the candidate was staged (see
-    aura.extraction.pipeline), exactly as it did before this wrapper existed.
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    model
+        The loaded embedding model, for the background variant generation only.
+    guild_id
+        Guild the candidate must belong to.
+    pending_id
+        The candidate to confirm.
+    resolved_by_id
+        The moderator confirming it.
 
-    Raises whatever confirm_pending_fact raises (PendingFactNotFoundError,
-    PendingFactAlreadyResolvedError), unchanged and without catching them --
-    a candidate that was never confirmed has no fact for variant generation to
-    run against, so those paths never reach the scheduling call below.
+    Returns
+    -------
+    Fact
+        The newly created active fact.
+
+    Raises
+    ------
+    PendingFactNotFoundError
+        If this guild has no candidate with that ID.
+    PendingFactAlreadyResolvedError
+        If someone else resolved it first.
+
+    Notes
+    -----
+    A thin wrapper around `aura.db.pending_facts.confirm_pending_fact` that adds
+    exactly one thing: scheduling variant generation once the fact exists -- the
+    automatic /aura-pending half of the same single trigger point `add_fact`
+    serves for the manual path (see this module's docstring). The embedding is
+    unaffected: `confirm_pending_fact` reuses the one computed when the candidate
+    was staged.
+
+    The two exceptions propagate unchanged and uncaught. A candidate that was
+    never confirmed has no fact for variant generation to run against, so those
+    paths never reach the scheduling call.
     """
     fact = await confirm_pending_fact(
         conn, guild_id=guild_id, pending_id=pending_id, resolved_by_id=resolved_by_id

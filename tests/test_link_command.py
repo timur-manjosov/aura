@@ -10,6 +10,7 @@ The adversarial half is the larger one, deliberately: the interesting inputs
 here are a moderator's typo, a second moderator racing them, and someone
 guessing another server's fact IDs.
 """
+
 from __future__ import annotations
 
 import logging

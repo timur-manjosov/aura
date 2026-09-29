@@ -9,11 +9,12 @@ JSON, JSON with duplicate keys, and every field of a snapshot with the wrong
 type, the wrong shape or an out-of-range value. Each refusal is asserted to
 leave the database exactly as it was.
 """
+
 from __future__ import annotations
 
 import json
 import socket
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 
@@ -33,7 +34,7 @@ from aura.billing.internal_api import (
 from aura.db.repository import init_schema
 from aura.db.subscriptions import count_processed_events, load_subscription_records
 
-NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
 SECRET = "internal-api-test-secret-" + "x" * 30
 POLICY = GracePolicy(renewal_grace=timedelta(hours=72), payment_failure_grace=timedelta(days=7))
 GUILD = "100000000000000001"
@@ -74,7 +75,13 @@ def apply_body(**overrides: Any) -> dict[str, Any]:
 async def setup():
     conn = await aiosqlite.connect(":memory:")
     await init_schema(conn)
-    gate = PlanGate(enforced=True, policy=POLICY, complimentary_guild_ids=frozenset(), records=[], clock=lambda: NOW)
+    gate = PlanGate(
+        enforced=True,
+        policy=POLICY,
+        complimentary_guild_ids=frozenset(),
+        records=[],
+        clock=lambda: NOW,
+    )
     app = create_internal_api_app(conn, gate, secret=SECRET, clock=lambda: NOW)
     client = TestClient(TestServer(app))
     await client.start_server()
@@ -104,10 +111,14 @@ class TestAuthentication:
             {"Authorization": "Bearer " + "x" * len(SECRET)},
         ],
     )
-    async def test_anything_but_the_exact_secret_is_refused_and_writes_nothing(self, setup, headers) -> None:
+    async def test_anything_but_the_exact_secret_is_refused_and_writes_nothing(
+        self, setup, headers
+    ) -> None:
         client, conn, _ = setup
 
-        response = await client.post("/internal/v1/subscriptions/apply", json=apply_body(), headers=headers)
+        response = await client.post(
+            "/internal/v1/subscriptions/apply", json=apply_body(), headers=headers
+        )
 
         assert response.status == 401
         assert await response.json() == {"error": "unauthorized"}
@@ -119,13 +130,19 @@ class TestAuthentication:
         response = await client.post(
             "/internal/v1/subscriptions/apply",
             data=json.dumps(apply_body()),
-            headers=[("Authorization", "Bearer wrong"), ("Authorization", f"Bearer {SECRET}"), ("Content-Type", "application/json")],
+            headers=[
+                ("Authorization", "Bearer wrong"),
+                ("Authorization", f"Bearer {SECRET}"),
+                ("Content-Type", "application/json"),
+            ],
         )
 
         assert response.status == 401
         assert await nothing_was_written(conn)
 
-    @pytest.mark.parametrize("path", ["/", "/internal/v1/admin", "/internal/v1/guilds", "/../etc/passwd"])
+    @pytest.mark.parametrize(
+        "path", ["/", "/internal/v1/admin", "/internal/v1/guilds", "/../etc/passwd"]
+    )
     async def test_an_unauthenticated_caller_cannot_map_the_routes(self, setup, path: str) -> None:
         client, _, _ = setup
 
@@ -155,7 +172,8 @@ class TestBodies:
         client, conn, _ = setup
 
         response = await client.post(
-            "/internal/v1/subscriptions/apply", data=json.dumps(apply_body()),
+            "/internal/v1/subscriptions/apply",
+            data=json.dumps(apply_body()),
             headers={**AUTH, "Content-Type": "text/plain"},
         )
 
@@ -187,7 +205,9 @@ class TestBodies:
         client, conn, _ = setup
 
         response = await client.post(
-            "/internal/v1/subscriptions/apply", data=raw, headers={**AUTH, "Content-Type": "application/json"}
+            "/internal/v1/subscriptions/apply",
+            data=raw,
+            headers={**AUTH, "Content-Type": "application/json"},
         )
 
         assert response.status == 400
@@ -200,7 +220,9 @@ class TestBodies:
         raw = '{"expected_version": 5, ' + valid[1:]
 
         response = await client.post(
-            "/internal/v1/subscriptions/apply", data=raw, headers={**AUTH, "Content-Type": "application/json"}
+            "/internal/v1/subscriptions/apply",
+            data=raw,
+            headers={**AUTH, "Content-Type": "application/json"},
         )
 
         assert response.status == 400
@@ -230,12 +252,16 @@ class TestApplyValidation:
     async def test_a_malformed_envelope_is_refused(self, setup, overrides) -> None:
         client, conn, _ = setup
 
-        response = await client.post("/internal/v1/subscriptions/apply", json=apply_body(**overrides), headers=AUTH)
+        response = await client.post(
+            "/internal/v1/subscriptions/apply", json=apply_body(**overrides), headers=AUTH
+        )
 
         assert response.status == 400
         assert await nothing_was_written(conn)
 
-    async def test_a_missing_envelope_key_is_refused_even_when_it_would_be_null(self, setup) -> None:
+    async def test_a_missing_envelope_key_is_refused_even_when_it_would_be_null(
+        self, setup
+    ) -> None:
         client, conn, _ = setup
         body = apply_body()
         del body["event_id"]
@@ -279,7 +305,9 @@ class TestApplyValidation:
         client, conn, _ = setup
 
         response = await client.post(
-            "/internal/v1/subscriptions/apply", json=apply_body(snapshot=snapshot(**overrides)), headers=AUTH
+            "/internal/v1/subscriptions/apply",
+            json=apply_body(snapshot=snapshot(**overrides)),
+            headers=AUTH,
         )
 
         assert response.status == 400
@@ -292,7 +320,9 @@ class TestApplyBehaviour:
         client, conn, gate = setup
         assert not gate.allows_pro(int(GUILD))
 
-        response = await client.post("/internal/v1/subscriptions/apply", json=apply_body(), headers=AUTH)
+        response = await client.post(
+            "/internal/v1/subscriptions/apply", json=apply_body(), headers=AUTH
+        )
 
         assert response.status == 200
         assert await response.json() == {"outcome": "applied", "version": 1}
@@ -333,7 +363,9 @@ class TestApplyBehaviour:
         await client.post("/internal/v1/subscriptions/apply", json=apply_body(), headers=AUTH)
 
         response = await client.post(
-            "/internal/v1/subscriptions/sync-state", json={"subscription_id": "sub_A1", "event_id": "evt_1"}, headers=AUTH
+            "/internal/v1/subscriptions/sync-state",
+            json={"subscription_id": "sub_A1", "event_id": "evt_1"},
+            headers=AUTH,
         )
 
         assert await response.json() == {"event_processed": True, "version": 1}
@@ -341,8 +373,13 @@ class TestApplyBehaviour:
     async def test_an_unexpected_failure_is_a_bare_500_code_without_internals(self, setup) -> None:
         client, _, _ = setup
 
-        with patch("aura.billing.internal_api.apply_snapshot", side_effect=RuntimeError("secret internals /path")):
-            response = await client.post("/internal/v1/subscriptions/apply", json=apply_body(), headers=AUTH)
+        with patch(
+            "aura.billing.internal_api.apply_snapshot",
+            side_effect=RuntimeError("secret internals /path"),
+        ):
+            response = await client.post(
+                "/internal/v1/subscriptions/apply", json=apply_body(), headers=AUTH
+            )
 
         assert response.status == 500
         text = await response.text()
@@ -356,7 +393,9 @@ class TestPlans:
         await client.post("/internal/v1/subscriptions/apply", json=apply_body(), headers=AUTH)
 
         response = await client.post(
-            "/internal/v1/guilds/plans", json={"guild_ids": [GUILD, "200000000000000002"]}, headers=AUTH
+            "/internal/v1/guilds/plans",
+            json={"guild_ids": [GUILD, "200000000000000002"]},
+            headers=AUTH,
         )
 
         body = await response.json()
@@ -366,7 +405,13 @@ class TestPlans:
         assert paying["standing"] == "active"
         assert paying["in_force_subscription_count"] == 1
         assert paying["subscriptions"] == [
-            {"subscription_id": "sub_A1", "customer_id": "cus_A1", "purchaser_user_id": "5000", "status": "active", "grants_access": True}
+            {
+                "subscription_id": "sub_A1",
+                "customer_id": "cus_A1",
+                "purchaser_user_id": "5000",
+                "status": "active",
+                "grants_access": True,
+            }
         ]
         assert body["plans"]["200000000000000002"]["tier"] == "free"
 
@@ -384,7 +429,9 @@ class TestPlans:
     async def test_a_malformed_plan_request_is_refused(self, setup, guild_ids) -> None:
         client, _, _ = setup
 
-        response = await client.post("/internal/v1/guilds/plans", json={"guild_ids": guild_ids}, headers=AUTH)
+        response = await client.post(
+            "/internal/v1/guilds/plans", json={"guild_ids": guild_ids}, headers=AUTH
+        )
 
         assert response.status == 400
 
@@ -414,7 +461,9 @@ class TestListener:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"http://127.0.0.1:{port}/internal/v1/guilds/plans", json={"guild_ids": [GUILD]}, headers=AUTH
+                    f"http://127.0.0.1:{port}/internal/v1/guilds/plans",
+                    json={"guild_ids": [GUILD]},
+                    headers=AUTH,
                 ) as response:
                     assert response.status == 200
         finally:
@@ -433,7 +482,11 @@ class TestListener:
         try:
             with pytest.raises(OSError):
                 await start_internal_api(
-                    conn, PlanGate.unenforced(), secret=SECRET, host="127.0.0.1", port=blocker.getsockname()[1]
+                    conn,
+                    PlanGate.unenforced(),
+                    secret=SECRET,
+                    host="127.0.0.1",
+                    port=blocker.getsockname()[1],
                 )
         finally:
             blocker.close()

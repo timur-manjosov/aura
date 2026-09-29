@@ -15,10 +15,11 @@ reason: create_fact timestamps from the clock, and every question here is about
 which side of a boundary a timestamp falls on. Nothing else about the rows
 differs from what create_fact writes.
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 import pytest
@@ -40,7 +41,7 @@ GUILD_A = 100000000000000001
 GUILD_B = 200000000000000002
 CHANNEL = 300000000000000003
 
-NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=UTC)
 LAST_DIGEST = NOW - timedelta(days=7)
 BEFORE_EVERYTHING = NOW - timedelta(days=90)
 
@@ -69,8 +70,14 @@ async def add_fact(
             (guild_id, channel_id, message_id, content, embedding, status, created_at)
         VALUES (?, ?, ?, ?, ?, 'active', ?)
         """,
-        (guild_id, CHANNEL, next(_next_message_id), content, b"\x00\x00\x00\x00",
-         utc_iso(created_at)),
+        (
+            guild_id,
+            CHANNEL,
+            next(_next_message_id),
+            content,
+            b"\x00\x00\x00\x00",
+            utc_iso(created_at),
+        ),
     )
     await conn.commit()
     assert cursor.lastrowid is not None
@@ -105,24 +112,34 @@ async def mark_as_milestone_candidate(
              confirmed_fact_id, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (guild_id, CHANNEL, next(_next_message_id), f"candidate for {fact_id}",
-         b"\x00\x00\x00\x00", category, status,
-         fact_id if status == "confirmed" else None, utc_iso(NOW)),
+        (
+            guild_id,
+            CHANNEL,
+            next(_next_message_id),
+            f"candidate for {fact_id}",
+            b"\x00\x00\x00\x00",
+            category,
+            status,
+            fact_id if status == "confirmed" else None,
+            utc_iso(NOW),
+        ),
     )
     await conn.commit()
 
 
-async def build(conn: aiosqlite.Connection, *, guild_id: int = GUILD_A, since: datetime = LAST_DIGEST):
-    return await build_digest(
-        conn, guild_id=guild_id, since=utc_iso(since), until=utc_iso(NOW)
-    )
+async def build(
+    conn: aiosqlite.Connection, *, guild_id: int = GUILD_A, since: datetime = LAST_DIGEST
+):
+    return await build_digest(conn, guild_id=guild_id, since=utc_iso(since), until=utc_iso(NOW))
 
 
 class TestNewFacts:
     async def test_a_fact_created_in_the_window_is_reported_as_new(
         self, conn: aiosqlite.Connection
     ) -> None:
-        await add_fact(conn, content="Movie night is on Fridays.", created_at=NOW - timedelta(days=2))
+        await add_fact(
+            conn, content="Movie night is on Fridays.", created_at=NOW - timedelta(days=2)
+        )
 
         content = await build(conn)
 
@@ -139,9 +156,7 @@ class TestNewFacts:
         assert content.new_facts == []
         assert content.is_empty is True
 
-    async def test_the_window_is_half_open_at_its_start(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_the_window_is_half_open_at_its_start(self, conn: aiosqlite.Connection) -> None:
         # A fact created at exactly the previous window's end was already
         # reported by that digest; reporting it again would duplicate it.
         await add_fact(conn, content="Right on the boundary.", created_at=LAST_DIGEST)
@@ -170,7 +185,9 @@ class TestNewFacts:
 
     async def test_another_guilds_facts_never_appear(self, conn: aiosqlite.Connection) -> None:
         await add_fact(
-            conn, content="Other server's business.", created_at=NOW - timedelta(days=1),
+            conn,
+            content="Other server's business.",
+            created_at=NOW - timedelta(days=1),
             guild_id=GUILD_B,
         )
 
@@ -183,7 +200,9 @@ class TestChanges:
     async def test_a_supersession_in_the_window_is_reported_as_a_change(
         self, conn: aiosqlite.Connection
     ) -> None:
-        old_id = await add_fact(conn, content="Meetings are on Monday.", created_at=BEFORE_EVERYTHING)
+        old_id = await add_fact(
+            conn, content="Meetings are on Monday.", created_at=BEFORE_EVERYTHING
+        )
         new_id = await add_fact(
             conn, content="Meetings are on Thursday.", created_at=NOW - timedelta(days=1)
         )
@@ -205,15 +224,15 @@ class TestChanges:
     ) -> None:
         old_id = await add_fact(conn, content="Ancient.", created_at=BEFORE_EVERYTHING)
         new_id = await add_fact(conn, content="Less ancient.", created_at=BEFORE_EVERYTHING)
-        await supersede(conn, old_id=old_id, new_id=new_id, at=BEFORE_EVERYTHING + timedelta(days=1))
+        await supersede(
+            conn, old_id=old_id, new_id=new_id, at=BEFORE_EVERYTHING + timedelta(days=1)
+        )
 
         content = await build(conn)
 
         assert content.is_empty is True
 
-    async def test_the_successor_may_predate_the_window(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_the_successor_may_predate_the_window(self, conn: aiosqlite.Connection) -> None:
         # /aura-supersede lets a moderator retire a fact in favour of an
         # existing one. The change happened in this window even though nothing
         # was created in it.
@@ -230,7 +249,9 @@ class TestChanges:
     async def test_changes_are_ordered_oldest_first(self, conn: aiosqlite.Connection) -> None:
         for index, days_ago in enumerate((1, 5, 3)):
             old_id = await add_fact(conn, content=f"old {index}", created_at=BEFORE_EVERYTHING)
-            new_id = await add_fact(conn, content=f"new {index}", created_at=NOW - timedelta(days=days_ago))
+            new_id = await add_fact(
+                conn, content=f"new {index}", created_at=NOW - timedelta(days=days_ago)
+            )
             await supersede(conn, old_id=old_id, new_id=new_id, at=NOW - timedelta(days=days_ago))
 
         content = await build(conn)
@@ -254,21 +275,27 @@ class TestFactsCreatedAndRetiredInTheSameWindow:
     async def test_a_fact_created_and_retired_in_the_window_is_not_reported_as_new(
         self, conn: aiosqlite.Connection
     ) -> None:
-        first_id = await add_fact(conn, content="Event at 18:00.", created_at=NOW - timedelta(days=3))
-        second_id = await add_fact(conn, content="Event at 20:00.", created_at=NOW - timedelta(days=2))
+        first_id = await add_fact(
+            conn, content="Event at 18:00.", created_at=NOW - timedelta(days=3)
+        )
+        second_id = await add_fact(
+            conn, content="Event at 20:00.", created_at=NOW - timedelta(days=2)
+        )
         await supersede(conn, old_id=first_id, new_id=second_id, at=NOW - timedelta(days=2))
 
         content = await build(conn)
 
         assert [fact.content for fact in content.new_facts] == ["Event at 20:00."]
 
-    async def test_it_is_not_reported_as_a_change_either(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_it_is_not_reported_as_a_change_either(self, conn: aiosqlite.Connection) -> None:
         # "Event at 18:00 -> Event at 20:00" would be telling the reader about
         # the retirement of something they were never told existed.
-        first_id = await add_fact(conn, content="Event at 18:00.", created_at=NOW - timedelta(days=3))
-        second_id = await add_fact(conn, content="Event at 20:00.", created_at=NOW - timedelta(days=2))
+        first_id = await add_fact(
+            conn, content="Event at 18:00.", created_at=NOW - timedelta(days=3)
+        )
+        second_id = await add_fact(
+            conn, content="Event at 20:00.", created_at=NOW - timedelta(days=2)
+        )
         await supersede(conn, old_id=first_id, new_id=second_id, at=NOW - timedelta(days=2))
 
         content = await build(conn)
@@ -296,8 +323,12 @@ class TestFactsCreatedAndRetiredInTheSameWindow:
     ) -> None:
         # Net effect for the reader: nothing changed. The fact they knew is
         # still the fact that holds.
-        established_id = await add_fact(conn, content="The long-standing rule.", created_at=BEFORE_EVERYTHING)
-        mistake_id = await add_fact(conn, content="A mistaken rule.", created_at=NOW - timedelta(days=2))
+        established_id = await add_fact(
+            conn, content="The long-standing rule.", created_at=BEFORE_EVERYTHING
+        )
+        mistake_id = await add_fact(
+            conn, content="A mistaken rule.", created_at=NOW - timedelta(days=2)
+        )
         await supersede(conn, old_id=mistake_id, new_id=established_id, at=NOW - timedelta(days=1))
 
         content = await build(conn)
@@ -390,20 +421,24 @@ class TestMilestones:
             conn, content="The server reached 500 members.", created_at=NOW - timedelta(days=1)
         )
         await mark_as_milestone_candidate(conn, fact_id=milestone_id)
-        await add_fact(conn, content="Movie night is on Fridays.", created_at=NOW - timedelta(days=1))
+        await add_fact(
+            conn, content="Movie night is on Fridays.", created_at=NOW - timedelta(days=1)
+        )
 
         content = await build(conn)
 
-        assert [fact.content for fact in content.milestones] == [
-            "The server reached 500 members."
-        ]
+        assert [fact.content for fact in content.milestones] == ["The server reached 500 members."]
         assert [fact.content for fact in content.new_facts] == ["Movie night is on Fridays."]
 
-    @pytest.mark.parametrize("category", ["announcement", "rule", "decision", "event", "status_change"])
+    @pytest.mark.parametrize(
+        "category", ["announcement", "rule", "decision", "event", "status_change"]
+    )
     async def test_every_other_category_stays_in_the_ordinary_section(
         self, conn: aiosqlite.Connection, category: str
     ) -> None:
-        fact_id = await add_fact(conn, content="Something happened.", created_at=NOW - timedelta(days=1))
+        fact_id = await add_fact(
+            conn, content="Something happened.", created_at=NOW - timedelta(days=1)
+        )
         await mark_as_milestone_candidate(conn, fact_id=fact_id, category=category)
 
         content = await build(conn)
@@ -429,7 +464,9 @@ class TestMilestones:
     async def test_a_discarded_milestone_candidate_does_not_promote_anything(
         self, conn: aiosqlite.Connection
     ) -> None:
-        fact_id = await add_fact(conn, content="Unrelated fact.", created_at=NOW - timedelta(days=1))
+        fact_id = await add_fact(
+            conn, content="Unrelated fact.", created_at=NOW - timedelta(days=1)
+        )
         await mark_as_milestone_candidate(conn, fact_id=fact_id, status="discarded")
 
         content = await build(conn)
@@ -578,7 +615,9 @@ class TestBrokenChains:
     async def test_a_superseded_fact_with_no_successor_is_left_out_with_a_warning(
         self, conn: aiosqlite.Connection, caplog: pytest.LogCaptureFixture
     ) -> None:
-        orphan_id = await add_fact(conn, content="Retired into nothing.", created_at=BEFORE_EVERYTHING)
+        orphan_id = await add_fact(
+            conn, content="Retired into nothing.", created_at=BEFORE_EVERYTHING
+        )
         await supersede(conn, old_id=orphan_id, new_id=None, at=NOW - timedelta(days=1))
 
         with caplog.at_level(logging.WARNING):
@@ -618,7 +657,9 @@ class TestBrokenChains:
         self, conn: aiosqlite.Connection
     ) -> None:
         # Following it would print another server's fact into this one's digest.
-        foreign_id = await add_fact(conn, content="Foreign fact.", created_at=BEFORE_EVERYTHING, guild_id=GUILD_B)
+        foreign_id = await add_fact(
+            conn, content="Foreign fact.", created_at=BEFORE_EVERYTHING, guild_id=GUILD_B
+        )
         old_id = await add_fact(conn, content="Ours.", created_at=BEFORE_EVERYTHING)
         await supersede(conn, old_id=old_id, new_id=foreign_id, at=NOW - timedelta(days=1))
 
@@ -686,9 +727,7 @@ class TestBrokenChains:
 
 
 class TestEmptyWindow:
-    async def test_a_window_with_nothing_in_it_is_empty(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_window_with_nothing_in_it_is_empty(self, conn: aiosqlite.Connection) -> None:
         content = await build(conn)
 
         assert content.is_empty is True

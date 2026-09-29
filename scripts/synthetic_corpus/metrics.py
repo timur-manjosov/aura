@@ -12,6 +12,7 @@ is Aura staying silent when it could have helped -- which is the asymmetry
 every threshold decision in this project has turned on, stated once here rather
 than re-derived at each call site.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -36,12 +37,7 @@ class ConfusionCounts:
     @property
     def total(self) -> int:
         """How many cases this row was computed over."""
-        return (
-            self.true_positive
-            + self.false_positive
-            + self.true_negative
-            + self.false_negative
-        )
+        return self.true_positive + self.false_positive + self.true_negative + self.false_negative
 
     @property
     def precision(self) -> float:
@@ -110,7 +106,7 @@ def threshold_range(start: float, stop: float, step: float) -> list[float]:
     """
     if step <= 0:
         raise ValueError(f"step must be positive, got {step}")
-    digits = max(0, -int(round(_log10_of_step(step))) + 2)
+    digits = max(0, -round(_log10_of_step(step)) + 2)
     values: list[float] = []
     current = start
     while current <= stop + step / 2:
@@ -140,7 +136,7 @@ def describe_distribution(values: list[float]) -> str:
     last = len(ordered) - 1
 
     def at(fraction: float) -> float:
-        return ordered[int(round(fraction * last))]
+        return ordered[round(fraction * last)]
 
     return (
         f"n={len(ordered)}  min={ordered[0]:+.3f}  p25={at(0.25):+.3f}  "

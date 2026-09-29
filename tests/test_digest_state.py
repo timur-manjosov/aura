@@ -14,10 +14,11 @@ The restart test uses a real file-backed database rather than an in-memory one,
 because "survives the process going away" is exactly what an in-memory database
 cannot demonstrate.
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -42,7 +43,7 @@ WEEK = int(DigestInterval.WEEKLY)
 
 # A fixed instant, so every window in these tests is stated in relation to one
 # readable moment instead of to whatever the clock says while the suite runs.
-NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -303,9 +304,7 @@ class TestDowntimeCatchUp:
 
 
 class TestRestartDurability:
-    async def test_the_schedule_survives_the_process_going_away(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_the_schedule_survives_the_process_going_away(self, tmp_path: Path) -> None:
         # A file-backed database opened, written, closed and reopened -- the
         # closest a test gets to a container restart. Nothing may need
         # recovering, and the guild must not become due again just because the
@@ -325,8 +324,7 @@ class TestRestartDurability:
             assert await _claim(second, since=NOW, now=NOW + timedelta(hours=3)) is None
             # And due again once the interval genuinely elapses.
             assert (
-                await _claim(second, since=NOW, now=NOW + timedelta(days=7, minutes=1))
-                is not None
+                await _claim(second, since=NOW, now=NOW + timedelta(days=7, minutes=1)) is not None
             )
         finally:
             await second.close()
@@ -385,7 +383,9 @@ class TestGuildIsolation:
         await _claim(conn, guild_id=GUILD_A, since=NOW - timedelta(days=7), now=NOW)
 
         assert await last_covered_until(conn, guild_id=GUILD_B) is None
-        assert await _claim(conn, guild_id=GUILD_B, since=NOW - timedelta(days=7), now=NOW) is not None
+        assert (
+            await _claim(conn, guild_id=GUILD_B, since=NOW - timedelta(days=7), now=NOW) is not None
+        )
 
     async def test_runs_are_listed_per_guild(self, conn: aiosqlite.Connection) -> None:
         await _claim(conn, guild_id=GUILD_A, since=NOW - timedelta(days=7), now=NOW)

@@ -12,6 +12,7 @@ shipped function is exercised without adding a second test framework to the
 repository. They skip, rather than fail, where node is absent; the catalogue
 checks (the part that actually rots as languages are added) always run.
 """
+
 from __future__ import annotations
 
 import json
@@ -63,7 +64,7 @@ class TestCatalogueFiles:
     def test_every_required_locale_has_a_file(self) -> None:
         present = {path.stem for path in LOCALES_DIR.glob("*.json")}
 
-        assert REQUIRED_LOCALES <= present, REQUIRED_LOCALES - present
+        assert present >= REQUIRED_LOCALES, REQUIRED_LOCALES - present
 
     def test_no_unexpected_locale_file_is_shipped(self) -> None:
         """A stray file would ship an unreviewed language to real users."""

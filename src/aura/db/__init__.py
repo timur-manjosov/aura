@@ -1,4 +1,5 @@
 """The knowledge model's data layer: schema, pydantic models, and data access."""
+
 from aura.db.models import Fact, FactLink, FactStatus
 from aura.db.repository import (
     FactAlreadySupersededError,

@@ -10,10 +10,11 @@ Whether the MODEL then behaves correctly on that prompt is a different question,
 which no mock can answer. It is measured against real paid calls in
 scripts/evaluate_extraction.py and reported in reports/phase-3a-2.txt.
 """
+
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -28,7 +29,7 @@ from aura.extraction.distiller import (
 )
 
 MODEL = "openrouter/anthropic/claude-haiku-4.5"
-NOW = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 30, 12, 0, 0, tzinfo=UTC)
 
 
 def _queued(message_id: int, content: str, *, created_at: datetime = NOW) -> QueuedMessage:
@@ -51,9 +52,7 @@ def _response(payload: object, *, fenced: bool = False):
 
     from litellm.types.utils import Choices, Message, ModelResponse
 
-    return ModelResponse(
-        choices=[Choices(message=Message(content=body, role="assistant"))]
-    )
+    return ModelResponse(choices=[Choices(message=Message(content=body, role="assistant"))])
 
 
 def _mock_llm(payload: object, *, fenced: bool = False) -> AsyncMock:
@@ -75,13 +74,11 @@ class TestPromptContent:
         assert "#mod-announcements" in messages[1]["content"]
 
     def test_each_messages_timestamp_is_passed(self) -> None:
-        earlier = datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc)
+        earlier = datetime(2026, 7, 30, 9, 15, tzinfo=UTC)
         messages = _build_messages([_queued(1, "starts tomorrow")], "general")
         assert NOW.isoformat() in messages[1]["content"]
 
-        messages = _build_messages(
-            [_queued(1, "starts tomorrow", created_at=earlier)], "general"
-        )
+        messages = _build_messages([_queued(1, "starts tomorrow", created_at=earlier)], "general")
         assert earlier.isoformat() in messages[1]["content"]
 
     def test_messages_are_numbered_from_one(self) -> None:
@@ -155,9 +152,7 @@ class TestPromptContent:
         # It is a self-consistency device, not data. A response missing it is
         # rejected (the slot has to actually be filled to do its job), and a
         # DistilledFact deliberately does not carry it onward.
-        payload = {
-            "facts": [{"message": 1, "content": "A rule exists.", "category": "rule"}]
-        }
+        payload = {"facts": [{"message": 1, "content": "A rule exists.", "category": "rule"}]}
         with patch("litellm.acompletion", _mock_llm(payload)):
             assert await distill_facts([_queued(1, "x")], channel_name="g", model=MODEL) is None
 
@@ -227,12 +222,17 @@ class TestSuccessfulDistillation:
         # OpenRouter, which wraps its JSON in a ```json fence on every call.
         # Without the shared fence-tolerant parser this fails 100% of the time.
         payload = {
-            "facts": [{"message": 1, "content": "A rule exists.", "category": "rule", "language": "English"}]
+            "facts": [
+                {
+                    "message": 1,
+                    "content": "A rule exists.",
+                    "category": "rule",
+                    "language": "English",
+                }
+            ]
         }
         with patch("litellm.acompletion", _mock_llm(payload, fenced=True)):
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is not None
         assert len(result) == 1
 
@@ -244,28 +244,44 @@ class TestSuccessfulDistillation:
     async def test_duplicate_identical_entries_are_collapsed(self) -> None:
         payload = {
             "facts": [
-                {"message": 1, "content": "The rule exists.", "category": "rule", "language": "English"},
-                {"message": 1, "content": "The rule exists.", "category": "rule", "language": "English"},
+                {
+                    "message": 1,
+                    "content": "The rule exists.",
+                    "category": "rule",
+                    "language": "English",
+                },
+                {
+                    "message": 1,
+                    "content": "The rule exists.",
+                    "category": "rule",
+                    "language": "English",
+                },
             ]
         }
         with patch("litellm.acompletion", _mock_llm(payload)):
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is not None
         assert len(result) == 1
 
     async def test_one_message_may_yield_two_different_facts(self) -> None:
         payload = {
             "facts": [
-                {"message": 1, "content": "Maintenance is at 14:00.", "category": "event", "language": "English"},
-                {"message": 1, "content": "Voice chat is disabled.", "category": "status_change", "language": "English"},
+                {
+                    "message": 1,
+                    "content": "Maintenance is at 14:00.",
+                    "category": "event",
+                    "language": "English",
+                },
+                {
+                    "message": 1,
+                    "content": "Voice chat is disabled.",
+                    "category": "status_change",
+                    "language": "English",
+                },
             ]
         }
         with patch("litellm.acompletion", _mock_llm(payload)):
-            result = await distill_facts(
-                [_queued(77, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(77, "x")], channel_name="general", model=MODEL)
         assert result is not None
         assert len(result) == 2
         assert {fact.message_id for fact in result} == {77}
@@ -301,20 +317,14 @@ class TestMalformedOutputIsRejected:
     )
     async def test_a_malformed_shape_becomes_none(self, payload: object) -> None:
         with patch("litellm.acompletion", _mock_llm(payload)):
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is None
 
     @pytest.mark.parametrize("number", [0, 2, 99, -1])
     async def test_a_hallucinated_message_number_becomes_none(self, number: int) -> None:
-        payload = {
-            "facts": [{"message": number, "content": "A fact.", "category": "rule"}]
-        }
+        payload = {"facts": [{"message": number, "content": "A fact.", "category": "rule"}]}
         with patch("litellm.acompletion", _mock_llm(payload)):
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is None
 
     async def test_one_bad_entry_discards_the_whole_response(self) -> None:
@@ -328,18 +338,14 @@ class TestMalformedOutputIsRejected:
             ]
         }
         with patch("litellm.acompletion", _mock_llm(payload)):
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is None
 
     @pytest.mark.parametrize("content", ["", "   ", "\n\t "])
     async def test_a_blank_sentence_becomes_none(self, content: str) -> None:
         payload = {"facts": [{"message": 1, "content": content, "category": "rule"}]}
         with patch("litellm.acompletion", _mock_llm(payload)):
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is None
 
     async def test_a_sentence_that_is_not_distilled_at_all_is_rejected(self) -> None:
@@ -356,9 +362,7 @@ class TestMalformedOutputIsRejected:
             ]
         }
         with patch("litellm.acompletion", _mock_llm(payload)):
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is None
 
     async def test_unparseable_json_becomes_none(self) -> None:
@@ -368,35 +372,25 @@ class TestMalformedOutputIsRejected:
             choices=[Choices(message=Message(content="{not json", role="assistant"))]
         )
         with patch("litellm.acompletion", AsyncMock(return_value=broken)):
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is None
 
     async def test_empty_response_content_becomes_none(self) -> None:
         from litellm.types.utils import Choices, Message, ModelResponse
 
-        empty = ModelResponse(
-            choices=[Choices(message=Message(content="", role="assistant"))]
-        )
+        empty = ModelResponse(choices=[Choices(message=Message(content="", role="assistant"))])
         with patch("litellm.acompletion", AsyncMock(return_value=empty)):
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is None
 
     async def test_a_network_failure_becomes_none(self) -> None:
         with patch("litellm.acompletion", AsyncMock(side_effect=OSError("connection reset"))):
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is None
 
     async def test_a_timeout_becomes_none(self) -> None:
         with patch("litellm.acompletion", AsyncMock(side_effect=TimeoutError())):
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is None
 
     async def test_a_cancellation_still_propagates(self) -> None:
@@ -412,9 +406,7 @@ class TestMalformedOutputIsRejected:
 class TestConfigurationGuards:
     async def test_a_missing_model_returns_none_without_calling(self) -> None:
         with patch("litellm.acompletion", AsyncMock()) as llm:
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=""
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model="")
         assert result is None
         llm.assert_not_awaited()
 
@@ -430,9 +422,7 @@ class TestConfigurationGuards:
             ),
         )
         with patch("litellm.acompletion", AsyncMock()) as llm:
-            result = await distill_facts(
-                [_queued(1, "x")], channel_name="general", model=MODEL
-            )
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is None
         llm.assert_not_awaited()
 

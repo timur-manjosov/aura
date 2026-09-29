@@ -9,6 +9,7 @@ windowed (see aura.onboarding.builder).
 A real in-memory database throughout, never a live gateway connection, per
 CLAUDE.md's testing philosophy.
 """
+
 from __future__ import annotations
 
 import asyncio

@@ -15,6 +15,7 @@ Aura actually posted -- completing the decision trail from message to public
 reply. Nothing here is a user-facing feature, and the whole module goes away
 with the scaffolding it reads.
 """
+
 from __future__ import annotations
 
 import logging
@@ -25,8 +26,8 @@ from discord import app_commands
 
 from aura.db.connection import utc_now
 from aura.db.proactive_signals import (
-    GracePeriodOutcome,
     GateVerdict,
+    GracePeriodOutcome,
     ProactiveSignal,
     get_recent_signals,
 )
@@ -211,8 +212,7 @@ def _render_signal(signal: ProactiveSignal, locale: str) -> tuple[str, str]:
     verdict_label = t(verdict_key, locale) if verdict_key else str(signal.verdict)
 
     permalink = (
-        f"https://discord.com/channels/"
-        f"{signal.guild_id}/{signal.channel_id}/{signal.message_id}"
+        f"https://discord.com/channels/{signal.guild_id}/{signal.channel_id}/{signal.message_id}"
     )
     # <t:...:R> renders as a relative time in each viewer's own client
     # locale and timezone -- correct in all nine of Aura's languages
@@ -245,7 +245,20 @@ async def debug_signals_command(
     interaction: discord.Interaction[AuraClient],
     limit: app_commands.Range[int, 1, _MAX_SIGNAL_LIMIT] = _DEFAULT_SIGNAL_LIMIT,
 ) -> None:
-    """List this guild's most recent proactive gate decisions in full, newest first."""
+    """List this guild's most recent proactive gate decisions in full, newest first.
+
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    limit
+        How many of the guild's most recent decision trails to show.
+
+    Returns
+    -------
+    None
+    """
     assert interaction.guild_id is not None  # guaranteed by guild_only()
     locale = str(interaction.locale)
 
@@ -311,5 +324,15 @@ debug_signals_command.error(_handle_debug_signals_error)
 
 
 def register_proactive_commands(tree: app_commands.CommandTree) -> None:
-    """Register the proactive-detection debug command onto tree."""
+    """Register the proactive-detection debug command onto tree.
+
+    Parameters
+    ----------
+    tree
+        The command tree to register into.
+
+    Returns
+    -------
+    None
+    """
     tree.add_command(debug_signals_command)

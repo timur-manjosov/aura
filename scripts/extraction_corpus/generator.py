@@ -9,6 +9,7 @@ each prompt asks the model to spread its output across that group's
 subcategories itself and tag each item with which one, which costs one call
 instead of five or six for an identical amount of usable content.
 """
+
 from __future__ import annotations
 
 import logging
@@ -465,9 +466,7 @@ _LABEL_AUDIT_SYSTEM_PROMPT = (
 LABEL_AUDIT_BATCH_SIZE = 10
 
 
-async def audit_labels(
-    ctx: GenerationContext, messages: list[SyntheticMessage]
-) -> tuple[int, int]:
+async def audit_labels(ctx: GenerationContext, messages: list[SyntheticMessage]) -> tuple[int, int]:
     """Check each message's fact-worthiness label against an independent model's reading.
 
     Mutates `label_audit` in place and returns (agreements, disputes). Uses

@@ -13,6 +13,7 @@ scripts/supersession_reverify.py and reported in reports/phase-3a-3.txt --
 specifically against the four pairs the bake-off measured this prompt's
 predecessor getting wrong.
 """
+
 from __future__ import annotations
 
 import json
@@ -69,9 +70,7 @@ def _judgement(
 
 async def _judge(payload: object, *, fenced: bool = False):
     with patch("litellm.acompletion", _mock_llm(payload, fenced=fenced)):
-        return await judge_relationship(
-            predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL
-        )
+        return await judge_relationship(predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL)
 
 
 @pytest.fixture(autouse=True)
@@ -282,9 +281,7 @@ class TestChangeSignalRule:
         assert result is not None
         assert result.relationship is SupersessionRelationship.SUPERSESSION
 
-    @pytest.mark.parametrize(
-        "category", ["contradiction", "complementary", "independent"]
-    )
+    @pytest.mark.parametrize("category", ["contradiction", "complementary", "independent"])
     async def test_the_rule_never_promotes_anything(self, category: str) -> None:
         # The mirror-image mistake, ruled out deliberately: a candidate about an
         # entirely different subject may contain the words "from now on" without
@@ -377,23 +374,17 @@ class TestMalformedOutputIsRejected:
         )
         with patch("litellm.acompletion", AsyncMock(return_value=broken)):
             assert (
-                await judge_relationship(
-                    predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL
-                )
+                await judge_relationship(predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL)
                 is None
             )
 
     async def test_empty_content_becomes_none(self) -> None:
         from litellm.types.utils import Choices, Message, ModelResponse
 
-        empty = ModelResponse(
-            choices=[Choices(message=Message(content="", role="assistant"))]
-        )
+        empty = ModelResponse(choices=[Choices(message=Message(content="", role="assistant"))])
         with patch("litellm.acompletion", AsyncMock(return_value=empty)):
             assert (
-                await judge_relationship(
-                    predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL
-                )
+                await judge_relationship(predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL)
                 is None
             )
 
@@ -402,18 +393,14 @@ class TestCallFailures:
     async def test_a_network_failure_becomes_none(self) -> None:
         with patch("litellm.acompletion", AsyncMock(side_effect=ConnectionError("down"))):
             assert (
-                await judge_relationship(
-                    predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL
-                )
+                await judge_relationship(predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL)
                 is None
             )
 
     async def test_a_timeout_becomes_none(self) -> None:
         with patch("litellm.acompletion", AsyncMock(side_effect=TimeoutError())):
             assert (
-                await judge_relationship(
-                    predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL
-                )
+                await judge_relationship(predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL)
                 is None
             )
 
@@ -424,16 +411,12 @@ class TestCallFailures:
 
         with patch("litellm.acompletion", AsyncMock(side_effect=asyncio.CancelledError())):
             with pytest.raises(asyncio.CancelledError):
-                await judge_relationship(
-                    predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL
-                )
+                await judge_relationship(predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL)
 
     async def test_a_missing_model_never_reaches_the_provider(self) -> None:
         with patch("litellm.acompletion", AsyncMock()) as llm:
             assert (
-                await judge_relationship(
-                    predecessor=PREDECESSOR, candidate=CANDIDATE, model=""
-                )
+                await judge_relationship(predecessor=PREDECESSOR, candidate=CANDIDATE, model="")
                 is None
             )
         llm.assert_not_awaited()
@@ -454,9 +437,7 @@ class TestCallFailures:
             patch("litellm.acompletion", AsyncMock()) as llm,
         ):
             assert (
-                await judge_relationship(
-                    predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL
-                )
+                await judge_relationship(predecessor=PREDECESSOR, candidate=CANDIDATE, model=MODEL)
                 is None
             )
         llm.assert_not_awaited()

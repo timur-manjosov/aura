@@ -28,48 +28,56 @@ The safety reviewer is deliberately a model from a *different vendor* than the
 generator. A generator grading its own adversarial output is not an independent
 review -- it shares whatever blind spot produced the text.
 """
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fastembed import TextEmbedding  # noqa: E402
+from fastembed import TextEmbedding
 
-from synthetic_corpus.budget import BudgetExceededError, CallBudget, ModelPrice  # noqa: E402
-from synthetic_corpus.corpus_model import (  # noqa: E402
+from synthetic_corpus.budget import BudgetExceededError, CallBudget, ModelPrice
+from synthetic_corpus.corpus_model import (
     ADVERSARIAL_CATEGORIES,
     MessageCategory,
     RejectedCase,
     SyntheticCorpus,
 )
-from synthetic_corpus.corpus_store import store_corpus, write_corpus  # noqa: E402
-from synthetic_corpus.generator import (  # noqa: E402
+from synthetic_corpus.corpus_store import store_corpus, write_corpus
+from synthetic_corpus.generator import (
     GenerationContext,
     audit_labels,
     generate_guild,
     review_adversarial,
 )
-from synthetic_corpus.leakage import LeakageChecker  # noqa: E402
-from synthetic_corpus.llm import GenerationError, require_real_llm_optin, resolve_api_key  # noqa: E402
-from synthetic_corpus.pricing import PricingUnavailableError, fetch_model_prices  # noqa: E402
-from synthetic_corpus.safety import (  # noqa: E402
+from synthetic_corpus.leakage import LeakageChecker
+from synthetic_corpus.llm import (
+    GenerationError,
+    require_real_llm_optin,
+    resolve_api_key,
+)
+from synthetic_corpus.pricing import PricingUnavailableError, fetch_model_prices
+from synthetic_corpus.safety import (
     SAFETY_PROBES,
     SafetyLayer,
     deterministic_verdict,
 )
-from synthetic_corpus.scenarios import (  # noqa: E402
+from synthetic_corpus.scenarios import (
     MESSAGES_PER_CATEGORY,
     SCENARIOS,
     describe_grid,
 )
-from synthetic_corpus.scratch_db import (  # noqa: E402
+from synthetic_corpus.scratch_db import (
     DEFAULT_SCRATCH_PATH,
     ScratchDatabaseSafetyError,
     assert_scratch_destination_usable,
@@ -118,13 +126,10 @@ def _estimate_calls_and_tokens(guild_count: int) -> tuple[int, int, int, int]:
     the run is `CallBudget`, booked from the provider's own reported usage.
     """
     adversarial_cases = (
-        MESSAGES_PER_CATEGORY["adversarial_injection"]
-        + MESSAGES_PER_CATEGORY["adversarial_toxic"]
+        MESSAGES_PER_CATEGORY["adversarial_injection"] + MESSAGES_PER_CATEGORY["adversarial_toxic"]
     )
     calibration_cases = sum(
-        count
-        for name, count in MESSAGES_PER_CATEGORY.items()
-        if not name.startswith("adversarial")
+        count for name, count in MESSAGES_PER_CATEGORY.items() if not name.startswith("adversarial")
     )
     generator_calls = 9 * guild_count
     audit_batches = -(-(calibration_cases + adversarial_cases) // 8) * guild_count
@@ -149,9 +154,7 @@ def _print_cost_estimate(
     # review) or eight (label audit); responses are small JSON objects.
     reviewer_input = int(reviewer_calls * 2600 / _CHARACTERS_PER_TOKEN)
     reviewer_output = reviewer_calls * 60
-    reviewer_cost = reviewer_price.cost(
-        input_tokens=reviewer_input, output_tokens=reviewer_output
-    )
+    reviewer_cost = reviewer_price.cost(input_tokens=reviewer_input, output_tokens=reviewer_output)
     total = generator_cost + reviewer_cost
 
     print("\nPRE-RUN COST ESTIMATE (live OpenRouter pricing, fetched just now)")
@@ -230,9 +233,7 @@ async def _apply_leakage_filter(
         kept.append(message)
 
     corpus.messages = kept
-    distribution = await checker.max_similarity(
-        model, [message.content for message in candidates]
-    )
+    distribution = await checker.max_similarity(model, [message.content for message in candidates])
     return len(flagged), distribution
 
 
@@ -249,8 +250,13 @@ def _print_composition(corpus: SyntheticCorpus) -> None:
     for category, count in sorted(by_category.items(), key=lambda pair: -pair[1]):
         print(f"  {category:<26} {count:>4}")
     print(f"  {'TOTAL':<26} {len(corpus.messages):>4}")
-    print("\n  by locale: " + ", ".join(f"{locale}={count}" for locale, count in sorted(by_locale.items())))
-    print(f"  facts: {sum(len(guild.facts) for guild in corpus.guilds)} across {len(corpus.guilds)} guilds")
+    print(
+        "\n  by locale: "
+        + ", ".join(f"{locale}={count}" for locale, count in sorted(by_locale.items()))
+    )
+    print(
+        f"  facts: {sum(len(guild.facts) for guild in corpus.guilds)} across {len(corpus.guilds)} guilds"
+    )
 
     if corpus.rejected:
         print(f"\n  rejected before entering the corpus: {len(corpus.rejected)}")
@@ -416,7 +422,7 @@ async def main() -> int:
     )
 
     corpus = SyntheticCorpus(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         generator_model=args.generator_model,
         reviewer_model=args.reviewer_model,
         guilds=[],
@@ -467,9 +473,7 @@ async def main() -> int:
         print(f"actual spend: ${budget.spent_usd:.4f}")
         return 1
 
-    embedding_model = TextEmbedding(
-        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    )
+    embedding_model = TextEmbedding("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     dropped, distribution = await _apply_leakage_filter(embedding_model, corpus)
     if distribution:
         ranked = sorted(distribution, reverse=True)

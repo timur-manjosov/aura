@@ -7,12 +7,14 @@ The property that matters is not "the pure function filters correctly" but
 after a real login, against a real permission bitmask Discord serialised as a
 string" -- which only the whole stack can demonstrate.
 """
+
 from __future__ import annotations
 
 import asyncio
 
 import httpx
 import pytest
+
 from fake_discord import (
     PERMISSION_ADMINISTRATOR,
     PERMISSION_MANAGE_GUILD,
@@ -47,9 +49,7 @@ class TestMe:
         assert response.status_code == 401
         assert response.json() == {"error": "not_authenticated"}
 
-    async def test_a_forged_session_cookie_is_a_401(
-        self, app_client: httpx.AsyncClient
-    ) -> None:
+    async def test_a_forged_session_cookie_is_a_401(self, app_client: httpx.AsyncClient) -> None:
         app_client.cookies.set("aura_session", "a" * 43, domain="testserver")
 
         response = await app_client.get("/api/me")
@@ -80,9 +80,7 @@ class TestGuildFiltering:
         response = await app_client.get("/api/guilds")
 
         assert response.status_code == 200
-        assert response.json() == [
-            {"id": "1000", "name": "Aura Test Server", "icon": "a1b2c3"}
-        ]
+        assert response.json() == [{"id": "1000", "name": "Aura Test Server", "icon": "a1b2c3"}]
 
     async def test_a_guild_the_user_manages_but_aura_is_absent_from_is_excluded(
         self, app_client: httpx.AsyncClient, discord_state: FakeDiscordState
@@ -267,9 +265,7 @@ class TestConcurrency:
         await complete_login(app_client, discord_state, "5000")
         discord_state.request_log.clear()
 
-        responses = await asyncio.gather(
-            *(app_client.get("/api/guilds") for _ in range(10))
-        )
+        responses = await asyncio.gather(*(app_client.get("/api/guilds") for _ in range(10)))
 
         assert all(response.status_code == 200 for response in responses)
         bot_lookups = discord_state.request_log.count("GET /users/@me/guilds (bot)")
@@ -279,7 +275,8 @@ class TestConcurrency:
         self, web_settings, discord_state: FakeDiscordState
     ) -> None:
         from fake_discord import create_fake_discord
-        from helpers import build_app, complete_login as run_login
+        from helpers import build_app
+        from helpers import complete_login as run_login
 
         fake_discord = create_fake_discord(discord_state)
         async with httpx.AsyncClient(

@@ -11,10 +11,13 @@ one Aura guild and one guild Aura is absent from, and one plain member with no
 management rights anywhere. That combination is what makes the guild filter's
 two conditions observable in the transcript rather than asserted in prose.
 """
+
 from __future__ import annotations
 
 import os
 
+from aura_web.app import create_app
+from aura_web.config import WebSettings
 from fake_discord import (
     PERMISSION_MANAGE_GUILD,
     PERMISSION_SEND_MESSAGES,
@@ -23,9 +26,6 @@ from fake_discord import (
     FakeUser,
     create_fake_discord,
 )
-
-from aura_web.app import create_app
-from aura_web.config import WebSettings
 
 CLIENT_ID = "123456789012345678"
 CLIENT_SECRET = "verification-client-secret-DO-NOT-REUSE"
@@ -37,9 +37,7 @@ PLAIN_MEMBER_ID = "6000"
 
 def build_state() -> FakeDiscordState:
     """The fixture dataset, identical in both processes that need to know it."""
-    state = FakeDiscordState(
-        client_id=CLIENT_ID, client_secret=CLIENT_SECRET, bot_token=BOT_TOKEN
-    )
+    state = FakeDiscordState(client_id=CLIENT_ID, client_secret=CLIENT_SECRET, bot_token=BOT_TOKEN)
     state.guilds = {
         "1000": FakeGuild(id="1000", name="Aura Test Server", icon="a1b2c3d4"),
         "2000": FakeGuild(id="2000", name="Server Without Aura", icon=None),

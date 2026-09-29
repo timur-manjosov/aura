@@ -36,6 +36,7 @@ there is exactly one definition of that set, used by both the read and the
 claim's guard -- if they could disagree, a failed post would be retried by one
 and skipped by the other.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -95,9 +96,22 @@ WHERE NOT EXISTS (
 class DigestRun(BaseModel):
     """One evaluated digest window, as read back from the database.
 
-    The counts are what the window actually contained at the moment it was
-    evaluated, recorded rather than recomputed: the facts behind them keep
-    changing afterwards, so this is the only moment at which they are knowable.
+    Attributes
+    ----------
+    id
+        Database primary key.
+    guild_id, channel_id
+        Where the digest was (or would have been) posted.
+    covered_from, covered_until
+        The window's bounds.
+    new_fact_count, milestone_count, updated_fact_count
+        What the window contained AT THE MOMENT IT WAS EVALUATED, recorded
+        rather than recomputed: the facts behind them keep changing afterwards,
+        so this is the only moment at which they are knowable.
+    outcome
+        How the window was resolved.
+    ran_at
+        When it was evaluated.
     """
 
     id: int
@@ -128,19 +142,34 @@ def _row_to_run(row: sqlite3.Row) -> DigestRun:
 
 
 def due_cutoff(now: datetime, interval_seconds: int) -> str:
-    """The newest window end that still leaves a guild due for a digest.
+    """Return the newest window end that still leaves a guild due for a digest.
 
+    Parameters
+    ----------
+    now
+        Timezone-aware moment to measure from.
+    interval_seconds
+        The guild's configured cadence. Must be positive.
+
+    Returns
+    -------
+    str
+        `now - interval_seconds` as fixed-width UTC ISO-8601 text, directly
+        comparable against a stored `covered_until`.
+
+    Raises
+    ------
+    ValueError
+        If `now` is naive or `interval_seconds` is not positive.
+
+    Notes
+    -----
     A guild is due when the last window it finished ended at or before this
     moment. Expressed as one function, and as a fixed-width UTC ISO string,
     because the same value is used in two places that must agree exactly: the
     scheduler's own "is this guild due" decision, and the WHERE clause of the
     claim below that re-checks it at write time under concurrency. Two separate
     subtractions would be two chances to disagree by a microsecond.
-
-    Requires a timezone-aware `now`, injected rather than read from the clock
-    here, matching every other time-sensitive function in this project -- which
-    is also what makes "the container was down across a due window" testable at
-    the exact moment it matters instead of by waiting a week.
     """
     if now.tzinfo is None:
         raise ValueError(f"now must be a timezone-aware datetime, got {now!r}")
@@ -150,8 +179,24 @@ def due_cutoff(now: datetime, interval_seconds: int) -> str:
 
 
 async def last_covered_until(conn: aiosqlite.Connection, *, guild_id: int) -> str | None:
-    """The end of the newest window this guild has finished, or None if it has none.
+    """Return the end of the newest window this guild has finished.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+
+    Returns
+    -------
+    str or None
+        The newest `covered_until` among runs that actually advanced the
+        schedule, as the raw stored fixed-width UTC ISO-8601 string; None if the
+        guild has no such run.
+
+    Notes
+    -----
     Returned as the raw stored string rather than a datetime, on purpose: its
     only consumers compare it against other fixed-width UTC ISO strings (the
     config's enabled_at, the due cutoff, facts.created_at in SQL), and parsing
@@ -188,8 +233,34 @@ async def try_claim_digest_run(
     cutoff: str,
     now: datetime,
 ) -> int | None:
-    """Atomically claim one digest window. Returns the run's id, or None if lost.
+    """Atomically claim one digest window.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id, channel_id
+        Where the digest would be posted.
+    covered_from, covered_until
+        The window's bounds, as fixed-width UTC ISO-8601 text.
+    new_fact_count, milestone_count, updated_fact_count
+        What the window contains, recorded on the row.
+    outcome
+        How the window was resolved.
+    cutoff
+        The due cutoff from `due_cutoff`, re-checked inside the INSERT so a
+        concurrent claim cannot also succeed.
+    now
+        When the claim is made.
+
+    Returns
+    -------
+    int or None
+        The new run's id when the claim succeeded; None when another claim won
+        the same window.
+
+    Notes
+    -----
     Call this the moment the window's content is known and *before* the message
     it authorizes is posted -- the same ordering, for the same reason, that
     every spend ledger in this project uses. What is being protected differs
@@ -257,6 +328,23 @@ async def try_claim_digest_run(
 async def mark_digest_run_failed(conn: aiosqlite.Connection, *, run_id: int) -> None:
     """Record that a claimed run's message never made it out, releasing its window.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    run_id
+        The run whose send failed.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Idempotent, and only ever moves an outcome toward "this did not happen": the
+    UPDATE is guarded on the current outcome being POSTED, so a run already
+    recorded as failed, or one that reads as skipped_empty, is left exactly as it
+    is rather than rewritten.
     The one write in this module that changes an existing row, and it only ever
     moves an outcome in the direction of "this did not happen". A window whose
     send failed -- a deleted channel, a revoked permission, a Discord error --
@@ -265,11 +353,6 @@ async def mark_digest_run_failed(conn: aiosqlite.Connection, *, run_id: int) -> 
     means the next tick retries the same window, and keeps retrying while the
     channel stays broken, which costs one log line an hour and self-heals the
     moment a moderator fixes it.
-
-    Guarded on the current outcome being POSTED so it can only ever undo a claim
-    this same call made: a run that was already recorded as failed, or that
-    somehow reads as skipped_empty, is left exactly as it is rather than
-    rewritten.
     """
     async with connection_lock(conn):
         await conn.execute(
@@ -284,13 +367,32 @@ async def get_digest_runs(
 ) -> list[DigestRun]:
     """Return a guild's most recent digest runs, newest first.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild whose runs to read.
+    limit
+        Maximum rows. Must not be negative -- SQLite reads LIMIT -1 as "no
+        limit", the same trap `get_pending_facts` and `get_recent_signals` both
+        document.
+
+    Returns
+    -------
+    list[DigestRun]
+        Up to `limit` runs, newest first.
+
+    Raises
+    ------
+    ValueError
+        If `limit` is negative.
+
+    Notes
+    -----
     Newest first, unlike the pending-review work queue and like every other
     diagnostic read in this project: the question this answers is "what has the
     digest been doing lately", and the useful end of that is the recent one.
-
-    Rejects a negative limit rather than passing it to SQL, where LIMIT -1 means
-    no limit at all -- the same trap get_pending_facts and get_recent_signals
-    both document.
     """
     if limit < 0:
         raise ValueError(f"limit must not be negative, got {limit}")

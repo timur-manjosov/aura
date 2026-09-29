@@ -14,6 +14,7 @@ to be allowed. That is not a shortcut: it is what lets the session cookie stay
 SameSite=Lax instead of SameSite=None, which is the flag that actually keeps a
 third-party page from riding the session.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -52,9 +53,23 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     DENY keeps the page out of a framing clickjack.
     """
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        """Run one request and add the security headers to its response.
+
+        Parameters
+        ----------
+        request
+            The incoming request.
+        call_next
+            The rest of the middleware chain.
+
+        Returns
+        -------
+        Response
+            The handler's response with the four headers added. Each is set
+            with `setdefault`, so a route that deliberately chose its own
+            value keeps it.
+        """
         response = await call_next(request)
         response.headers.setdefault("Cache-Control", "no-store")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -73,6 +88,23 @@ def create_app(
 ) -> FastAPI:
     """Build the application, deferring every network-owning object to startup.
 
+    Parameters
+    ----------
+    settings
+        Validated web configuration.
+    discord_client_factory, stripe_client_factory, bot_billing_client_factory
+        Build each network-owning client from the shared httpx client and the
+        settings. Each defaults to the real implementation; tests pass fakes, so
+        the whole application can be driven with no socket.
+
+    Returns
+    -------
+    FastAPI
+        The application, with no connection opened yet -- every client is
+        built in the lifespan handler, at startup.
+
+    Notes
+    -----
     Nothing that holds a socket or an asyncio primitive is constructed here.
     The httpx pool and the guild cache's refresh lock are created inside the
     lifespan, i.e. inside the running event loop, for the reason
@@ -83,6 +115,26 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        """Build every network-owning object at startup and close it at shutdown.
+
+        Parameters
+        ----------
+        app
+            The application to attach the shared context to.
+
+        Yields
+        ------
+        None
+            For the life of the running service.
+
+        Notes
+        -----
+        Everything constructed here -- the httpx pool, the guild cache's
+        refresh lock, the background reconciler -- is created inside the
+        running event loop and torn down when it exits, which is what keeps
+        an asyncio object from being built under one loop and used under
+        another.
+        """
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(settings.http_timeout_seconds),
             # Redirects are not followed: every URL here is a fixed Discord
@@ -198,6 +250,19 @@ def create_app(
 def build_app() -> FastAPI:
     """Load settings from the environment and build the application.
 
+    Returns
+    -------
+    FastAPI
+        The application, configured from the process environment.
+
+    Raises
+    ------
+    WebConfigurationError
+        If the environment is missing or contradicts itself. Deliberately
+        not caught: a misconfigured service should refuse to start.
+
+    Notes
+    -----
     The uvicorn entry point. Configuration failures exit with a readable line
     rather than a pydantic traceback surfacing through the ASGI loader, the
     same contract aura.main gives the bot process.

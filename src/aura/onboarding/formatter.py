@@ -14,6 +14,7 @@ extra note for the case the digest never has to handle -- a global item cap
 that left facts out entirely rather than a single field's character budget
 doing the truncating. See _content_note.
 """
+
 from __future__ import annotations
 
 import discord
@@ -40,8 +41,21 @@ _ONBOARDING_COLOUR = discord.Colour.green()
 
 
 def onboarding_locale(guild: discord.Guild | None) -> str:
-    """The language one guild's onboarding message is written in.
+    """Return the language one guild's onboarding message is written in.
 
+    Parameters
+    ----------
+    guild
+        The guild the member joined, or None when it cannot be resolved.
+
+    Returns
+    -------
+    str
+        The guild's preferred locale, or the default locale when the guild is
+        unknown or has none.
+
+    Notes
+    -----
     Onboarding has no asking user whose interaction.locale could be read --
     the reader is a member who has not typed anything yet -- so it uses the
     guild's own preferred locale, the same signal and fallback
@@ -54,7 +68,19 @@ def onboarding_locale(guild: discord.Guild | None) -> str:
 
 
 def _fact_line(fact: Fact) -> str:
-    """One fact as a single bulleted line: the sentence, linked, plus its date."""
+    """Render one fact as a single bulleted line.
+
+    Parameters
+    ----------
+    fact
+        The fact to render.
+
+    Returns
+    -------
+    str
+        The sentence as a markdown link to its source message, plus its date.
+        Escaped and truncated by `aura.rendering.inline_fact_text`.
+    """
     return (
         f"• [{inline_fact_text(fact.content)}]({source_link(fact)}) · "
         f"{discord_timestamp(fact.created_at)}"
@@ -74,6 +100,22 @@ def _fit_section(facts: list[Fact], locale: str) -> str:
 def build_onboarding_embed(content: OnboardingContent, *, locale: str) -> discord.Embed:
     """Render an assembled onboarding summary as the embed that gets posted.
 
+    Parameters
+    ----------
+    content
+        The assembled content. Never empty: that case is decided before this
+        function is reached, because "post nothing" is not a rendering decision
+        (mirrors `build_digest_embed` exactly).
+    locale
+        Language to render in.
+
+    Returns
+    -------
+    discord.Embed
+        The embed to post, within Discord's field and value limits.
+
+    Notes
+    -----
     Sections are ordered by CLAUDE.md's onboarding priority, decided in
     aura.onboarding.builder and simply read off here in the order the content
     already carries it: rules first, current status second, everything else
@@ -81,10 +123,6 @@ def build_onboarding_embed(content: OnboardingContent, *, locale: str) -> discor
     as "Rules (0)" -- the same choice build_digest_embed makes, for the same
     reason: this is only ever called for non-empty content (see
     OnboardingContent.is_empty), so an empty section is a real absence.
-
-    Never called for empty content; that case is decided before this function
-    is reached, because "post nothing" is not a rendering decision (mirrors
-    build_digest_embed exactly).
     """
     embed = discord.Embed(
         title=t("onboarding_title", locale),

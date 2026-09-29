@@ -16,32 +16,44 @@ reliable JSON) and reuses the exact same two models for that reason -- there
 is no argument for a different generator or reviewer here that wasn't already
 made there.
 """
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fastembed import TextEmbedding  # noqa: E402
+from fastembed import TextEmbedding
 
-from aura.extraction.fact_worthiness import (  # noqa: E402
+from aura.extraction.fact_worthiness import (
     FACT_WORTHY_EXEMPLARS,
     NOT_FACT_WORTHY_EXEMPLARS,
 )
-from extraction_corpus.corpus_model import SyntheticCorpus  # noqa: E402
-from extraction_corpus.corpus_store import write_corpus  # noqa: E402
-from extraction_corpus.generator import GenerationContext, audit_labels, generate_locale  # noqa: E402
-from extraction_corpus.scenarios import SCENARIOS, TOTAL_PER_LOCALE, describe_grid  # noqa: E402
-from synthetic_corpus.budget import BudgetExceededError, CallBudget, ModelPrice  # noqa: E402
-from synthetic_corpus.leakage import LeakageChecker  # noqa: E402
-from synthetic_corpus.llm import GenerationError, require_real_llm_optin, resolve_api_key  # noqa: E402
-from synthetic_corpus.pricing import PricingUnavailableError, fetch_model_prices  # noqa: E402
+from extraction_corpus.corpus_model import SyntheticCorpus
+from extraction_corpus.corpus_store import write_corpus
+from extraction_corpus.generator import (
+    GenerationContext,
+    audit_labels,
+    generate_locale,
+)
+from extraction_corpus.scenarios import SCENARIOS, TOTAL_PER_LOCALE, describe_grid
+from synthetic_corpus.budget import BudgetExceededError, CallBudget, ModelPrice
+from synthetic_corpus.leakage import LeakageChecker
+from synthetic_corpus.llm import (
+    GenerationError,
+    require_real_llm_optin,
+    resolve_api_key,
+)
+from synthetic_corpus.pricing import PricingUnavailableError, fetch_model_prices
 
 logger = logging.getLogger("generate_extraction_corpus")
 
@@ -117,7 +129,9 @@ def _print_cost_estimate(
     return total
 
 
-async def _apply_leakage_filter(model: TextEmbedding, corpus: SyntheticCorpus) -> tuple[int, list[float]]:
+async def _apply_leakage_filter(
+    model: TextEmbedding, corpus: SyntheticCorpus
+) -> tuple[int, list[float]]:
     """Drop every message too close to a fact-worthiness reference exemplar.
 
     Same reasoning as generate_synthetic_corpus.py's own leakage filter,
@@ -177,7 +191,9 @@ def _print_composition(corpus: SyntheticCorpus) -> None:
     for category, count in sorted(by_category.items(), key=lambda pair: -pair[1]):
         print(f"  {category:<28} {count:>4}")
     print(f"  {'TOTAL':<28} {len(corpus.messages):>4}")
-    print("\n  by locale: " + ", ".join(f"{loc}={count}" for loc, count in sorted(by_locale.items())))
+    print(
+        "\n  by locale: " + ", ".join(f"{loc}={count}" for loc, count in sorted(by_locale.items()))
+    )
 
     positive = sum(1 for m in corpus.messages if m.is_fact_worthy)
     total = len(corpus.messages) or 1
@@ -263,7 +279,7 @@ async def main() -> int:
     )
 
     corpus = SyntheticCorpus(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         generator_model=args.generator_model,
         reviewer_model=args.reviewer_model,
         messages=[],
@@ -312,9 +328,7 @@ async def main() -> int:
         print(f"actual spend: ${budget.spent_usd:.4f}")
         return 1
 
-    embedding_model = TextEmbedding(
-        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    )
+    embedding_model = TextEmbedding("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     dropped, distribution = await _apply_leakage_filter(embedding_model, corpus)
     if distribution:
         ranked = sorted(distribution, reverse=True)

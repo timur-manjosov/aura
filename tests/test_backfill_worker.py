@@ -17,13 +17,14 @@ THE FOUR "ATTACK IT" ITEMS FROM THE PHASE BRIEF each have their own class:
 TestRestartMidRun, TestSupersessionChainOverHistory, TestCapIndependence and
 TestLargeHistory.
 """
+
 from __future__ import annotations
 
 import asyncio
 import random
 import time
-from datetime import datetime, timedelta, timezone
-from typing import cast
+from datetime import UTC, datetime, timedelta
+from typing import ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -31,13 +32,12 @@ import discord
 import pytest
 from fastembed import TextEmbedding
 
-from aura.billing import PlanGate
 from aura.backfill.history import ChannelUnreadable, is_strictly_increasing
 from aura.backfill.worker import advance_due_backfills, run_backfill_worker
+from aura.billing import PlanGate
 from aura.config import Settings
 from aura.db.backfill_runs import (
     BackfillState,
-    advance_cursor,
     get_active_run,
     get_recent_runs,
     set_run_state,
@@ -55,7 +55,7 @@ from aura.db.pending_facts import (
     get_pending_facts,
 )
 from aura.db.proactive_state import try_acquire_escalation_slot
-from aura.db.repository import get_active_facts, get_fact_by_id, init_schema
+from aura.db.repository import get_active_facts, init_schema
 from aura.db.supersession_state import count_supersession_calls_on
 from aura.embeddings import embed_text
 from aura.extraction.distiller import DistilledFact
@@ -68,12 +68,12 @@ CHANNEL_A = 300000000000000003
 CHANNEL_B = 400000000000000004
 MODERATOR = 4242
 
-NOW = datetime(2026, 8, 26, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 26, 12, 0, 0, tzinfo=UTC)
 # The run's upper bound. Every corpus message below sits under it, so the bound
 # itself is only exercised by the tests that deliberately put a message above it.
 FIRST_ID = 800000000000000000
 UNTIL_ID = FIRST_ID + 1_000_000
-EPOCH = datetime(2025, 1, 1, tzinfo=timezone.utc)
+EPOCH = datetime(2025, 1, 1, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -174,15 +174,11 @@ class FakeChannel:
         before = kwargs.get("before")
         limit = cast("int", kwargs.get("limit") or 100)
         after_id = after.id if isinstance(after, discord.Object) else 0
-        before_id = (
-            before.id if isinstance(before, discord.Object) else 1 << 63
-        )
+        before_id = before.id if isinstance(before, discord.Object) else 1 << 63
 
-        page = [
-            message
-            for message in self._corpus
-            if after_id < message.id < before_id
-        ][: int(limit)]
+        page = [message for message in self._corpus if after_id < message.id < before_id][
+            : int(limit)
+        ]
         if self._shuffle:
             page = list(page)
             self._rng.shuffle(page)
@@ -198,7 +194,7 @@ class _ListIterator:
         self._page = page
         self._index = 0
 
-    def __aiter__(self) -> "_ListIterator":
+    def __aiter__(self) -> _ListIterator:
         return self
 
     async def __anext__(self) -> MagicMock:
@@ -213,7 +209,7 @@ class _RaisingIterator:
     def __init__(self, error: Exception) -> None:
         self._error = error
 
-    def __aiter__(self) -> "_RaisingIterator":
+    def __aiter__(self) -> _RaisingIterator:
         return self
 
     async def __anext__(self):
@@ -340,23 +336,25 @@ async def _drain(
     Bounded so a bug that never terminates fails as a test rather than as a
     hung suite.
     """
-    ticks = 0
-    for _ in range(max_ticks):
+    for ticks in range(max_ticks):
         advanced = await advance_due_backfills(
-            conn, model, gateway, detector, settings=settings, now=now, plan_gate=PlanGate.unenforced()
+            conn,
+            model,
+            gateway,
+            detector,
+            settings=settings,
+            now=now,
+            plan_gate=PlanGate.unenforced(),
         )
         if not advanced:
             return ticks
-        ticks += 1
     raise AssertionError(f"backfill did not settle within {max_ticks} ticks")
 
 
 class TestChronologicalOrder:
     """Deliverable 5: strict old-to-new order, enforced rather than assumed."""
 
-    async def test_a_whole_run_reaches_the_model_oldest_first(
-        self, conn, embedding_model
-    ) -> None:
+    async def test_a_whole_run_reaches_the_model_oldest_first(self, conn, embedding_model) -> None:
         corpus = [_message(FIRST_ID + index) for index in range(12)]
         gateway = FakeGateway()
         gateway.add(FakeChannel(corpus))
@@ -424,7 +422,13 @@ class TestChronologicalOrder:
         with patch("aura.backfill.worker.distill_facts", RecordingDistiller()):
             for _ in range(50):
                 advanced = await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                    conn,
+                    embedding_model,
+                    gateway,
+                    _detector(),
+                    settings=settings,
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
                 )
                 run = (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[0]
                 if run.cursor_message_id is not None:
@@ -443,7 +447,13 @@ class TestChronologicalOrder:
 
         with patch("aura.backfill.worker.distill_facts", RecordingDistiller()):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert all(call["oldest_first"] is True for call in channel.calls)
@@ -469,12 +479,17 @@ class TestRestartMidRun:
             # Exactly three batches, then the process dies.
             for _ in range(3):
                 await advance_due_backfills(
-                    first, embedding_model, gateway_before, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                    first,
+                    embedding_model,
+                    gateway_before,
+                    _detector(),
+                    settings=settings,
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
                 )
         seen_before = list(distiller_before.seen_message_ids)
         staged_before = {
-            fact.message_id
-            for fact in await get_pending_facts(first, guild_id=GUILD_A, limit=100)
+            fact.message_id for fact in await get_pending_facts(first, guild_id=GUILD_A, limit=100)
         }
         await first.close()  # how a dying container ends
 
@@ -488,9 +503,7 @@ class TestRestartMidRun:
             gateway_after.add(FakeChannel(corpus))
             distiller_after = RecordingDistiller()
             with patch("aura.backfill.worker.distill_facts", distiller_after):
-                await _drain(
-                    second, embedding_model, gateway_after, _detector(), settings=settings
-                )
+                await _drain(second, embedding_model, gateway_after, _detector(), settings=settings)
             seen_after = distiller_after.seen_message_ids
 
             # NOTHING SKIPPED: every message in the corpus reached the model.
@@ -535,7 +548,13 @@ class TestRestartMidRun:
 
         with patch("aura.backfill.worker.distill_facts", distiller):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=settings,
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
             # "Crash" between the staging and the cursor advance.
             await conn.execute(
@@ -546,7 +565,13 @@ class TestRestartMidRun:
             await conn.commit()
 
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=settings,
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert distiller.batches == [
@@ -578,13 +603,25 @@ class TestRestartMidRun:
         with patch("aura.backfill.worker.stage_distilled_candidates", crashing):
             with patch("aura.backfill.worker.distill_facts", distiller):
                 await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                    conn,
+                    embedding_model,
+                    gateway,
+                    _detector(),
+                    settings=settings,
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
                 )
         assert await get_pending_facts(conn, guild_id=GUILD_A, limit=10) == []
 
         with patch("aura.backfill.worker.distill_facts", distiller):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=settings,
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert distiller.batches == [
@@ -623,7 +660,13 @@ class TestRestartMidRun:
 
         with patch("aura.backfill.worker.distill_facts", cancel_mid_call):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         after = (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[0]
@@ -645,7 +688,13 @@ class TestRestartMidRun:
 
         with patch("aura.backfill.worker.distill_facts", distiller):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=settings,
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
             await set_run_state(
                 conn,
@@ -657,7 +706,13 @@ class TestRestartMidRun:
             calls_while_paused_before = distiller.calls
             for _ in range(3):
                 await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                    conn,
+                    embedding_model,
+                    gateway,
+                    _detector(),
+                    settings=settings,
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
                 )
             assert distiller.calls == calls_while_paused_before, "a paused run advanced"
 
@@ -959,7 +1014,13 @@ class TestCompletion:
             requests_when_done = channel.page_requests
             for _ in range(5):
                 await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
+                    conn,
+                    embedding_model,
+                    gateway,
+                    _detector(),
+                    settings=_settings(),
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
                 )
 
         assert channel.page_requests == requests_when_done
@@ -990,7 +1051,13 @@ class TestCompletion:
 
         with patch("aura.backfill.worker.distill_facts", RecordingDistiller()):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         run = (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[0]
@@ -1008,14 +1075,26 @@ class TestCompletion:
 
         with patch("aura.backfill.worker.distill_facts", RecordingDistiller()):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=settings,
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
             mid_cursor = (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[
                 0
             ].cursor_message_id
             gateway.unreadable.add(CHANNEL_A)
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=settings,
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         run = (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[0]
@@ -1026,9 +1105,7 @@ class TestCompletion:
 class TestCapIndependence:
     """Attack It #3: the two caps must not touch each other, in either direction."""
 
-    async def test_a_run_stops_at_its_cap_and_keeps_its_cursor(
-        self, conn, embedding_model
-    ) -> None:
+    async def test_a_run_stops_at_its_cap_and_keeps_its_cursor(self, conn, embedding_model) -> None:
         corpus = [_message(FIRST_ID + index) for index in range(40)]
         gateway = FakeGateway()
         gateway.add(FakeChannel(corpus))
@@ -1117,7 +1194,13 @@ class TestCapIndependence:
             requests_after_cap = channel.page_requests
             for _ in range(5):
                 await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                    conn,
+                    embedding_model,
+                    gateway,
+                    _detector(),
+                    settings=settings,
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
                 )
 
         assert channel.page_requests == requests_after_cap
@@ -1205,8 +1288,13 @@ class TestCrossGuildBudget:
         # An unrelated guild's unrelated ledger spend, pushing the combined
         # cross-guild total above a budget smaller than even one such spend.
         await try_acquire_escalation_slot(
-            conn, guild_id=GUILD_B, channel_id=1, message_id=1,
-            cooldown_seconds=0.0, daily_cap=1_000_000, now=NOW,
+            conn,
+            guild_id=GUILD_B,
+            channel_id=1,
+            message_id=1,
+            cooldown_seconds=0.0,
+            daily_cap=1_000_000,
+            now=NOW,
         )
 
         corpus = [_message(FIRST_ID + index) for index in range(10)]
@@ -1235,8 +1323,13 @@ class TestCrossGuildBudget:
 
     async def test_warn_mode_over_budget_still_advances(self, conn, embedding_model) -> None:
         await try_acquire_escalation_slot(
-            conn, guild_id=GUILD_B, channel_id=1, message_id=1,
-            cooldown_seconds=0.0, daily_cap=1_000_000, now=NOW,
+            conn,
+            guild_id=GUILD_B,
+            channel_id=1,
+            message_id=1,
+            cooldown_seconds=0.0,
+            daily_cap=1_000_000,
+            now=NOW,
         )
 
         corpus = [_message(FIRST_ID + index) for index in range(10)]
@@ -1272,7 +1365,7 @@ class TestSupersessionChainOverHistory:
     enforced rather than assumed.
     """
 
-    RULE_VERSIONS = [
+    RULE_VERSIONS: ClassVar[list[str]] = [
         "Members may claim up to 3 pet roles.",
         "From now on, members may claim up to 5 pet roles.",
         "From now on, members may claim up to 8 pet roles.",
@@ -1309,7 +1402,13 @@ class TestSupersessionChainOverHistory:
         ):
             for _ in range(20):
                 advanced = await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                    conn,
+                    embedding_model,
+                    gateway,
+                    _detector(),
+                    settings=settings,
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
                 )
                 # Play the moderator: confirm whatever is newly pending, and
                 # retire the predecessor the proposal named.
@@ -1359,9 +1458,7 @@ class TestSupersessionChainOverHistory:
         active = await get_active_facts(conn, GUILD_A)
         assert [fact.content for fact in active] == [self.RULE_VERSIONS[-1]]
 
-    async def test_the_whole_chain_stays_walkable_backwards(
-        self, conn, embedding_model
-    ) -> None:
+    async def test_the_whole_chain_stays_walkable_backwards(self, conn, embedding_model) -> None:
         """Old facts are never deleted, only chained -- CLAUDE.md's Status component."""
         await self._run_chain(conn, embedding_model, shuffle_pages=False)
 
@@ -1377,9 +1474,7 @@ class TestSupersessionChainOverHistory:
             superseded = [row[0] for row in await cursor.fetchall()]
         assert superseded + contents == self.RULE_VERSIONS
 
-    async def test_backfill_itself_never_supersedes_anything(
-        self, conn, embedding_model
-    ) -> None:
+    async def test_backfill_itself_never_supersedes_anything(self, conn, embedding_model) -> None:
         """The judgement is a proposal. Without a moderator, nothing is retired."""
         corpus = [
             _message(FIRST_ID + index * 10, content=version)
@@ -1468,9 +1563,7 @@ class TestSupersessionChainOverHistory:
                 embedding_model,
                 gateway,
                 _detector(),
-                settings=_settings(
-                    extraction_batch_max_messages=1, supersession_daily_cap=0
-                ),
+                settings=_settings(extraction_batch_max_messages=1, supersession_daily_cap=0),
             )
 
         judge.assert_not_awaited()
@@ -1501,9 +1594,7 @@ class TestLargeHistory:
         gateway = FakeGateway()
         channel = gateway.add(FakeChannel(corpus))
         distiller = RecordingDistiller()
-        settings = _settings(
-            backfill_daily_cap=1000, extraction_batch_max_messages=20
-        )
+        settings = _settings(backfill_daily_cap=1000, extraction_batch_max_messages=20)
         await _start(conn)
 
         started = time.perf_counter()
@@ -1559,7 +1650,13 @@ class TestLargeHistory:
         with patch("aura.backfill.worker.distill_facts", distiller):
             for _ in range(2):
                 await advance_due_backfills(
-                    first, embedding_model, gateway, detector, settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                    first,
+                    embedding_model,
+                    gateway,
+                    detector,
+                    settings=settings,
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
                 )
         seen += distiller.seen_message_ids
         await first.close()
@@ -1601,7 +1698,9 @@ class TestFailureIsolation:
             await _drain(conn, embedding_model, gateway, _detector(), settings=_settings())
 
         assert distiller.calls > 0, "the healthy run was starved by the broken one"
-        runs = {run.channel_id: run for run in await get_recent_runs(conn, guild_id=GUILD_A, limit=5)}
+        runs = {
+            run.channel_id: run for run in await get_recent_runs(conn, guild_id=GUILD_A, limit=5)
+        }
         assert runs[CHANNEL_A].state is BackfillState.FAILED
         assert runs[CHANNEL_B].state is BackfillState.COMPLETED
 
@@ -1617,7 +1716,13 @@ class TestFailureIsolation:
             AsyncMock(side_effect=RuntimeError("boom")),
         ):
             advanced = await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert advanced == 0
@@ -1633,9 +1738,7 @@ class TestFailureIsolation:
         gateway.add(FakeChannel([_message(FIRST_ID + index) for index in range(3)]))
         await _start(conn)
 
-        with patch(
-            "aura.backfill.worker.distill_facts", AsyncMock(return_value=None)
-        ) as distiller:
+        with patch("aura.backfill.worker.distill_facts", AsyncMock(return_value=None)) as distiller:
             await _drain(conn, embedding_model, gateway, _detector(), settings=_settings())
 
         assert distiller.await_count == 1
@@ -1678,7 +1781,13 @@ class TestFailureIsolation:
             patch("aura.backfill.history.asyncio.sleep", AsyncMock()),
         ):
             advanced = await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert advanced == 0
@@ -1727,9 +1836,7 @@ class TestGuildIsolation:
             message_id=1,
             content="Members may claim up to 3 pet roles.",
         )
-        corpus = [
-            _message(FIRST_ID, content="From now on, members may claim up to 5 pet roles.")
-        ]
+        corpus = [_message(FIRST_ID, content="From now on, members may claim up to 5 pet roles.")]
         gateway = FakeGateway()
         gateway.add(FakeChannel(corpus))
         await _start(conn, guild_id=GUILD_A)
@@ -1860,7 +1967,13 @@ class TestCrossGuildIsolation:
 
         with patch("aura.backfill.worker.distill_facts", distiller):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert distiller.calls == 0, "another server's history was read"
@@ -1869,9 +1982,7 @@ class TestCrossGuildIsolation:
         run = (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[0]
         assert run.state is BackfillState.FAILED
 
-    async def test_a_channel_with_no_guild_at_all_ends_the_run(
-        self, conn, embedding_model
-    ) -> None:
+    async def test_a_channel_with_no_guild_at_all_ends_the_run(self, conn, embedding_model) -> None:
         channel = FakeChannel([_message(FIRST_ID)])
         channel.guild = None
         gateway = FakeGateway()
@@ -1881,13 +1992,19 @@ class TestCrossGuildIsolation:
 
         with patch("aura.backfill.worker.distill_facts", distiller):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert distiller.calls == 0
-        assert (
-            await get_recent_runs(conn, guild_id=GUILD_A, limit=1)
-        )[0].state is BackfillState.FAILED
+        assert (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[
+            0
+        ].state is BackfillState.FAILED
 
     async def test_a_moderators_cancel_is_not_overwritten_by_a_channel_failure(
         self, conn, embedding_model
@@ -1906,12 +2023,18 @@ class TestCrossGuildIsolation:
 
         with patch("aura.backfill.worker.distill_facts", RecordingDistiller()):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                gateway,
+                _detector(),
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
-        assert (
-            await get_recent_runs(conn, guild_id=GUILD_A, limit=1)
-        )[0].state is BackfillState.CANCELLED
+        assert (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[
+            0
+        ].state is BackfillState.CANCELLED
 
 
 class TestConcurrentTicks:
@@ -1972,7 +2095,13 @@ class TestConcurrentTicks:
         ):
             with pytest.raises(asyncio.CancelledError):
                 await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
+                    conn,
+                    embedding_model,
+                    gateway,
+                    _detector(),
+                    settings=_settings(),
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
                 )
 
 
@@ -1987,8 +2116,7 @@ class TestDegenerateInput:
             "오늘부터 새 멤버는 이메일 인증을 해야 합니다",
         ]
         corpus = [
-            _message(FIRST_ID + index, content=content)
-            for index, content in enumerate(contents)
+            _message(FIRST_ID + index, content=content) for index, content in enumerate(contents)
         ]
         gateway = FakeGateway()
         gateway.add(FakeChannel(corpus))
@@ -2087,7 +2215,13 @@ class TestTheConnectionLockIsNotHeldAcrossThePaidCall:
         with patch("aura.backfill.worker.distill_facts", blocking_distill):
             sweep = asyncio.create_task(
                 advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
+                    conn,
+                    embedding_model,
+                    gateway,
+                    _detector(),
+                    settings=_settings(),
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
                 )
             )
             await asyncio.wait_for(in_flight.wait(), timeout=5.0)
@@ -2101,9 +2235,7 @@ class TestTheConnectionLockIsNotHeldAcrossThePaidCall:
             release.set()
             await sweep
 
-    async def test_the_assertion_above_is_not_vacuous(
-        self, conn, embedding_model
-    ) -> None:
+    async def test_the_assertion_above_is_not_vacuous(self, conn, embedding_model) -> None:
         """A genuinely held lock DOES block that read, so the test can actually fail."""
         from aura.db.connection import connection_lock
 

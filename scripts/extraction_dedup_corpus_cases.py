@@ -45,6 +45,7 @@ question: would the cross-locale pairs the supersession work already found
 tricky for a MODEL be reliably marked by this much cheaper filter in the
 first place?
 """
+
 from __future__ import annotations
 
 import sys
@@ -52,10 +53,13 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from supersession_bakeoff_cases import ALL_CASES as _SUPERSESSION_CASES  # noqa: E402
-from supersession_bakeoff_cases import SupersessionCase  # noqa: E402
+from supersession_bakeoff_cases import ALL_CASES as _SUPERSESSION_CASES
+from supersession_bakeoff_cases import SupersessionCase
 
 _BY_NAME: dict[str, SupersessionCase] = {case.name: case for case in _SUPERSESSION_CASES}
 

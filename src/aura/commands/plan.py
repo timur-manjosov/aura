@@ -21,6 +21,7 @@ Dates are rendered as Discord timestamp markup (<t:...:f>), which every client
 displays in its reader's own locale and time zone. That keeps date formats out
 of nine locale files and out of this module entirely.
 """
+
 from __future__ import annotations
 
 import logging
@@ -49,16 +50,38 @@ _STANDING_KEYS: dict[Standing, str] = {
 
 
 def discord_timestamp(moment: datetime) -> str:
-    """Discord's timestamp markup for a moment, rendered by each client in its own locale."""
+    """Render a moment as Discord timestamp markup.
+
+    Parameters
+    ----------
+    moment
+        The instant to show.
+
+    Returns
+    -------
+    str
+        A `<t:UNIX:f>` token, rendered by each client in its own locale and
+        timezone.
+    """
     return f"<t:{int(moment.timestamp())}:f>"
 
 
 def pro_feature_refusal(interaction: discord.Interaction[AuraClient]) -> str | None:
-    """None if this guild may use Pro features now; otherwise the localized refusal to send.
+    """Return the localized refusal for a Pro feature, or None if it may run.
 
-    The refusal says three things, because a moderator who hits it needs all
-    three: this is a Pro feature, nothing was changed, and what still works.
-    The dashboard link is added only when the operator configured one.
+    Parameters
+    ----------
+    interaction
+        The command invocation. Guild-only, so its `guild_id` is always set.
+
+    Returns
+    -------
+    str or None
+        None when this guild may use Pro features right now; otherwise the text
+        to send. The refusal says three things, because a moderator who hits it
+        needs all three: this is a Pro feature, nothing was changed, and what
+        still works. The dashboard link is added only when the operator
+        configured one.
     """
     assert interaction.guild_id is not None  # every caller is guild_only
     gate = interaction.client.plan_gate
@@ -75,7 +98,22 @@ def pro_feature_refusal(interaction: discord.Interaction[AuraClient]) -> str | N
 
 
 def describe_plan(plan: GuildPlan, *, locale: str, dashboard_url: str | None) -> str:
-    """The /aura-plan reply. Pure, so every standing is testable without Discord."""
+    """Build the /aura-plan reply text.
+
+    Parameters
+    ----------
+    plan
+        The guild's decided plan and standing.
+    locale
+        Language to write in.
+    dashboard_url
+        The operator's billing dashboard, or None when none is configured.
+
+    Returns
+    -------
+    str
+        The reply body. Pure, so every standing is testable without Discord.
+    """
     standing = plan.standing
     lines: list[str] = []
 
@@ -134,6 +172,18 @@ async def _handle_plan_command_error(
 async def plan_command(interaction: discord.Interaction[AuraClient]) -> None:
     """Reply with the server's plan, its standing and, when configured, where to manage it.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Mod-gated like every other configuration command: whether a payment failed
     is the admins' business, not every member's. Ephemeral for the same reason.
     """
@@ -152,5 +202,15 @@ plan_command.error(_handle_plan_command_error)
 
 
 def register_plan_command(tree: app_commands.CommandTree) -> None:
-    """Register /aura-plan onto tree."""
+    """Register /aura-plan onto tree.
+
+    Parameters
+    ----------
+    tree
+        The command tree to register into.
+
+    Returns
+    -------
+    None
+    """
     tree.add_command(plan_command)

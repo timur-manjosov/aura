@@ -26,6 +26,7 @@ job is to hand back a ranked list for a human to look at, not to be the final
 word. Anything it flags is excluded from the corpus, not warned about -- see
 `generate_synthetic_corpus.py`.
 """
+
 from __future__ import annotations
 
 import unicodedata

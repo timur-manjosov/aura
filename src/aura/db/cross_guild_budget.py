@@ -41,6 +41,7 @@ operator subsidizing a handful of guilds, an accidental total outage across
 every one of them is a worse failure than an observed, correctable cost
 overrun. See CrossGuildBudgetMode's own docstring.
 """
+
 from __future__ import annotations
 
 import logging
@@ -112,7 +113,18 @@ _COST_PER_CALL_USD: dict[Ledger, float] = {
 
 
 class LedgerSpend(BaseModel):
-    """One ledger's cross-guild call count and rough estimated spend for one UTC day."""
+    """One ledger's cross-guild call count and rough estimated spend for one UTC day.
+
+    Attributes
+    ----------
+    ledger
+        Which of the five this describes.
+    call_count
+        Rows in that ledger's table for the day, across ALL guilds.
+    estimated_usd
+        `call_count` times that ledger's worst-case per-call cost. Rough and
+        deliberately conservative; see `_COST_PER_CALL_USD`.
+    """
 
     ledger: Ledger
     call_count: int
@@ -120,9 +132,24 @@ class LedgerSpend(BaseModel):
 
 
 class CrossGuildBudgetStatus(BaseModel):
-    """The operator-wide picture for one UTC day: every ledger's spend, and the combined total.
+    """The operator-wide picture for one UTC day.
 
-    Produced by get_cross_guild_status below and consumed both by
+    Attributes
+    ----------
+    day
+        The UTC day key these numbers describe.
+    ledgers
+        One entry per `Ledger`, in enum order.
+    total_estimated_usd
+        The sum across all five.
+    budget_usd
+        The operator-wide ceiling the total is compared against.
+    mode
+        Whether crossing the budget warns or refuses.
+
+    Notes
+    -----
+    Produced by `get_cross_guild_status` below and consumed both by
     enforce_cross_guild_budget (to decide whether a new call may proceed) and
     by /aura-operator-budget -- the same numbers either way, so what
     enforcement acts on and what the operator is shown are never two different
@@ -137,7 +164,15 @@ class CrossGuildBudgetStatus(BaseModel):
 
     @property
     def over_budget(self) -> bool:
-        """Whether today's combined rough estimate has already cleared the operator's budget."""
+        """Report whether the combined estimate has cleared the operator's budget.
+
+        Returns
+        -------
+        bool
+            True when `total_estimated_usd` is strictly greater than
+            `budget_usd`. Strictly greater, so a budget of 0 with no spend is
+            not "over".
+        """
         return self.total_estimated_usd > self.budget_usd
 
 
@@ -148,9 +183,34 @@ async def get_cross_guild_status(
     budget_usd: float,
     mode: CrossGuildBudgetMode,
 ) -> CrossGuildBudgetStatus:
-    """Read-only: today's cross-guild call count and rough estimated spend, per ledger and combined.
+    """Read today's cross-guild call count and rough estimated spend.
 
-    Five cheap COUNT(*) queries, one per ledger, each with no guild_id filter --
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    day
+        A UTC day key as produced by `utc_day`, matching every ledger's own
+        convention, so the caller's clock defines "today".
+    budget_usd
+        The operator-wide ceiling to report the total against. Must be finite
+        and non-negative.
+    mode
+        Carried through onto the result; this function never enforces.
+
+    Returns
+    -------
+    CrossGuildBudgetStatus
+        Every ledger's count and estimate, plus the combined total.
+
+    Raises
+    ------
+    ValueError
+        If `budget_usd` is non-finite or negative.
+
+    Notes
+    -----
+    Read-only: takes no slot, writes nothing. Five cheap COUNT(*) queries, one per ledger, each with no guild_id filter --
     the one structural difference from the per-guild counters each ledger
     module already exposes (count_escalations_on and its four siblings), which
     all filter on a specific guild_id. day is taken as a string produced by
@@ -196,22 +256,47 @@ async def enforce_cross_guild_budget(
     budget_usd: float,
     mode: CrossGuildBudgetMode,
 ) -> bool:
-    """Whether a new call, at any of the five ledgers, may proceed right now.
+    """Report whether a new call, at any of the five ledgers, may proceed.
+
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    day
+        A UTC day key as produced by `utc_day`.
+    budget_usd
+        The operator-wide ceiling.
+    mode
+        WARN logs a crossed budget and refuses nothing; HARD refuses.
+
+    Returns
+    -------
+    bool
+        True when the call may proceed. Always True in WARN mode. In HARD
+        mode, False once today's combined estimate -- measured BEFORE this
+        call -- is already at or above `budget_usd`, so the call that would
+        tip the running total over the line is the one refused, not one after
+        it.
+
+    Raises
+    ------
+    ValueError
+        If `budget_usd` is non-finite or negative, via
+        `get_cross_guild_status`.
+
+    Notes
+    -----
+    Writes nothing and claims no slot on any ledger's behalf. The caller is
+    responsible for treating False exactly like its own ledger's
+    DAILY_CAP_REACHED refusal -- drop, pause, or skip, per that call site's
+    existing behaviour.
 
     Call this BEFORE the ledger's own per-guild try_acquire_*_slot -- the same
     "claim before spending" ordering every ledger already uses internally, one
-    layer up. Always returns True in WARN mode (the default): a crossed budget
-    is logged loudly, at WARNING level, every time this is called while over
-    budget, but nothing is refused, per this module's own docstring on why
-    WARN is the safer default for a single self-funded operator.
-
-    In HARD mode, returns False once today's combined estimate -- BEFORE this
-    call -- is already at or above budget_usd, so the specific call that would
-    tip the running total over the line is the one that gets refused, not one
-    after it. The caller is responsible for treating False exactly like its
-    own ledger's DAILY_CAP_REACHED refusal (drop, pause, or skip, per that
-    call site's own existing behavior) -- this function never writes anything
-    itself and never claims a slot on any ledger's behalf.
+    layer up. A crossed budget is logged loudly, at WARNING level, every time
+    this is called while over budget, whichever mode is in force; see this
+    module's own docstring on why WARN is the safer default for a single
+    self-funded operator.
 
     Cheap by construction: five indexed COUNT(*) queries, no joins, run only
     at the point a message, batch, candidate, fact, or backfill tick has

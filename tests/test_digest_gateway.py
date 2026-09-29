@@ -6,6 +6,7 @@ absorbed: the channel was deleted, Aura's access to it was revoked, or it is no
 longer a text channel. All three must come back as None with a logged reason,
 never as an exception escaping into the background task.
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,9 +23,7 @@ CHANNEL_A = 300000000000000003
 def _client(*, cached=None, fetched=None, fetch_error: Exception | None = None) -> MagicMock:
     client = MagicMock(spec=discord.Client)
     client.get_channel = MagicMock(return_value=cached)
-    client.fetch_channel = AsyncMock(
-        return_value=fetched, side_effect=fetch_error
-    )
+    client.fetch_channel = AsyncMock(return_value=fetched, side_effect=fetch_error)
     return client
 
 

@@ -92,6 +92,7 @@ required in both directions (a pair can straddle two locales, and the reasoning
 is written back in the candidate's language), and latency is irrelevant --
 nobody is waiting on a candidate in a review queue.
 """
+
 from __future__ import annotations
 
 import logging
@@ -351,8 +352,23 @@ def _build_messages(*, predecessor: str, candidate: str) -> list[dict[str, str]]
 
 
 def has_change_signal(raw_signal: str) -> bool:
-    """Whether the model actually named transition wording, rather than "none".
+    """Report whether the model named transition wording rather than "none".
 
+    Parameters
+    ----------
+    raw_signal
+        The model's `change_signal` field, exactly as returned.
+
+    Returns
+    -------
+    bool
+        False for every spelling of absence -- the literal "none", "None",
+        '"none"', "none." and an empty string all mean the same thing, and
+        reading any of them as a signal would silently disable Rule 1 in exactly
+        the cases it exists for.
+
+    Notes
+    -----
     Public because the rule it feeds is the whole reason this call is shaped the
     way it is, and the evaluation harness measures it directly
     (scripts/supersession_reverify.py) rather than trusting that the prompt
@@ -368,19 +384,21 @@ def has_change_signal(raw_signal: str) -> bool:
 
 
 def _apply_change_signal_rule(raw: _RawJudgement) -> SupersessionRelationship:
-    """Enforce Rule 1 in code, not only in the prompt. Returns the category to store.
+    """Enforce Rule 1 in code, not only in the prompt.
 
-    A "supersession" the model could not point to any transition wording for is
-    downgraded to "contradiction" -- the same answer the prompt asks for in that
-    situation, applied structurally so it does not depend on the model having
-    followed an instruction.
+    Parameters
+    ----------
+    raw
+        The model's judgment as parsed.
 
-    This is the belt to the prompt's braces, and it is one-directional on
-    purpose: it can only move a verdict toward MORE human review, never toward
-    less. It cannot promote a contradiction into a supersession just because a
-    signal was quoted, which is the mirror-image mistake -- a candidate about an
-    entirely different subject may well contain the words "from now on" without
-    that making it anyone's successor.
+    Returns
+    -------
+    SupersessionRelationship
+        The category to store. One-directional on purpose: a SUPERSESSION with
+        no transition wording is downgraded to CONTRADICTION, but a
+        CONTRADICTION is never promoted just because a signal was quoted -- a
+        candidate about an entirely different subject may well contain the words
+        "from now on" without that making it anyone's successor.
     """
     if raw.category is SupersessionRelationship.SUPERSESSION and not has_change_signal(
         raw.change_signal
@@ -397,23 +415,35 @@ def _apply_change_signal_rule(raw: _RawJudgement) -> SupersessionRelationship:
 async def judge_relationship(
     *, predecessor: str, candidate: str, model: str
 ) -> RelationshipJudgement | None:
-    """Judge one predecessor/candidate pair, or return None on any failure.
+    """Judge one predecessor/candidate pair.
 
-    Never raises. Malformed JSON, an out-of-vocabulary category, a missing
-    field, an empty or oversized reasoning sentence, a network error, an auth
-    failure and a timeout are all expected failure modes at this call site, and
-    every one of them becomes a clean None -- which the caller stores as "not
-    judged", leaving the candidate with Phase 3a-2's plain similarity hint and a
-    moderator who decides exactly as they did before this call existed. There is
-    no failure of this call that can lose a candidate or write a fact.
+    Parameters
+    ----------
+    predecessor
+        The existing active fact's sentence.
+    candidate
+        The newly distilled sentence that resembles it.
+    model
+        The already-resolved model string (see `Settings.resolve_model`).
 
-    asyncio.CancelledError inherits from BaseException rather than Exception, so
-    a shutdown cancelling this task still propagates instead of being logged as
-    "the model failed".
+    Returns
+    -------
+    RelationshipJudgement or None
+        The category and the model's reasoning, or None on any failure -- which
+        the caller stores as "not judged", leaving the candidate with Phase
+        3a-2's plain similarity hint and a moderator who decides exactly as they
+        did before this call existed.
 
-    `model` is the already-resolved model string (see Settings.resolve_model),
-    passed in rather than read here so there is exactly one model-resolution
-    seam in the codebase.
+    Notes
+    -----
+    Never raises for an expected failure: malformed JSON, an out-of-vocabulary
+    category, a missing field, an empty or oversized reasoning sentence, a
+    network error, an auth failure and a timeout all become a clean None. There
+    is no failure of this call that can lose a candidate or write a fact.
+
+    `asyncio.CancelledError` inherits from BaseException rather than Exception,
+    so a shutdown cancelling this task still propagates instead of being logged
+    as "the model failed".
     """
     settings = load_settings()
     if settings.llm_api_key is None or not model:

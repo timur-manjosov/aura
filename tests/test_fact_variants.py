@@ -8,6 +8,7 @@ This file only proves the storage contract: writes land together, reads
 come back correctly, and the join against facts.status='active' is the
 schema property Part 2 is designed to rely on.
 """
+
 from __future__ import annotations
 
 import aiosqlite
@@ -38,7 +39,12 @@ async def conn():
 
 async def _fact_id(conn: aiosqlite.Connection, embedding_model, *, guild_id: int = GUILD_A) -> int:
     fact = await add_fact(
-        conn, embedding_model, guild_id=guild_id, channel_id=1, message_id=1, content="the sky is blue"
+        conn,
+        embedding_model,
+        guild_id=guild_id,
+        channel_id=1,
+        message_id=1,
+        content="the sky is blue",
     )
     return fact.id
 
@@ -104,9 +110,7 @@ class TestStoreFactVariants:
         # than trusted, the same reasoning test_supersession_state.py applies
         # to its own ledger's foreign key.
         with pytest.raises(aiosqlite.IntegrityError):
-            await store_fact_variants(
-                conn, fact_id=999999, contents=["x"], embeddings=[EMBEDDING]
-            )
+            await store_fact_variants(conn, fact_id=999999, contents=["x"], embeddings=[EMBEDDING])
 
     async def test_one_fact_can_have_several_variant_rows(
         self, conn: aiosqlite.Connection, embedding_model
@@ -114,9 +118,7 @@ class TestStoreFactVariants:
         # No UNIQUE constraint on fact_id, unlike fact_links' one-row-per-pair
         # shape: a fact legitimately produces several variants.
         fact_id = await _fact_id(conn, embedding_model)
-        await store_fact_variants(
-            conn, fact_id=fact_id, contents=["a"], embeddings=[EMBEDDING]
-        )
+        await store_fact_variants(conn, fact_id=fact_id, contents=["a"], embeddings=[EMBEDDING])
         await store_fact_variants(
             conn, fact_id=fact_id, contents=["b", "c"], embeddings=[EMBEDDING, OTHER_EMBEDDING]
         )
@@ -158,9 +160,7 @@ class TestGetActiveFactVariants:
         active = await get_active_fact_variants(conn, GUILD_A)
         assert active == []
 
-    async def test_scoped_to_one_guild(
-        self, conn: aiosqlite.Connection, embedding_model
-    ) -> None:
+    async def test_scoped_to_one_guild(self, conn: aiosqlite.Connection, embedding_model) -> None:
         fact_a = await _fact_id(conn, embedding_model, guild_id=GUILD_A)
         fact_b = await _fact_id(conn, embedding_model, guild_id=GUILD_B)
         await store_fact_variants(conn, fact_id=fact_a, contents=["a"], embeddings=[EMBEDDING])

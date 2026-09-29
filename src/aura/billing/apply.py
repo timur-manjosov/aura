@@ -7,6 +7,7 @@ between the commit returning and the view updating, is what makes that
 impossible to get wrong at a call site -- the internal API calls this and never
 the two halves separately.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,7 +36,35 @@ async def apply_snapshot(
     expected_version: int,
     now: datetime,
 ) -> ApplyResult:
-    """Apply one snapshot through the compare-and-swap, then update the gate if it committed."""
+    """Apply one snapshot through the compare-and-swap, then update the gate.
+
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    gate
+        The in-memory plan gate to write through to.
+    snapshot
+        What Stripe says about the subscription.
+    event_id, event_type
+        The Stripe event driving this write, or None for a reconciliation write.
+    expected_version
+        The version the caller read before fetching from Stripe.
+    now
+        When the write is made.
+
+    Returns
+    -------
+    ApplyResult
+        Exactly what `apply_subscription_snapshot` returned.
+
+    Notes
+    -----
+    The gate is updated only when the write actually committed, and in the same
+    step -- which is what makes the gate's in-memory view unable to drift from the
+    table while the process runs. A duplicate or conflicting event changes
+    neither.
+    """
     result = await apply_subscription_snapshot(
         conn,
         snapshot=snapshot,

@@ -28,10 +28,12 @@ aura.onboarding.builder), so the cap is not a cost control -- it is the direct
 answer to "what happens on a mass join", asked explicitly by this sub-phase's
 brief rather than left to be discovered.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Final
 
 import aiosqlite
 
@@ -40,7 +42,7 @@ from aura.db.connection import connection_lock, utc_day, utc_iso
 # Mirrors MAX_DAILY_CAP in aura.db.proactive_state: the value is bound
 # directly into SQL, and an unreasonably large cap defeats the point of having
 # one at all while costing nothing to reject up front.
-MAX_DAILY_CAP = 1_000_000
+MAX_DAILY_CAP: Final = 1_000_000
 
 # One statement that claims a join's onboarding send, atomically, against BOTH
 # guards at once: no row already exists for this exact (guild, user, joined_at)
@@ -89,7 +91,43 @@ async def try_claim_onboarding_send(
     daily_cap: int,
     now: datetime,
 ) -> OnboardingSendOutcome:
-    """Atomically claim one member's onboarding send, or explain why it was refused.
+    """Atomically claim one member's onboarding send, or say why it was refused.
+
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild the member joined.
+    user_id
+        The joining member.
+    joined_at
+        Discord's own join timestamp as fixed-width UTC ISO-8601 text. Part of
+        the uniqueness key, so a rejoin is a new claim while a redelivery of
+        the same join is not.
+    fact_count
+        How many facts the summary covers, recorded for diagnostics.
+    daily_cap
+        Today's ceiling on onboarding messages. 0 is valid.
+    now
+        Timezone-aware moment; supplies both the timestamp and the UTC day key.
+
+    Returns
+    -------
+    OnboardingSendOutcome
+        CLAIMED when the send may proceed; ALREADY_SENT when this exact join
+        has been claimed before; DAILY_CAP_REACHED when the guild is out of
+        budget.
+
+    Raises
+    ------
+    ValueError
+        If `now` is naive, or `daily_cap` is outside [0, MAX_DAILY_CAP].
+
+    Notes
+    -----
+    Atomic and idempotent per join: both guards live inside one INSERT, so
+    concurrent claims for the same join cannot both succeed.
 
     Call this the moment the message to send is fully decided (a resolved
     channel, non-empty content) and *before* it is actually posted -- the same
@@ -98,11 +136,10 @@ async def try_claim_onboarding_send(
     a retry (there is none here; see aura.onboarding.listener) produce a
     second message for the same join.
 
-    `joined_at` and `now` are both caller-supplied fixed-width UTC ISO-8601
-    text and a timezone-aware datetime respectively, matching every other
-    time-sensitive function in this project: the caller's single reading of
-    Discord's `joined_at` and the clock drives both the uniqueness key and the
-    daily-cap bucket, so the two cannot disagree with each other.
+    Both time values are caller-supplied, matching every other time-sensitive
+    function in this project: one reading of Discord's `joined_at` and one of
+    the clock drive both the uniqueness key and the daily-cap bucket, so the
+    two cannot disagree with each other.
     """
     if now.tzinfo is None:
         raise ValueError(f"now must be a timezone-aware datetime, got {now!r}")
@@ -148,17 +185,32 @@ async def try_claim_onboarding_send(
             raise
 
     return (
-        OnboardingSendOutcome.ALREADY_SENT
-        if duplicate
-        else OnboardingSendOutcome.DAILY_CAP_REACHED
+        OnboardingSendOutcome.ALREADY_SENT if duplicate else OnboardingSendOutcome.DAILY_CAP_REACHED
     )
 
 
 async def count_onboarding_sends_on(conn: aiosqlite.Connection, *, guild_id: int, day: str) -> int:
-    """Return how many onboarding messages guild_id has already sent on a given UTC day.
+    """Return how many onboarding messages a guild has already sent on a UTC day.
 
-    Read-only; not on the send path (the claim above counts atomically for
-    itself), but useful for diagnostics and for tests asserting the cap holds.
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild whose ledger to count.
+    day
+        A UTC day key as produced by `utc_day`.
+
+    Returns
+    -------
+    int
+        Rows in `onboarding_sends` for that guild and day; 0 if there are none.
+
+    Notes
+    -----
+    Read-only, and deliberately not on the send path -- the claim above counts
+    atomically for itself. This exists for diagnostics and for the tests that
+    assert the cap holds.
     """
     async with connection_lock(conn):
         async with conn.execute(

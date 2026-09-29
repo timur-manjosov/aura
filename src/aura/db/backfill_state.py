@@ -39,10 +39,12 @@ and re-does the work, which is the only safe direction for a spend limit to err
 in; the duplicate CANDIDATES that retry would otherwise produce are prevented
 one layer up by pending_facts' UNIQUE constraint.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Final
 
 import aiosqlite
 from pydantic import BaseModel
@@ -66,7 +68,7 @@ WHERE (
 # refuses a Python int that does not fit a signed 64-bit integer, so a value
 # past this would raise on every tick instead of being refused once where an
 # operator can see it.
-MAX_DAILY_CAP = 1_000_000
+MAX_DAILY_CAP: Final = 1_000_000
 
 
 class BackfillCallOutcome(StrEnum):
@@ -92,19 +94,38 @@ class BackfillCallAttempt(BaseModel):
 
     @property
     def granted(self) -> bool:
-        """Whether this attempt actually took a slot from the budget."""
+        """Report whether this attempt actually took a slot from the budget.
+
+        Returns
+        -------
+        bool
+            True only for a GRANTED outcome -- that is, only when a slot was
+            actually taken from the budget.
+        """
         return self.outcome is BackfillCallOutcome.GRANTED
 
 
-async def count_backfill_calls_on(
-    conn: aiosqlite.Connection, *, guild_id: int, day: str
-) -> int:
-    """Return how many backfill distillation calls guild_id has spent on a UTC day.
+async def count_backfill_calls_on(conn: aiosqlite.Connection, *, guild_id: int, day: str) -> int:
+    """Return how many backfill distillation calls a guild has spent on a UTC day.
 
-    Read-only. Takes the day as a string produced by utc_day so the caller's
-    clock, not this function's, defines "today".
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild whose ledger to count.
+    day
+        A UTC day key as produced by `utc_day`, so the caller's clock -- not
+        this function's -- defines "today".
 
-    Used by /aura-backfill status to show a moderator why a run is not moving,
+    Returns
+    -------
+    int
+        Rows in `backfill_calls` for that guild and day; 0 if there are none.
+
+    Notes
+    -----
+    Read-only; takes no slot and changes nothing. Used by /aura-backfill status to show a moderator why a run is not moving,
     and by the worker as a CHEAP PRE-CHECK before it starts fetching pages for a
     run whose budget is already gone. That pre-check is an optimization and
     never the decision: try_acquire_backfill_call_slot below is what actually
@@ -131,19 +152,53 @@ async def try_acquire_backfill_call_slot(
 ) -> BackfillCallAttempt:
     """Atomically take one slot from the guild's daily backfill budget.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild whose budget to spend from.
+    run_id
+        The backfill run this batch belongs to, recorded on the row.
+    message_count
+        How many messages the batch covers. Must not be negative.
+    daily_cap
+        Today's ceiling. 0 is valid and means "no backfill spends today".
+    now
+        Timezone-aware moment; supplies both the timestamp and the UTC day
+        key, so the two can never straddle midnight in opposite directions.
+
+    Returns
+    -------
+    BackfillCallAttempt
+        GRANTED with the post-write count when a slot was taken;
+        DAILY_CAP_REACHED with the current count when it was not.
+
+    Raises
+    ------
+    ValueError
+        If `daily_cap` is outside [0, MAX_DAILY_CAP], `message_count` is
+        negative, or `now` is naive.
+
+    Notes
+    -----
+    Atomic against concurrent callers, including a second process sharing the
+    database file: the cap is re-checked inside the INSERT's own WHERE clause,
+    so there is no window between deciding and writing.
+
     Call this the moment a batch is assembled and *before* the LLM call it
     authorizes -- the same ordering, for the same reason, every other ledger in
     this project uses. A slot is recorded when it is claimed, not when the work
     it authorizes succeeds, so a crash or an API failure downstream spends the
     slot instead of quietly refunding it.
 
-    Never raises on a normal refusal: being out of budget is the expected way a
-    multi-day backfill spends its second day, not an error. A daily_cap of 0 is
-    valid and means "no backfill may spend anything today", which is a useful
-    off switch that leaves live extraction entirely untouched.
+    Being out of budget is the expected way a multi-day backfill spends its
+    second day, not an error, so a refusal is a return value rather than an
+    exception. A cap of 0 is a useful off switch that leaves live extraction
+    entirely untouched.
 
-    Requires a timezone-aware `now`, injected rather than read from the clock
-    here, so the daily boundary is testable at the exact moment it matters.
+    `now` is injected rather than read from the clock here so the daily
+    boundary is testable at the exact moment it matters.
     """
     if not 0 <= daily_cap <= MAX_DAILY_CAP:
         raise ValueError(f"daily_cap must be between 0 and {MAX_DAILY_CAP}, got {daily_cap}")

@@ -14,10 +14,11 @@ is a property this shape already had; "backfill and live extraction cannot touch
 each other's budget" is the property this sub-phase adds, and the phase brief
 asks for it by name.
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import aiosqlite
 import pytest
@@ -41,7 +42,7 @@ GUILD_B = 200000000000000002
 CHANNEL_A = 300000000000000003
 MODERATOR = 4242
 
-NOW = datetime(2026, 8, 26, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 26, 12, 0, 0, tzinfo=UTC)
 UNTIL = 900000000000000000
 
 
@@ -123,7 +124,7 @@ class TestAcquisition:
         self, conn
     ) -> None:
         run = await _run(conn)
-        late = datetime(2026, 8, 26, 23, 59, 59, 999999, tzinfo=timezone.utc)
+        late = datetime(2026, 8, 26, 23, 59, 59, 999999, tzinfo=UTC)
 
         await try_acquire_backfill_call_slot(
             conn, guild_id=GUILD_A, run_id=run.id, message_count=1, daily_cap=1, now=late

@@ -12,6 +12,7 @@ session and no Discord to test, so the case that matters most (a user with no
 qualifying guild sees an empty list, not an error and not somebody else's
 servers) is a unit test rather than a live OAuth round trip.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -40,6 +41,21 @@ def select_manageable_guilds(
 ) -> list[ManageableGuild]:
     """Return the guilds the user may manage AND Aura is present in, name-sorted.
 
+    Parameters
+    ----------
+    user_guilds
+        The guilds Discord says the user belongs to, with their permissions.
+    bot_guild_ids
+        The guilds Aura is actually in.
+
+    Returns
+    -------
+    list[ManageableGuild]
+        The intersection -- guilds the user may manage AND Aura is present in --
+        sorted by name. Empty when there is no overlap.
+
+    Notes
+    -----
     Sorted by name (case-insensitively, with the ID as a tiebreaker) so two
     calls with the same inputs produce the same order regardless of how
     Discord happened to page the response -- an unstable list reshuffles the

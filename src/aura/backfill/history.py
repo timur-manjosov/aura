@@ -63,6 +63,7 @@ What surfaces here is what it gives up on, and each needs a different answer:
 The failure direction throughout is "fetch nothing this tick, keep the cursor",
 which costs one page re-read and never costs a message.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -116,6 +117,21 @@ def ordered_page(
 ) -> list[discord.Message]:
     """Sort one fetched page oldest-first and drop anything already covered.
 
+    Parameters
+    ----------
+    messages
+        One page as the API returned it, in whatever order.
+    after_message_id
+        The exclusive lower bound already covered, or None for "nothing is".
+
+    Returns
+    -------
+    list[discord.Message]
+        A NEW list, sorted by (created_at, id) and containing only messages
+        strictly after `after_message_id`. The input is never mutated.
+
+    Notes
+    -----
     Returns a new list; never mutates the input. Two things happen here and both
     are part of the deliverable rather than defensive habit:
 
@@ -150,8 +166,22 @@ def ordered_page(
 
 
 def is_strictly_increasing(messages: Sequence[discord.Message]) -> bool:
-    """Whether messages are in strictly ascending chronological order.
+    """Report whether messages are in strictly ascending chronological order.
 
+    Parameters
+    ----------
+    messages
+        The sequence to check. An empty or single-element sequence is trivially
+        ordered.
+
+    Returns
+    -------
+    bool
+        True when every message has both a larger id and a non-decreasing
+        timestamp than the one before it.
+
+    Notes
+    -----
     Public because the guarantee it expresses is the deliverable, and a
     guarantee nothing can check from outside is not one: this is what the tests
     assert about a whole multi-page run, and what a future caller with a
@@ -171,8 +201,22 @@ def is_strictly_increasing(messages: Sequence[discord.Message]) -> bool:
 
 
 def _retry_after_seconds(error: discord.HTTPException) -> float | None:
-    """Discord's own requested wait for a 429, or None if it did not give one.
+    """Return Discord's own requested wait for a 429.
 
+    Parameters
+    ----------
+    error
+        The HTTP exception raised by discord.py.
+
+    Returns
+    -------
+    float or None
+        The requested wait in seconds, clamped to
+        `_MAX_HONOURED_RETRY_AFTER_SECONDS`; None when Discord gave no usable
+        number, in which case the caller falls back to its own backoff.
+
+    Notes
+    -----
     Reads the header rather than guessing, and never raises: a header that is
     missing, empty or unparseable simply means "no number from Discord", which
     the caller answers with its ordinary backoff. `response` can be absent
@@ -212,24 +256,37 @@ async def fetch_history_page(
 ) -> list[discord.Message] | None:
     """Fetch one page of history, oldest first, honouring Discord's rate limits.
 
-    Returns the page (possibly empty, meaning the run has reached its upper
-    bound), or None if every attempt failed transiently -- which the caller
-    treats as "not this tick", leaving the cursor untouched.
+    Parameters
+    ----------
+    channel
+        The channel to read.
+    after_message_id
+        Exclusive lower bound (discord.py's own `after` semantics), or None to
+        start from the beginning of the channel.
+    before_message_id
+        Exclusive upper bound: the snowflake of the moment the run started,
+        which is what separates backfill's territory from the live path's
+        without either needing to know the other's rules.
+    limit
+        Maximum messages to fetch.
+    sleep
+        Injected so the backoff schedule is testable without a suite that
+        actually waits fifteen seconds to prove it waited fifteen seconds.
+        Defaults to `asyncio.sleep`; production passes nothing else.
 
-    Raises ChannelUnreadable, and only that, for the permanent failures: a
-    deleted channel, a revoked Read Message History permission. Everything else
-    is retried or reported as None.
+    Returns
+    -------
+    list[discord.Message] or None
+        The page, oldest first and possibly empty (meaning the run has reached
+        its upper bound); None if every attempt failed transiently, which the
+        caller treats as "not this tick", leaving the cursor untouched.
 
-    `sleep` is injected so the backoff schedule is testable without a test suite
-    that actually waits fifteen seconds to prove it waited fifteen seconds. It
-    defaults to asyncio.sleep and production never passes anything else.
-
-    The bounds are HALF-OPEN on both sides and stated in message ids rather than
-    timestamps, which is exact: `after_message_id` is exclusive (discord.py's
-    own `after` semantics) and `before_message_id` is exclusive too, so the
-    upper bound -- the snowflake of the moment the run started -- cleanly
-    separates backfill's territory from the live path's without either needing
-    to know the other's rules.
+    Raises
+    ------
+    ChannelUnreadable
+        And only that, for the permanent failures: a deleted channel, a revoked
+        Read Message History permission. Everything else is retried or reported
+        as None.
     """
     for attempt in range(1, _MAX_FETCH_ATTEMPTS + 1):
         try:
@@ -248,9 +305,7 @@ async def fetch_history_page(
             # Permanent by nature: someone deleted the channel or took away Read
             # Message History. Retrying is not resilience here, it is a log line
             # repeated hourly, so the run ends in a state a moderator can act on.
-            raise ChannelUnreadable(
-                f"channel {channel.id} cannot be read: {exc}"
-            ) from exc
+            raise ChannelUnreadable(f"channel {channel.id} cannot be read: {exc}") from exc
         except discord.RateLimited as exc:
             # discord.py declined to sleep this one out because it exceeded the
             # client's max_ratelimit_timeout. It handed us Discord's own number;

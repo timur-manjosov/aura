@@ -11,6 +11,7 @@ Every test in this file is hermetic. Nothing here makes a network call, an LLM
 call, or touches anything under `data/`. The autouse guard in conftest would
 fail the run if it did.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,6 +19,7 @@ from pathlib import Path
 import pytest
 from fastembed import TextEmbedding
 
+from aura.proactive.question_detector import QUESTION_EXEMPLARS, STATEMENT_EXEMPLARS
 from synthetic_corpus.budget import BudgetExceededError, CallBudget, ModelPrice
 from synthetic_corpus.corpus_model import (
     MessageCategory,
@@ -48,7 +50,7 @@ from synthetic_corpus.safety import (
     deterministic_verdict,
     interpret_review,
 )
-from synthetic_corpus.scenarios import SCENARIOS, CONTRADICTION_PAIRS_PER_GUILD
+from synthetic_corpus.scenarios import CONTRADICTION_PAIRS_PER_GUILD, SCENARIOS
 from synthetic_corpus.scratch_db import (
     MARKER_TABLE,
     ScratchDatabaseSafetyError,
@@ -56,8 +58,6 @@ from synthetic_corpus.scratch_db import (
     assert_scratch_destination_usable,
     open_scratch_database,
 )
-
-from aura.proactive.question_detector import QUESTION_EXEMPLARS, STATEMENT_EXEMPLARS
 
 
 class TestScratchDatabaseGuard:
@@ -155,9 +155,7 @@ class TestScratchDatabaseGuard:
             assert count is not None and count[0] == 0
 
     @pytest.mark.asyncio
-    async def test_destination_check_refuses_before_anything_is_spent(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_destination_check_refuses_before_anything_is_spent(self, tmp_path: Path) -> None:
         """The pre-flight check must see everything the end-of-run guard sees.
 
         Without it the marker check fires only after generation, i.e. after the
@@ -228,9 +226,7 @@ class TestLeakageChecker:
 
         assert findings, "an intentional near-duplicate of an exemplar was not caught"
         assert findings[0].text == planted
-        assert max(findings[0].cosine, findings[0].lexical) >= min(
-            LEAKAGE_COSINE_THRESHOLD, 0.6
-        )
+        assert max(findings[0].cosine, findings[0].lexical) >= min(LEAKAGE_COSINE_THRESHOLD, 0.6)
 
     @pytest.mark.asyncio
     async def test_catches_an_exact_copy_of_a_statement_exemplar(
@@ -360,9 +356,7 @@ class TestSafetyFilter:
 
     def test_allows_documentation_reserved_urls(self) -> None:
         assert deterministic_verdict("it's on https://example.com/rules i think").accepted
-        assert deterministic_verdict(
-            "see https://discord.com/channels/1/2/3 for the pin"
-        ).accepted
+        assert deterministic_verdict("see https://discord.com/channels/1/2/3 for the pin").accepted
 
     def test_does_not_reject_an_ordinary_date_as_a_phone_number(self) -> None:
         assert deterministic_verdict("the deadline was 01.02.2026 wasn't it").accepted
@@ -387,9 +381,7 @@ class TestSafetyFilter:
             None,
         ],
     )
-    def test_model_review_fails_closed_on_anything_but_a_clean_safe(
-        self, payload: object
-    ) -> None:
+    def test_model_review_fails_closed_on_anything_but_a_clean_safe(self, payload: object) -> None:
         assert not interpret_review(payload).accepted
 
     def test_model_review_accepts_only_an_explicit_safe(self) -> None:
@@ -406,8 +398,7 @@ class TestSafetyFilter:
     def test_layer_is_recorded_so_rejections_can_be_audited(self) -> None:
         assert deterministic_verdict("").layer == SafetyLayer.STRUCTURE
         assert (
-            deterministic_verdict("we need a detonator for this").layer
-            == SafetyLayer.DETERMINISTIC
+            deterministic_verdict("we need a detonator for this").layer == SafetyLayer.DETERMINISTIC
         )
 
 
@@ -428,9 +419,7 @@ class TestCallBudget:
             budget.authorize("some/model")
 
     def test_record_raises_once_the_spend_ceiling_is_broken(self) -> None:
-        price = ModelPrice(
-            model="m", usd_per_million_input=1000.0, usd_per_million_output=1000.0
-        )
+        price = ModelPrice(model="m", usd_per_million_input=1000.0, usd_per_million_output=1000.0)
         budget = CallBudget(max_calls=100, max_spend_usd=0.01)
         budget.authorize("m")
         with pytest.raises(BudgetExceededError, match="spend cap"):
@@ -519,9 +508,7 @@ class TestGroundTruthTable:
         assert effective_may_post(self._malformed(None)) is None
 
     def test_answering_a_contentless_input_is_still_a_failure(self) -> None:
-        assert (
-            effective_may_post(self._malformed(Stage1Truth.NOT_INFORMATION_REQUEST)) is False
-        )
+        assert effective_may_post(self._malformed(Stage1Truth.NOT_INFORMATION_REQUEST)) is False
 
     def test_injection_and_toxic_may_never_post_whatever_the_case(self) -> None:
         for category in (

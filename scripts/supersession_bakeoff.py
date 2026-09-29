@@ -31,6 +31,7 @@ extraction volume: EXTRACTION_DEDUP_SIMILARITY_THRESHOLD (0.70) already
 narrows this call to a small, advisory-only slice of extraction's total
 volume, not every message.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,24 +42,26 @@ import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import litellm
 from litellm.types.utils import ModelResponse
 from pydantic import BaseModel, ValidationError
 
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from supersession_bakeoff_cases import (  # noqa: E402
+from aura.config import load_settings
+from aura.synthesis import _parse_json_response
+from supersession_bakeoff_cases import (
     ALL_CASES,
     ALL_CATEGORIES,
     SupersessionCase,
 )
-
-from aura.config import load_settings  # noqa: E402
-from aura.synthesis import _parse_json_response  # noqa: E402
 
 RUN_REAL_LLM_ENV = "AURA_RUN_REAL_LLM"
 
@@ -227,7 +230,7 @@ async def classify_pair(case: SupersessionCase, model: str, api_key: str) -> Jud
     except (ValidationError, ValueError) as exc:
         print(f"    parse/validation failure: {exc}", file=sys.stderr)
         return None
-    except Exception as exc:  # noqa: BLE001 -- this script must never crash mid-run
+    except Exception as exc:
         print(f"    call failure: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None
 
@@ -252,9 +255,9 @@ async def run_case(case: SupersessionCase, run_index: int, model: str, api_key: 
         run_index=run_index,
         judgement=judgement,
         call_failed=False,
-        failure="" if judgement.category == case.category else (
-            f"expected {case.category}, got {judgement.category}"
-        ),
+        failure=""
+        if judgement.category == case.category
+        else (f"expected {case.category}, got {judgement.category}"),
         latency_seconds=latency,
     )
 
@@ -472,7 +475,7 @@ async def main() -> int:
     args.out.write_text(
         json.dumps(
             {
-                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generated_at": datetime.now(UTC).isoformat(),
                 "models": args.models,
                 "estimated_cost_usd": total_cost,
                 "summary": _summarize(results),

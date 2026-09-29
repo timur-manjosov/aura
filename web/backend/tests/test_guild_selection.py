@@ -5,6 +5,7 @@ explicitly, including the two that must NOT appear -- a filter tested only on
 its positive case passes just as well when one of its two conditions has been
 dropped.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -33,16 +34,12 @@ class TestBothConditionsRequired:
         assert selected == []
 
     def test_aura_present_but_not_manageable_is_excluded(self) -> None:
-        selected = select_manageable_guilds(
-            [guild("1", permissions=NOTHING)], frozenset({"1"})
-        )
+        selected = select_manageable_guilds([guild("1", permissions=NOTHING)], frozenset({"1"}))
 
         assert selected == []
 
     def test_neither_condition_is_excluded(self) -> None:
-        selected = select_manageable_guilds(
-            [guild("1", permissions=NOTHING)], frozenset({"2"})
-        )
+        selected = select_manageable_guilds([guild("1", permissions=NOTHING)], frozenset({"2"}))
 
         assert selected == []
 
@@ -83,9 +80,7 @@ class TestEmptyResults:
 class TestMalformedPermissions:
     @pytest.mark.parametrize("permissions", ["", "abc", "-1", "0x20", "9" * 100])
     def test_an_unparseable_bitmask_denies_rather_than_grants(self, permissions: str) -> None:
-        selected = select_manageable_guilds(
-            [guild("1", permissions=permissions)], frozenset({"1"})
-        )
+        selected = select_manageable_guilds([guild("1", permissions=permissions)], frozenset({"1"}))
 
         assert selected == []
 

@@ -28,10 +28,11 @@ it does with the reply, not what a model happens to say about them. The model's
 own judgement on these same cases is measured separately, against the live
 provider, in scripts/simulate_pipeline.py's Stage 3 passes.
 """
+
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -53,7 +54,7 @@ from aura.synthesis import SynthesisResult
 
 GUILD_A = 100000000000000001
 CHANNEL = 555
-NOON = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+NOON = datetime(2026, 7, 27, 12, 0, 0, tzinfo=UTC)
 
 CONFIG = ProactiveGateConfig(
     question_threshold=0.0,
@@ -339,7 +340,7 @@ class TestTheTopKBoundActuallyBounds:
         facts = await _facts_sent_to_synthesis(conn, model, _make_message())
 
         assert len(facts) == SYNTHESIS_FACT_LIMIT
-        assert SYNTHESIS_FACT_LIMIT < population
+        assert population > SYNTHESIS_FACT_LIMIT
 
     async def test_which_facts_survive_the_cut_is_deterministic_under_ties(
         self, conn: aiosqlite.Connection
@@ -463,9 +464,7 @@ class TestTheRealLiveCases:
         # reach the model, because refusing it is a judgement only the model
         # can make. Sending one of the two would let Aura state a side
         # confidently; sending both is what lets it notice the conflict.
-        await self._seed_live_facts(
-            conn, embedding_model, [PLANTS_ACTIVITY, PLANTS_INACTIVITY]
-        )
+        await self._seed_live_facts(conn, embedding_model, [PLANTS_ACTIVITY, PLANTS_INACTIVITY])
 
         facts = await _facts_sent_to_synthesis(
             conn, embedding_model, _make_message(PLANTS_QUESTION)
@@ -480,9 +479,7 @@ class TestTheRealLiveCases:
         # eligible, ans=0, post=0 -- and the hard code-gate is what turns the
         # model's refusal into silence. Removing the numeric gate must not have
         # weakened it.
-        await self._seed_live_facts(
-            conn, embedding_model, [PLANTS_ACTIVITY, PLANTS_INACTIVITY]
-        )
+        await self._seed_live_facts(conn, embedding_model, [PLANTS_ACTIVITY, PLANTS_INACTIVITY])
         await _enable(conn)
         message = _make_message(PLANTS_QUESTION)
         declined = SynthesisResult(
@@ -491,9 +488,7 @@ class TestTheRealLiveCases:
             answers_question=False,
         )
 
-        with patch(
-            "aura.proactive.responder.synthesize_answer", AsyncMock(return_value=declined)
-        ):
+        with patch("aura.proactive.responder.synthesize_answer", AsyncMock(return_value=declined)):
             outcome = await respond_with_synthesis(
                 message, db=conn, model=embedding_model, settings=_settings()
             )
@@ -549,9 +544,7 @@ class TestTheBudgetStillBoundsTheLoosenedGate:
 
         model = await _seed(conn, [0.90, 0.90, 0.90])
 
-        verdicts = [
-            (await _evaluate(conn, model, message_id=index)).verdict for index in range(5)
-        ]
+        verdicts = [(await _evaluate(conn, model, message_id=index)).verdict for index in range(5)]
 
         assert verdicts[0] is GateVerdict.ELIGIBLE
         assert all(verdict is GateVerdict.COOLDOWN_ACTIVE for verdict in verdicts[1:])
@@ -605,13 +598,16 @@ class TestTheHardCodeGateWithSeveralFactsInContext:
         model = await _seed(conn, [0.90] * 5)
         await _enable(conn)
         message = _make_message()
-        uncited = SynthesisResult(answer="Sure, here you go.", used_fact_ids=[], answers_question=True)
+        uncited = SynthesisResult(
+            answer="Sure, here you go.", used_fact_ids=[], answers_question=True
+        )
 
-        with patch(
-            "aura.proactive.responder.synthesize_answer", AsyncMock(return_value=uncited)
-        ):
+        with patch("aura.proactive.responder.synthesize_answer", AsyncMock(return_value=uncited)):
             outcome = await respond_with_synthesis(
-                message, db=conn, model=model, settings=_settings()  # type: ignore[arg-type]
+                message,
+                db=conn,
+                model=model,
+                settings=_settings(),  # type: ignore[arg-type]
             )
 
         assert outcome.posted is False
@@ -636,11 +632,12 @@ class TestTheHardCodeGateWithSeveralFactsInContext:
             answers_question=True,
         )
 
-        with patch(
-            "aura.proactive.responder.synthesize_answer", AsyncMock(return_value=cited)
-        ):
+        with patch("aura.proactive.responder.synthesize_answer", AsyncMock(return_value=cited)):
             outcome = await respond_with_synthesis(
-                message, db=conn, model=model, settings=_settings()  # type: ignore[arg-type]
+                message,
+                db=conn,
+                model=model,
+                settings=_settings(),  # type: ignore[arg-type]
             )
 
         assert outcome.posted is True
@@ -666,7 +663,10 @@ class TestTheHardCodeGateWithSeveralFactsInContext:
             "aura.proactive.responder.synthesize_answer", AsyncMock(return_value=declined)
         ) as synth:
             outcome = await respond_with_synthesis(
-                message, db=conn, model=model, settings=_settings()  # type: ignore[arg-type]
+                message,
+                db=conn,
+                model=model,
+                settings=_settings(),  # type: ignore[arg-type]
             )
 
         assert synth.await_args is not None
@@ -683,11 +683,12 @@ class TestTheHardCodeGateWithSeveralFactsInContext:
         await _enable(conn)
         message = _make_message()
 
-        with patch(
-            "aura.proactive.responder.synthesize_answer", AsyncMock(return_value=None)
-        ):
+        with patch("aura.proactive.responder.synthesize_answer", AsyncMock(return_value=None)):
             outcome = await respond_with_synthesis(
-                message, db=conn, model=model, settings=_settings()  # type: ignore[arg-type]
+                message,
+                db=conn,
+                model=model,
+                settings=_settings(),  # type: ignore[arg-type]
             )
 
         assert outcome.answers_question is None

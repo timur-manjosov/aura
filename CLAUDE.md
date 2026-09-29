@@ -125,6 +125,34 @@ One correction this also forced: through Phase 2b-3 the responder selected facts
 - No hardcoded strings, magic numbers, or user-facing text inside business logic (see Internationalization).
 - Every public function and class gets a docstring.
 
+#### Docstring and typing conventions
+
+One style everywhere, so a reader moving between modules never has to re-learn
+how this codebase states a contract:
+
+- **NumPy-style docstrings.** A one-line summary in the imperative or
+  declarative present ("Return the ...", "Report whether ..."), then, where
+  they apply, `Parameters`, `Returns`, `Raises`, `Yields`, `Attributes`, and
+  `Notes` — in that order, each underlined to the heading's own length.
+- **Sections state the contract; `Notes` carries the reasoning.** What a
+  function guarantees — the return value's shape, which inputs are refused,
+  what is atomic, what is idempotent, what never raises — belongs in the typed
+  sections. The *why* behind a decision, a rejected alternative, a calibration
+  reason or a security rationale goes under `Notes`, and is never repeated in
+  the section above it.
+- **Module docstrings** state the module's purpose, the invariants it
+  maintains, and what it may and may not import.
+- **A test's name is its documentation.** Test functions and test classes carry
+  a docstring only when the name cannot carry the point; test *helpers* are
+  named well enough to need none.
+- **Complete annotations**, including on module-level constants. `Final`,
+  `ClassVar`, `Literal`, `Protocol` and `TypedDict` are used wherever they make
+  a contract explicit rather than merely satisfy a checker.
+
+`ruff` (lint and format) and `mypy` enforce what is mechanically checkable;
+both are configured in `pyproject.toml` and installed from
+`requirements-dev.txt`, never in the runtime image.
+
 ### Scalability & Extensibility
 Code should be structured so none of the following ever require touching core logic:
 - A new language → add one locale file.

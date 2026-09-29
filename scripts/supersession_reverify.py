@@ -35,6 +35,7 @@ WHAT IT MEASURES, beyond the category:
     classification quality. The Hangul/Kana check is automatic; Latin-script
     locales are printed for a human to read.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,23 +47,25 @@ import sys
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from supersession_bakeoff_cases import (  # noqa: E402
-    ALL_CASES,
-    REVERIFICATION_CASE_NAMES,
-    SupersessionCase,
-)
-
-from aura.config import load_settings  # noqa: E402
-from aura.extraction.supersession import (  # noqa: E402
+from aura.config import load_settings
+from aura.extraction.supersession import (
     RelationshipJudgement,
     has_change_signal,
     judge_relationship,
+)
+from supersession_bakeoff_cases import (
+    ALL_CASES,
+    REVERIFICATION_CASE_NAMES,
+    SupersessionCase,
 )
 
 RUN_REAL_LLM_ENV = "AURA_RUN_REAL_LLM"
@@ -141,9 +144,7 @@ class CaseReport:
 
     @property
     def consistent(self) -> bool:
-        categories = {
-            run.judgement.relationship if run.judgement else None for run in self.runs
-        }
+        categories = {run.judgement.relationship if run.judgement else None for run in self.runs}
         return len(categories) == 1
 
 
@@ -209,7 +210,7 @@ async def _run_case(case: SupersessionCase, run_index: int) -> RunResult:
 
 def _print_report(reports: list[CaseReport]) -> None:
     print("\n" + "=" * 100)
-    print("PER-CASE RESULT (3 runs each, shipped prompt, %s)" % MODEL)
+    print(f"PER-CASE RESULT (3 runs each, shipped prompt, {MODEL})")
     print("=" * 100)
     for report in reports:
         case = report.case
@@ -267,9 +268,7 @@ async def main() -> int:
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path(__file__).resolve().parent.parent
-        / "reports"
-        / "supersession-reverify.json",
+        default=Path(__file__).resolve().parent.parent / "reports" / "supersession-reverify.json",
     )
     args = parser.parse_args()
 
@@ -303,13 +302,10 @@ async def main() -> int:
             result = await _run_case(case, run_index)
             report.runs.append(result)
             status = (
-                "FAILED"
-                if result.judgement is None
-                else ("PASS" if result.correct else "FAIL")
+                "FAILED" if result.judgement is None else ("PASS" if result.correct else "FAIL")
             )
             print(
-                f"  {case.name:<52} run {run_index}  {status:<6} "
-                f"{result.latency_seconds:5.2f}s",
+                f"  {case.name:<52} run {run_index}  {status:<6} {result.latency_seconds:5.2f}s",
                 flush=True,
             )
         reports.append(report)
@@ -320,7 +316,7 @@ async def main() -> int:
     args.out.write_text(
         json.dumps(
             {
-                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generated_at": datetime.now(UTC).isoformat(),
                 "model": MODEL,
                 "prompt": "shipped (aura.extraction.supersession)",
                 "estimated_cost_usd": cost,
@@ -336,9 +332,7 @@ async def main() -> int:
                             {
                                 "run": run.run_index,
                                 "category": (
-                                    run.judgement.relationship.value
-                                    if run.judgement
-                                    else None
+                                    run.judgement.relationship.value if run.judgement else None
                                 ),
                                 "correct": run.correct,
                                 "change_signal": (
@@ -348,9 +342,7 @@ async def main() -> int:
                                     run.signal_is_quoted_from_the_candidate
                                 ),
                                 "rule_1_downgrade": run.downgraded,
-                                "reasoning": (
-                                    run.judgement.reasoning if run.judgement else None
-                                ),
+                                "reasoning": (run.judgement.reasoning if run.judgement else None),
                                 "reasoning_script": (
                                     _reasoning_script(run.judgement.reasoning)
                                     if run.judgement

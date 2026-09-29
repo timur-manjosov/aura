@@ -8,10 +8,11 @@ and get their own classes: the claim key includes joined_at rather than just
 guild+user (TestRejoin), and refusal has two distinct causes a caller needs to
 tell apart (TestClaiming / TestDailyCap).
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 import pytest
@@ -29,7 +30,7 @@ GUILD_B = 200000000000000002
 USER_A = 700000000000000007
 USER_B = 800000000000000008
 
-NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -134,7 +135,9 @@ class TestDailyCap:
         self, conn: aiosqlite.Connection
     ) -> None:
         for user in range(3):
-            outcome = await _claim(conn, user_id=user, joined_at=NOW + timedelta(seconds=user), daily_cap=3)
+            outcome = await _claim(
+                conn, user_id=user, joined_at=NOW + timedelta(seconds=user), daily_cap=3
+            )
             assert outcome is OnboardingSendOutcome.CLAIMED
 
         over = await _claim(conn, user_id=999, joined_at=NOW + timedelta(seconds=99), daily_cap=3)

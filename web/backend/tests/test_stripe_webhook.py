@@ -9,6 +9,7 @@ things every time: the request is refused, the bot is never contacted, and
 Stripe is never asked about the subscription. "No state change" is proven by
 the absence of any call that could have caused one.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +19,7 @@ import time
 
 import httpx
 import pytest
+
 from fake_bot_billing import FakeBotBillingState
 from fake_stripe import FakeStripeState, sign_webhook
 
@@ -25,7 +27,9 @@ WEBHOOK = "/api/stripe/webhook"
 NOW = int(time.time())
 
 
-async def deliver(client: httpx.AsyncClient, body: bytes, signature: str | None, **extra_headers: str) -> httpx.Response:
+async def deliver(
+    client: httpx.AsyncClient, body: bytes, signature: str | None, **extra_headers: str
+) -> httpx.Response:
     headers = {"Content-Type": "application/json", **extra_headers}
     if signature is not None:
         headers["Stripe-Signature"] = signature
@@ -33,18 +37,24 @@ async def deliver(client: httpx.AsyncClient, body: bytes, signature: str | None,
 
 
 def aura_subscription(stripe_state: FakeStripeState, **overrides):
-    return stripe_state.add_subscription(guild_id="1000", purchaser_user_id="5000", now=NOW, **overrides)
+    return stripe_state.add_subscription(
+        guild_id="1000", purchaser_user_id="5000", now=NOW, **overrides
+    )
 
 
 def nothing_was_touched(stripe_state: FakeStripeState, bot_state: FakeBotBillingState) -> bool:
-    return bot_state.request_log == [] and stripe_state.request_log == [] and bot_state.snapshots == {}
+    return (
+        bot_state.request_log == [] and stripe_state.request_log == [] and bot_state.snapshots == {}
+    )
 
 
 class TestTheSignatureIsAbsolute:
     @pytest.fixture
     def event_body(self, stripe_state: FakeStripeState) -> bytes:
         subscription = aura_subscription(stripe_state)
-        return json.dumps(stripe_state.subscription_event("customer.subscription.created", subscription.id)).encode()
+        return json.dumps(
+            stripe_state.subscription_event("customer.subscription.created", subscription.id)
+        ).encode()
 
     async def test_a_missing_signature_is_refused_without_any_state_change(
         self, app_client, stripe_state, bot_billing_state, event_body
@@ -103,7 +113,9 @@ class TestTheSignatureIsAbsolute:
         self, app_client, stripe_state, bot_billing_state, event_body
     ) -> None:
         """A captured request replayed later: the signature is genuine, the moment is not."""
-        stale = sign_webhook(event_body, stripe_state.webhook_secret, timestamp=int(time.time()) - 301)
+        stale = sign_webhook(
+            event_body, stripe_state.webhook_secret, timestamp=int(time.time()) - 301
+        )
 
         response = await deliver(app_client, event_body, stale)
 
@@ -147,7 +159,11 @@ class TestTheSignatureIsAbsolute:
         response = await app_client.post(
             WEBHOOK,
             content=event_body,
-            headers=[("Content-Type", "application/json"), ("Stripe-Signature", "t=1,v1=00"), ("Stripe-Signature", genuine)],
+            headers=[
+                ("Content-Type", "application/json"),
+                ("Stripe-Signature", "t=1,v1=00"),
+                ("Stripe-Signature", genuine),
+            ],
         )
 
         assert response.status_code == 400
@@ -228,7 +244,9 @@ class TestProcessing:
         self, app_client, stripe_state, bot_billing_state
     ) -> None:
         subscription = aura_subscription(stripe_state)
-        body, signature = stripe_state.signed(stripe_state.subscription_event("customer.subscription.created", subscription.id))
+        body, signature = stripe_state.signed(
+            stripe_state.subscription_event("customer.subscription.created", subscription.id)
+        )
 
         response = await deliver(app_client, body, signature)
 
@@ -259,7 +277,12 @@ class TestProcessing:
         subscription = aura_subscription(stripe_state)
         event = stripe_state.event(
             "checkout.session.completed",
-            {"object": "checkout.session", "id": "cs_test_x", "mode": "subscription", "subscription": subscription.id},
+            {
+                "object": "checkout.session",
+                "id": "cs_test_x",
+                "mode": "subscription",
+                "subscription": subscription.id,
+            },
         )
 
         body, signature = stripe_state.signed(event)
@@ -272,8 +295,12 @@ class TestProcessing:
     async def test_invoice_events_resolve_their_subscription_in_both_api_shapes(
         self, app_client, stripe_state, bot_billing_state, legacy_shape
     ) -> None:
-        subscription = aura_subscription(stripe_state, status="past_due", latest_invoice_status="open")
-        event = stripe_state.invoice_event("invoice.payment_failed", subscription.id, legacy_shape=legacy_shape)
+        subscription = aura_subscription(
+            stripe_state, status="past_due", latest_invoice_status="open"
+        )
+        event = stripe_state.invoice_event(
+            "invoice.payment_failed", subscription.id, legacy_shape=legacy_shape
+        )
 
         body, signature = stripe_state.signed(event)
         response = await deliver(app_client, body, signature)
@@ -285,7 +312,15 @@ class TestProcessing:
         "event_type, data_object",
         [
             ("charge.succeeded", {"object": "charge", "id": "ch_1"}),
-            ("checkout.session.completed", {"object": "checkout.session", "id": "cs_test_1", "mode": "payment", "subscription": None}),
+            (
+                "checkout.session.completed",
+                {
+                    "object": "checkout.session",
+                    "id": "cs_test_1",
+                    "mode": "payment",
+                    "subscription": None,
+                },
+            ),
             ("invoice.paid", {"object": "invoice", "id": "in_1", "parent": None}),
             ("customer.subscription.updated", {"object": "charge", "id": "sub_disguised"}),
         ],
@@ -305,7 +340,9 @@ class TestProcessing:
         self, app_client, stripe_state, bot_billing_state
     ) -> None:
         foreign = stripe_state.add_subscription(guild_id=None, purchaser_user_id=None, now=NOW)
-        body, signature = stripe_state.signed(stripe_state.subscription_event("customer.subscription.created", foreign.id))
+        body, signature = stripe_state.signed(
+            stripe_state.subscription_event("customer.subscription.created", foreign.id)
+        )
 
         response = await deliver(app_client, body, signature)
 
@@ -339,7 +376,9 @@ class TestIdempotency:
         await deliver(app_client, *stripe_state.signed(failed))
 
         subscription.status = "active"
-        recovered = stripe_state.subscription_event("customer.subscription.updated", subscription.id)
+        recovered = stripe_state.subscription_event(
+            "customer.subscription.updated", subscription.id
+        )
         await deliver(app_client, *stripe_state.signed(recovered))
         await deliver(app_client, *stripe_state.signed(failed))
 
@@ -352,7 +391,9 @@ class TestIdempotency:
         subscription = aura_subscription(stripe_state)
         event = stripe_state.subscription_event("customer.subscription.created", subscription.id)
 
-        responses = await asyncio.gather(*(deliver(app_client, *stripe_state.signed(event)) for _ in range(10)))
+        responses = await asyncio.gather(
+            *(deliver(app_client, *stripe_state.signed(event)) for _ in range(10))
+        )
 
         assert all(response.status_code == 200 for response in responses)
         assert [response.json()["status"] for response in responses].count("applied") == 1
@@ -384,19 +425,42 @@ class TestUnavailableCounterparts:
         bot_billing_state.secret = "a-different-secret-than-the-web-backend-holds-000"
 
         with caplog.at_level(logging.ERROR):
-            response = await deliver(app_client, *stripe_state.signed(stripe_state.subscription_event("customer.subscription.created", subscription.id)))
+            response = await deliver(
+                app_client,
+                *stripe_state.signed(
+                    stripe_state.subscription_event(
+                        "customer.subscription.created", subscription.id
+                    )
+                ),
+            )
 
         assert response.status_code == 503
-        assert any("shared secret" in record.getMessage() for record in caplog.records if record.levelno >= logging.ERROR)
+        assert any(
+            "shared secret" in record.getMessage()
+            for record in caplog.records
+            if record.levelno >= logging.ERROR
+        )
 
-    @pytest.mark.parametrize("status, code", [(500, "payment_provider_unavailable"), (429, "payment_provider_unavailable"), (404, "payment_provider_error")])
+    @pytest.mark.parametrize(
+        "status, code",
+        [
+            (500, "payment_provider_unavailable"),
+            (429, "payment_provider_unavailable"),
+            (404, "payment_provider_error"),
+        ],
+    )
     async def test_stripe_failing_the_fetch_defers_without_touching_the_bot(
         self, app_client, stripe_state, bot_billing_state, status, code
     ) -> None:
         subscription = aura_subscription(stripe_state)
         stripe_state.fail_retrieve_status = status
 
-        response = await deliver(app_client, *stripe_state.signed(stripe_state.subscription_event("customer.subscription.created", subscription.id)))
+        response = await deliver(
+            app_client,
+            *stripe_state.signed(
+                stripe_state.subscription_event("customer.subscription.created", subscription.id)
+            ),
+        )
 
         assert response.status_code == 503
         assert response.json() == {"error": code}
@@ -406,10 +470,20 @@ class TestUnavailableCounterparts:
         self, app_client, stripe_state, bot_billing_state
     ) -> None:
         subscription = aura_subscription(stripe_state)
-        await deliver(app_client, *stripe_state.signed(stripe_state.subscription_event("customer.subscription.created", subscription.id)))
+        await deliver(
+            app_client,
+            *stripe_state.signed(
+                stripe_state.subscription_event("customer.subscription.created", subscription.id)
+            ),
+        )
 
         subscription.status = "suspended_by_a_future_api"
-        response = await deliver(app_client, *stripe_state.signed(stripe_state.subscription_event("customer.subscription.updated", subscription.id)))
+        response = await deliver(
+            app_client,
+            *stripe_state.signed(
+                stripe_state.subscription_event("customer.subscription.updated", subscription.id)
+            ),
+        )
 
         assert response.status_code == 503
         assert bot_billing_state.snapshots[subscription.id]["status"] == "active"
@@ -471,7 +545,12 @@ class TestContradictoryEventsAtOnce:
 
         bot_billing_state.before_apply = always_lose
 
-        response = await deliver(app_client, *stripe_state.signed(stripe_state.subscription_event("customer.subscription.updated", subscription.id)))
+        response = await deliver(
+            app_client,
+            *stripe_state.signed(
+                stripe_state.subscription_event("customer.subscription.updated", subscription.id)
+            ),
+        )
 
         assert response.status_code == 503
         assert bot_billing_state.request_log.count("apply") == 3

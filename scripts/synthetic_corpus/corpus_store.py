@@ -13,6 +13,7 @@ embeddings are computed in one batched inference pass and then written, instead
 of one inference call per fact. The bytes written are identical either way --
 same dtype, same `tobytes()`, same column.
 """
+
 from __future__ import annotations
 
 import json
@@ -63,9 +64,7 @@ def read_corpus(path: Path) -> SyntheticCorpus:
 def write_corpus(corpus: SyntheticCorpus, path: Path) -> None:
     """Write a corpus to JSON, creating its directory if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        corpus.model_dump_json(indent=2, exclude_none=False), encoding="utf-8"
-    )
+    path.write_text(corpus.model_dump_json(indent=2, exclude_none=False), encoding="utf-8")
 
 
 async def store_corpus(
@@ -154,9 +153,7 @@ def assert_corpus_matches_database(
     failure instead.
     """
     in_database = set(fact_key_by_id.values())
-    in_corpus = {
-        (guild.key, fact.key) for guild in corpus.guilds for fact in guild.facts
-    }
+    in_corpus = {(guild.key, fact.key) for guild in corpus.guilds for fact in guild.facts}
     missing = in_corpus - in_database
     if missing:
         example = sorted(missing)[:5]

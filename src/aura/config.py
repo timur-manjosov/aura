@@ -1,4 +1,5 @@
 """Application configuration loaded from environment variables and `.env`."""
+
 from __future__ import annotations
 
 from enum import StrEnum
@@ -266,9 +267,7 @@ class Settings(BaseSettings):
     # decided this value is the standing production default rather than a
     # placeholder to revert once real community traffic arrives -- see
     # reports/operational-values-decision.txt.
-    proactive_question_threshold: float = Field(
-        default=-0.22, gt=-2.0, le=2.0, allow_inf_nan=False
-    )
+    proactive_question_threshold: float = Field(default=-0.22, gt=-2.0, le=2.0, allow_inf_nan=False)
 
     # Stage 2: minimum cosine similarity between the message and the best
     # matching fact. Separate from similarity_threshold above, and stricter,
@@ -362,9 +361,7 @@ class Settings(BaseSettings):
     # passed to ProactiveGateConfig any more -- an unused field on the gate's
     # own config would invite exactly the "wait, does this still do something?"
     # question this comment exists to answer.
-    proactive_confidence_gap: float = Field(
-        default=0.05, ge=0.0, le=2.0, allow_inf_nan=False
-    )
+    proactive_confidence_gap: float = Field(default=0.05, ge=0.0, le=2.0, allow_inf_nan=False)
 
     # Per-channel cooldown, in seconds, on becoming eligible for synthesis.
     # 15 minutes caps an active channel at four unsolicited messages an hour
@@ -775,9 +772,7 @@ class Settings(BaseSettings):
     # 0 is valid and means "as fast as discord.py allows", which is a reasonable
     # choice for a one-off run against a small private test server and a poor
     # one anywhere else.
-    backfill_page_pause_seconds: float = Field(
-        default=1.0, ge=0.0, le=60.0, allow_inf_nan=False
-    )
+    backfill_page_pause_seconds: float = Field(default=1.0, ge=0.0, le=60.0, allow_inf_nan=False)
 
     # How often the backfill worker wakes to look for runs when it has nothing
     # to do. NOT how fast a run progresses -- an active run advances batch after
@@ -1098,9 +1093,7 @@ class Settings(BaseSettings):
     # webhook that arrives late cannot restart it. Stripe's own final decision
     # -- canceled or unpaid after its last retry -- ends Pro immediately
     # regardless of this number.
-    billing_payment_grace_days: float = Field(
-        default=7.0, ge=0.0, le=60.0, allow_inf_nan=False
-    )
+    billing_payment_grace_days: float = Field(default=7.0, ge=0.0, le=60.0, allow_inf_nan=False)
 
     # Comma-separated guild IDs that are on Pro without any subscription: the
     # operator's own test servers, or community servers they choose to support.
@@ -1195,10 +1188,13 @@ class Settings(BaseSettings):
         if len(value) < MIN_INTERNAL_API_SECRET_LENGTH:
             raise ValueError(
                 f"INTERNAL_API_SECRET must be at least {MIN_INTERNAL_API_SECRET_LENGTH} "
-                "characters (generate one with `python -c \"import secrets; "
-                "print(secrets.token_urlsafe(48))\"`)."
+                'characters (generate one with `python -c "import secrets; '
+                'print(secrets.token_urlsafe(48))"`).'
             )
-        if not all(character.isascii() and character.isprintable() and not character.isspace() for character in value):
+        if not all(
+            character.isascii() and character.isprintable() and not character.isspace()
+            for character in value
+        ):
             raise ValueError(
                 "INTERNAL_API_SECRET may contain only printable ASCII characters without spaces."
             )
@@ -1234,7 +1230,11 @@ class Settings(BaseSettings):
             entry = raw_entry.strip()
             if not entry:
                 continue
-            if not (entry.isascii() and entry.isdigit()) or int(entry) <= 0 or int(entry) > MAX_SQLITE_INTEGER:
+            if (
+                not (entry.isascii() and entry.isdigit())
+                or int(entry) <= 0
+                or int(entry) > MAX_SQLITE_INTEGER
+            ):
                 raise ValueError(
                     f"BILLING_COMPLIMENTARY_GUILD_IDS contains {entry!r}, which is not a Discord guild ID."
                 )
@@ -1269,7 +1269,15 @@ class Settings(BaseSettings):
 
     @property
     def complimentary_guild_ids(self) -> frozenset[int]:
-        """The operator's complimentary Pro guilds, parsed from the validated setting."""
+        """Return the operator's complimentary Pro guilds.
+
+        Returns
+        -------
+        frozenset[int]
+            Guild IDs parsed from the validated comma-separated setting; empty when
+            none are configured. Validation has already happened on the field, so
+            the parse cannot fail here.
+        """
         if not self.billing_complimentary_guild_ids:
             return frozenset()
         return frozenset(int(entry) for entry in self.billing_complimentary_guild_ids.split(","))
@@ -1277,28 +1285,39 @@ class Settings(BaseSettings):
     def resolve_model(self, component: ModelComponent) -> str | None:
         """Resolve the model a given LLM-calling component should use.
 
-        The single seam every component resolves its model through -- there is
-        one convention in the codebase, not two. Today it just reads the
-        component's configured value from the environment, but it is the one
-        place a future subscription-tier (Free/Pro) lookup would hook in, so no
-        call site changes when that arrives (the same "new provider -> zero
-        code changes" principle from CLAUDE.md's Scalability section, applied
-        per task).
+        Parameters
+        ----------
+        component
+            Which of the distinct LLM-calling tasks is asking.
+
+        Returns
+        -------
+        str or None
+            The configured model string, or None when this component has none and
+            no fallback applies.
+
+        Notes
+        -----
+        The single seam every component resolves its model through -- there is one
+        convention in the codebase, not two. Today it reads the component's
+        configured value from the environment, but it is the one place a future
+        subscription-tier lookup would hook in, so no call site changes when that
+        arrives (the same "new provider -> zero code changes" principle from
+        CLAUDE.md's Scalability section, applied per task).
 
         PROACTIVE, EXTRACTION, SUPERSESSION and VARIANT all fall back to the
         synthesis model when their own is unset: each has its own config value
-        (CLAUDE.md forbids assuming one model fits every task) but none is
-        assumed to differ from synthesis by default, so a deployment that
-        configures a single model still has every call site working rather
-        than some that silently never run.
+        (CLAUDE.md forbids assuming one model fits every task) but none is assumed to
+        differ from synthesis by default, so a deployment that configures a single
+        model still has every call site working rather than some that silently never
+        run.
 
-        VARIANT_AUDIT and GROUNDING_CHECK are the two deliberate exceptions to
-        that convention: neither has a fallback at all, because falling back to
-        synthesis_model would silently collapse an "independent" check onto the
-        very model it is supposed to be independent of -- for VARIANT_AUDIT the
-        generator it audits, for GROUNDING_CHECK the synthesis model whose
-        finished answer it checks. See each field's own comment for the full
-        reasoning.
+        VARIANT_AUDIT and GROUNDING_CHECK are the two deliberate exceptions: neither
+        has a fallback at all, because falling back to `synthesis_model` would
+        silently collapse an "independent" check onto the very model it is supposed
+        to be independent of -- for VARIANT_AUDIT the generator it audits, for
+        GROUNDING_CHECK the synthesis model whose finished answer it checks. See each
+        field's own comment for the full reasoning.
         """
         match component:
             case ModelComponent.SYNTHESIS:
@@ -1317,24 +1336,52 @@ class Settings(BaseSettings):
                 return self.grounding_check_model
 
     def is_llm_configured(self, component: ModelComponent) -> bool:
-        """Whether enough is present to actually call the LLM for component.
+        """Report whether enough is present to actually call the LLM for a component.
 
-        The one place this gets decided, so it's never re-implemented or
-        second-guessed at each call site (see /aura-ask and the proactive
-        responder) -- a model string with no key, or a key with no model
-        string, both count as "not configured", for whichever component's model
-        resolve_model returns.
+        Parameters
+        ----------
+        component
+            Which of the distinct LLM-calling tasks is asking.
+
+        Returns
+        -------
+        bool
+            True only when BOTH an API key and a resolved model string are present.
+            A model with no key, or a key with no model, each count as "not
+            configured".
+
+        Notes
+        -----
+        The one place this gets decided, so it is never re-implemented or
+        second-guessed at each call site (see /aura-ask and the proactive responder).
         """
         return bool(self.llm_api_key and self.resolve_model(component))
 
 
 def load_settings() -> Settings:
-    """Load and validate settings, raising ConfigurationError on failure.
+    """Load and validate settings from the environment.
 
-    This is the entry point production code (main.py) should use. It
-    translates pydantic's ValidationError into a single plain-text message
-    so a misconfigured deployment fails immediately with a readable cause
-    instead of a traceback surfacing three layers down inside discord.py.
+    Returns
+    -------
+    Settings
+        A fully validated configuration.
+
+    Raises
+    ------
+    ConfigurationError
+        On any validation failure, carrying a single plain-text message rather
+        than pydantic's structured error.
+
+    Notes
+    -----
+    The entry point production code (main.py) should use. It translates
+    pydantic's ValidationError into one readable message so a misconfigured
+    deployment fails immediately with a stated cause instead of a traceback
+    surfacing three layers down inside discord.py.
+
+    The raw values -- DISCORD_TOKEN, LLM_API_KEY, INTERNAL_API_SECRET -- are
+    never included in that message; `include_input=False` keeps them out of the
+    loop that builds it.
     """
     try:
         return Settings()

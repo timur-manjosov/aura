@@ -7,11 +7,12 @@ tested against a real SQLite database rather than described:
     revocation, no version bump;
   * a stale write never overwrites a newer one, however the writes interleave.
 """
+
 from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,7 +30,7 @@ from aura.db.subscriptions import (
     load_subscription_records,
 )
 
-NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
 GUILD_A = 100000000000000001
 GUILD_B = 200000000000000002
 
@@ -73,7 +74,9 @@ async def apply(conn, *, expected: int, event: str | None = "evt_1", **overrides
 
 
 class TestFirstWrite:
-    async def test_the_first_snapshot_names_version_zero_and_becomes_version_one(self, conn) -> None:
+    async def test_the_first_snapshot_names_version_zero_and_becomes_version_one(
+        self, conn
+    ) -> None:
         result = await apply(conn, expected=0)
 
         assert result.outcome is ApplyOutcome.APPLIED
@@ -88,8 +91,15 @@ class TestFirstWrite:
     async def test_every_field_round_trips(self, conn) -> None:
         cancel_at = NOW + timedelta(days=5)
         await apply(
-            conn, expected=0, purchaser_user_id=None, cancel_at=cancel_at, cancel_at_period_end=True,
-            collection_paused=True, latest_invoice_status=None, status=SubscriptionStatus.PAST_DUE, livemode=True,
+            conn,
+            expected=0,
+            purchaser_user_id=None,
+            cancel_at=cancel_at,
+            cancel_at_period_end=True,
+            collection_paused=True,
+            latest_invoice_status=None,
+            status=SubscriptionStatus.PAST_DUE,
+            livemode=True,
         )
 
         (stored,) = await load_subscription_records(conn)
@@ -119,8 +129,10 @@ class TestIdempotency:
         assert stored.status is SubscriptionStatus.ACTIVE
         assert await count_processed_events(conn) == 1
 
-    async def test_a_duplicate_is_reported_as_a_duplicate_even_when_its_version_is_stale(self, conn) -> None:
-        """"Already applied" tells the caller to stop; a conflict would tell it to retry forever."""
+    async def test_a_duplicate_is_reported_as_a_duplicate_even_when_its_version_is_stale(
+        self, conn
+    ) -> None:
+        """An already-applied event tells the caller to stop, not to retry forever."""
         await apply(conn, expected=0)
         await apply(conn, expected=1, event="evt_2")
 
@@ -168,7 +180,9 @@ class TestCompareAndSwap:
         (stored,) = await load_subscription_records(conn)
         assert stored.status is SubscriptionStatus.CANCELED
         # The losing event is NOT marked processed, so its retry re-fetches.
-        assert (await get_sync_state(conn, subscription_id="sub_A", event_id="evt_a")).event_processed is False
+        assert (
+            await get_sync_state(conn, subscription_id="sub_A", event_id="evt_a")
+        ).event_processed is False
 
     async def test_ten_concurrent_writers_on_one_version_yield_one_winner(self, conn) -> None:
         results = await asyncio.gather(
@@ -217,7 +231,9 @@ class TestAtomicity:
 
 
 class TestGuildBinding:
-    async def test_moving_a_subscription_to_another_guild_reports_where_it_came_from(self, conn) -> None:
+    async def test_moving_a_subscription_to_another_guild_reports_where_it_came_from(
+        self, conn
+    ) -> None:
         await apply(conn, expected=0)
 
         moved = await apply(conn, expected=1, event="evt_2", guild_id=GUILD_B)
@@ -236,13 +252,22 @@ class TestRefusedInput:
     async def test_an_event_id_without_a_type_is_refused(self, conn) -> None:
         with pytest.raises(ValueError):
             await apply_subscription_snapshot(
-                conn, snapshot=snapshot(), event_id="evt_1", event_type=None, expected_version=0, now=NOW
+                conn,
+                snapshot=snapshot(),
+                event_id="evt_1",
+                event_type=None,
+                expected_version=0,
+                now=NOW,
             )
 
     async def test_a_naive_now_is_refused(self, conn) -> None:
         with pytest.raises(ValueError):
             await apply_subscription_snapshot(
-                conn, snapshot=snapshot(), event_id=None, event_type=None, expected_version=0,
+                conn,
+                snapshot=snapshot(),
+                event_id=None,
+                event_type=None,
+                expected_version=0,
                 now=datetime(2026, 9, 13),
             )
 

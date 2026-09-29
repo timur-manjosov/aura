@@ -13,6 +13,7 @@ parameterised "feature name" threaded through a class that exists to resolve
 one channel ID -- more machinery than either caller needs. Duplicating this
 much, once, is the cheaper and clearer trade.
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,7 +28,19 @@ class OnboardingGateway(Protocol):
     """Resolves onboarding's target channel. Implemented against the real client below."""
 
     async def resolve_channel(self, channel_id: int) -> discord.TextChannel | None:
-        """Return the text channel to post into, or None if it cannot be used."""
+        """Return the text channel to post into, or None if it cannot be used.
+
+        Parameters
+        ----------
+        channel_id
+            The stored channel ID configured for this guild.
+
+        Returns
+        -------
+        discord.TextChannel or None
+            The channel to post into, or None when it cannot be used. None is an
+            ordinary outcome here, not an error: it means "no onboarding message this time".
+        """
         ...
 
 
@@ -44,8 +57,22 @@ class ClientOnboardingGateway:
         self._client = client
 
     async def resolve_channel(self, channel_id: int) -> discord.TextChannel | None:
-        """Return channel_id as a postable text channel, or None with a logged reason.
+        """Return a channel ID as a postable text channel, or None with a logged reason.
 
+        Parameters
+        ----------
+        channel_id
+            The stored channel ID configured for this guild.
+
+        Returns
+        -------
+        discord.TextChannel or None
+            The resolved channel, from the client cache when possible and over HTTP
+            otherwise; None when it was deleted, made inaccessible, or is no longer
+            a text channel, each logged with its reason and fixable with /aura-onboarding.
+
+        Notes
+        -----
         Returns None rather than raising for every way this can fail: a
         moderator can delete the onboarding channel, revoke Aura's access to
         it, or convert it into a type Aura cannot post an embed into, and all
@@ -57,9 +84,7 @@ class ClientOnboardingGateway:
             try:
                 channel = await self._client.fetch_channel(channel_id)
             except discord.HTTPException as exc:
-                logger.warning(
-                    "Onboarding channel %s could not be fetched: %s", channel_id, exc
-                )
+                logger.warning("Onboarding channel %s could not be fetched: %s", channel_id, exc)
                 return None
 
         if not isinstance(channel, discord.TextChannel):

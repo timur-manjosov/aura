@@ -15,6 +15,7 @@ browser carries the victim's state cookie, which will not match. Half 2 alone
 would be no better, since a cookie the attacker sets is a cookie the attacker
 knows. Both, or neither.
 """
+
 from __future__ import annotations
 
 import logging
@@ -118,7 +119,19 @@ def _clear_cookie(response: Response, *, name: str, context: ServiceContext) -> 
 
 @router.get("/login")
 async def login(context: ServiceContext = Depends(get_context)) -> Response:
-    """Begin a login: mint a state, bind it to this browser, redirect to Discord."""
+    """Begin a login: mint a state, bind it to this browser, redirect to Discord.
+
+    Parameters
+    ----------
+    context
+        The shared context: settings, stores and clients.
+
+    Returns
+    -------
+    Response
+        A 307 redirect to Discord's authorization page, with a freshly minted
+        state bound to this browser as a cookie.
+    """
     state = context.oauth_states.issue()
 
     response = RedirectResponse(
@@ -153,6 +166,21 @@ async def login(context: ServiceContext = Depends(get_context)) -> Response:
 async def callback(request: Request, context: ServiceContext = Depends(get_context)) -> Response:
     """Finish a login: verify the state both ways, exchange the code, open a session.
 
+    Parameters
+    ----------
+    request
+        The incoming request.
+    context
+        The shared context: settings, stores and clients.
+
+    Returns
+    -------
+    Response
+        A 303 redirect to the post-login URL with a session cookie set, or a
+        JSON error body. Either way the spent state cookie is cleared.
+
+    Notes
+    -----
     Every rejection returns a status code and an error code rather than
     redirecting to the frontend. A refused callback is a security event, and
     bouncing the browser onward would make it look like an ordinary
@@ -194,9 +222,7 @@ async def callback(request: Request, context: ServiceContext = Depends(get_conte
 
     code = _exactly_one_query_param(request, "code")
     if not code:
-        logger.warning(
-            "Rejected an OAuth callback with a valid state but no single usable code"
-        )
+        logger.warning("Rejected an OAuth callback with a valid state but no single usable code")
         response = error_response(ErrorCode.OAUTH_FAILED, status_code=400)
         _clear_cookie(response, name=settings.oauth_state_cookie_name, context=context)
         return response
@@ -218,9 +244,9 @@ async def callback(request: Request, context: ServiceContext = Depends(get_conte
     session_token = context.sessions.create(user, tokens)
     logger.info("Opened a session for Discord user %s", user.id)
 
-    response = RedirectResponse(url=settings.post_login_redirect_url, status_code=303)
+    redirect = RedirectResponse(url=settings.post_login_redirect_url, status_code=303)
     _set_cookie(
-        response,
+        redirect,
         name=settings.session_cookie_name,
         value=session_token,
         max_age=session_cookie_max_age(settings),
@@ -228,14 +254,30 @@ async def callback(request: Request, context: ServiceContext = Depends(get_conte
     )
     # The state cookie has done its single job; leaving it would keep a spent
     # secret in the browser for its full TTL.
-    _clear_cookie(response, name=settings.oauth_state_cookie_name, context=context)
-    return response
+    _clear_cookie(redirect, name=settings.oauth_state_cookie_name, context=context)
+    return redirect
 
 
 @router.post("/logout")
 async def logout(request: Request, context: ServiceContext = Depends(get_context)) -> Response:
     """End the session, clear the cookie, and ask Discord to revoke the token.
 
+    Parameters
+    ----------
+    request
+        The incoming request.
+    context
+        The shared context: settings, stores and clients.
+
+    Returns
+    -------
+    Response
+        Always 204, whether or not a session existed -- an endpoint that
+        answered differently would be a free oracle for testing stolen
+        cookies.
+
+    Notes
+    -----
     POST rather than GET, so a cross-site image or link cannot log a user out;
     combined with SameSite the cookie would not travel on such a request
     anyway, which is belt and braces rather than redundancy -- the two protect

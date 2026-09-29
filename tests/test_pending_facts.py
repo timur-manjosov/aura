@@ -10,6 +10,7 @@ the same standard tests/test_repository.py holds supersession to.
 A real database throughout, never a live gateway connection, per CLAUDE.md's
 testing philosophy.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -364,9 +365,7 @@ class TestResolutionRaces:
         )
 
         assert len([r for r in results if not isinstance(r, BaseException)]) == 1
-        assert (
-            len([r for r in results if isinstance(r, PendingFactAlreadyResolvedError)]) == 4
-        )
+        assert len([r for r in results if isinstance(r, PendingFactAlreadyResolvedError)]) == 4
         assert len(await get_active_facts(conn, GUILD_A)) == 1
 
     async def test_a_concurrent_confirm_and_discard_leave_one_definite_outcome(
@@ -419,9 +418,7 @@ class TestResolutionRaces:
 
 
 class TestReviewQueueOrder:
-    async def test_candidates_come_back_oldest_first(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_candidates_come_back_oldest_first(self, conn: aiosqlite.Connection) -> None:
         # A work queue reviewed newest-first would let the oldest candidate sit
         # at the bottom forever while newer ones keep landing on top of it.
         first = await _stage(conn, message_id=1, content="First.")
@@ -525,9 +522,7 @@ class TestRelationshipJudgement:
         assert staged is not None
         return existing, staged
 
-    async def test_a_fresh_candidate_has_no_judgement(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_fresh_candidate_has_no_judgement(self, conn: aiosqlite.Connection) -> None:
         # NULL means "never judged", and it is an ordinary state: no dedup hit,
         # the cap refused the call, or the call failed.
         staged = await _stage(conn)
@@ -695,9 +690,7 @@ class TestSchemaMigration:
         async with conn.execute("PRAGMA table_info(pending_facts)") as cursor:
             return {row[1] for row in await cursor.fetchall()}
 
-    async def test_an_older_table_is_migrated_in_place(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_an_older_table_is_migrated_in_place(self, conn: aiosqlite.Connection) -> None:
         await self._phase_3a2_table(conn)
         assert "relationship" not in await self._columns(conn)
 
@@ -783,9 +776,7 @@ class TestSchemaMigration:
             ),
         )
         with pytest.raises(aiosqlite.IntegrityError):
-            await conn.execute(
-                "UPDATE pending_facts SET relationship = 'whatever' WHERE id = 1"
-            )
+            await conn.execute("UPDATE pending_facts SET relationship = 'whatever' WHERE id = 1")
 
 
 class TestMilestoneFactIds:
@@ -799,9 +790,7 @@ class TestMilestoneFactIds:
     candidate behind it must be absent from the result.
     """
 
-    async def test_a_confirmed_milestone_is_reported(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_confirmed_milestone_is_reported(self, conn: aiosqlite.Connection) -> None:
         candidate = await _stage(conn, category=FactCategory.MILESTONE)
         assert candidate is not None
         fact = await confirm_pending_fact(
@@ -872,9 +861,7 @@ class TestMilestoneFactIds:
         assert await get_milestone_fact_ids(conn, guild_id=GUILD_A) == set()
         assert len(await get_milestone_fact_ids(conn, guild_id=GUILD_B)) == 1
 
-    async def test_several_milestones_all_come_back(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_several_milestones_all_come_back(self, conn: aiosqlite.Connection) -> None:
         expected = set()
         for message_id in range(3):
             candidate = await _stage(
@@ -910,9 +897,7 @@ class TestStagedMessageIds:
     async def test_it_reports_a_pending_candidates_message(self, conn) -> None:
         await _stage(conn, message_id=1)
 
-        assert await staged_message_ids(
-            conn, channel_id=CHANNEL, message_ids=[1, 2]
-        ) == {1}
+        assert await staged_message_ids(conn, channel_id=CHANNEL, message_ids=[1, 2]) == {1}
 
     @pytest.mark.parametrize("resolution", ["confirm", "discard"])
     async def test_a_resolved_candidate_is_still_reported(self, conn, resolution) -> None:
@@ -932,9 +917,7 @@ class TestStagedMessageIds:
 
     async def test_a_message_that_produced_no_candidate_is_not_reported(self, conn) -> None:
         """The common case: most chat is not fact-worthy, and re-scanning it is free."""
-        assert await staged_message_ids(
-            conn, channel_id=CHANNEL, message_ids=[1, 2, 3]
-        ) == set()
+        assert await staged_message_ids(conn, channel_id=CHANNEL, message_ids=[1, 2, 3]) == set()
 
     async def test_one_message_with_two_candidates_is_reported_once(self, conn) -> None:
         await _stage(conn, message_id=1, content="The server closes at 14:00.")
@@ -946,9 +929,7 @@ class TestStagedMessageIds:
         await _stage(conn, message_id=1, channel_id=CHANNEL)
         await _stage(conn, message_id=2, channel_id=CHANNEL_B)
 
-        assert await staged_message_ids(
-            conn, channel_id=CHANNEL, message_ids=[1, 2]
-        ) == {1}
+        assert await staged_message_ids(conn, channel_id=CHANNEL, message_ids=[1, 2]) == {1}
 
     async def test_an_empty_request_returns_nothing(self, conn) -> None:
         await _stage(conn, message_id=1)

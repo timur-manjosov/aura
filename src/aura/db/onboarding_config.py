@@ -21,6 +21,7 @@ aura.db.repository, for the same isolation reason its siblings give: a
 configuration switch is none of the four things CLAUDE.md admits into the
 knowledge model.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -35,7 +36,20 @@ _CONFIG_COLUMNS = "guild_id, channel_id, onboarding_enabled, updated_by_id, upda
 
 
 class OnboardingConfig(BaseModel):
-    """One guild's onboarding settings, as read back from the database."""
+    """One guild's onboarding settings, as read back from the database.
+
+    Attributes
+    ----------
+    guild_id
+        The guild these settings belong to. The table's primary key.
+    channel_id
+        Where a new member's summary is posted.
+    onboarding_enabled
+        Whether the trigger runs at all. A disabled row is still a row; see
+        `get_onboarding_config`.
+    updated_by_id, updated_at
+        Who last changed these settings, and when.
+    """
 
     guild_id: int
     channel_id: int
@@ -64,9 +78,28 @@ async def set_onboarding_config(
 ) -> None:
     """Write one guild's onboarding settings, recording who changed them.
 
-    An upsert keyed on guild_id, the same shape digest_config uses:
-    reconfiguring the same guild repeatedly leaves exactly one row, always
-    reflecting the most recent decision.
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to configure.
+    channel_id
+        Where onboarding summaries should be posted.
+    enabled
+        Whether the trigger runs.
+    updated_by_id
+        The moderator making the change.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Idempotent per guild. An upsert keyed on guild_id, the same shape
+    digest_config uses: reconfiguring the same guild repeatedly leaves exactly
+    one row, always reflecting the most recent decision.
     """
     now = utc_now_iso()
     async with connection_lock(conn):
@@ -89,8 +122,23 @@ async def set_onboarding_config(
 async def get_onboarding_config(
     conn: aiosqlite.Connection, *, guild_id: int
 ) -> OnboardingConfig | None:
-    """Return one guild's onboarding settings, or None if it has never configured any.
+    """Return one guild's onboarding settings, or None if never configured.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+
+    Returns
+    -------
+    OnboardingConfig or None
+        The stored settings, enabled or not; None only when the guild has no
+        row at all.
+
+    Notes
+    -----
     Returns a disabled row as a row, not as None: the slash command needs to
     tell "never set up" (where it must ask for a channel) apart from "set up
     and switched off" (where the previous channel is still the sensible thing

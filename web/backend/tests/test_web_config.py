@@ -5,6 +5,7 @@ startup -- it fails on every login, hours later, as a Discord error page
 nobody can trace back to a missing environment variable. Each of these turns
 one of those into a refusal at construction.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -162,7 +163,9 @@ class TestStripeSettings:
         assert settings.stripe_live_mode is False
 
     @pytest.mark.parametrize("key", ["sk_live_realMoney123", "rk_live_realMoney123"])
-    def test_a_live_key_is_refused_unless_live_mode_is_switched_on_deliberately(self, key: str) -> None:
+    def test_a_live_key_is_refused_unless_live_mode_is_switched_on_deliberately(
+        self, key: str
+    ) -> None:
         with pytest.raises(ValidationError) as raised:
             WebSettings(_env_file=None, **(dict(VALID) | {"stripe_secret_key": key}))
 
@@ -175,7 +178,9 @@ class TestStripeSettings:
             assert secret not in repr(raised.value)
             assert secret not in repr(raised.value.errors(include_input=False))
 
-    def test_the_startup_path_refuses_a_live_key_without_logging_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_the_startup_path_refuses_a_live_key_without_logging_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         for name, value in (VALID | {"stripe_secret_key": "sk_live_neverLogThis"}).items():
             monkeypatch.setenv(f"AURA_WEB_{name.upper()}", value)
         monkeypatch.chdir("/")
@@ -189,13 +194,23 @@ class TestStripeSettings:
 
     def test_a_live_key_with_the_explicit_flag_is_live_mode(self) -> None:
         settings = WebSettings(
-            _env_file=None, **(dict(VALID) | {"stripe_secret_key": "sk_live_x", "stripe_allow_live_mode": True})
+            _env_file=None,
+            **(dict(VALID) | {"stripe_secret_key": "sk_live_x", "stripe_allow_live_mode": True}),
         )
 
         assert settings.stripe_live_mode is True
 
     @pytest.mark.parametrize(
-        "key", ["pk_test_publishable", "sk_abc", "whsec_abc", "sk_test_has space", 'sk_test_"quoted"', "sk_test_new\nline", "sk_test_" + "a" * 300]
+        "key",
+        [
+            "pk_test_publishable",
+            "sk_abc",
+            "whsec_abc",
+            "sk_test_has space",
+            'sk_test_"quoted"',
+            "sk_test_new\nline",
+            "sk_test_" + "a" * 300,
+        ],
     )
     def test_anything_that_is_not_a_secret_or_restricted_key_is_refused(self, key: str) -> None:
         with pytest.raises(ValidationError) as raised:
@@ -208,24 +223,46 @@ class TestStripeSettings:
         with pytest.raises(ValidationError):
             WebSettings(_env_file=None, **(dict(VALID) | {"stripe_webhook_secret": secret}))
 
-    @pytest.mark.parametrize("price", ["prod_abc", "price_", "price_abc&mode=payment", "12", "price"])
+    @pytest.mark.parametrize(
+        "price", ["prod_abc", "price_", "price_abc&mode=payment", "12", "price"]
+    )
     def test_the_price_must_be_a_price_id(self, price: str) -> None:
         with pytest.raises(ValidationError):
             WebSettings(_env_file=None, **(dict(VALID) | {"stripe_price_id": price}))
 
-    @pytest.mark.parametrize("field", ["checkout_success_url", "checkout_cancel_url", "billing_portal_return_url", "stripe_api_base", "bot_internal_api_url"])
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "checkout_success_url",
+            "checkout_cancel_url",
+            "billing_portal_return_url",
+            "stripe_api_base",
+            "bot_internal_api_url",
+        ],
+    )
     @pytest.mark.parametrize("url", ["/relative", "javascript:alert(1)", "ftp://x/y"])
     def test_every_billing_url_must_be_absolute(self, field: str, url: str) -> None:
         with pytest.raises(ValidationError):
             WebSettings(_env_file=None, **(dict(VALID) | {field: url}))
 
-    @pytest.mark.parametrize("secret", ["short", "x" * 31, "has a space in it and is long enough 0000", "unicodé-secret-that-is-long-enough-0000000"])
+    @pytest.mark.parametrize(
+        "secret",
+        [
+            "short",
+            "x" * 31,
+            "has a space in it and is long enough 0000",
+            "unicodé-secret-that-is-long-enough-0000000",
+        ],
+    )
     def test_the_internal_api_secret_must_be_long_and_header_safe(self, secret: str) -> None:
         with pytest.raises(ValidationError):
             WebSettings(_env_file=None, **(dict(VALID) | {"bot_internal_api_secret": secret}))
 
     def test_the_frontend_origin_is_derived_from_the_post_login_url(self) -> None:
-        settings = WebSettings(_env_file=None, **(dict(VALID) | {"post_login_redirect_url": "https://Aura.Example:8443/app/"}))
+        settings = WebSettings(
+            _env_file=None,
+            **(dict(VALID) | {"post_login_redirect_url": "https://Aura.Example:8443/app/"}),
+        )
 
         assert settings.frontend_origin == "https://aura.example:8443"
 

@@ -11,6 +11,7 @@ TestConcurrency's docstring for why that race class applies here too.
 A real in-memory database throughout, never a live gateway connection, per
 CLAUDE.md's testing philosophy.
 """
+
 from __future__ import annotations
 
 import asyncio

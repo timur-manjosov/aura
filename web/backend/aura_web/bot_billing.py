@@ -11,6 +11,7 @@ Every failure -- unreachable, a 5xx, a refused secret, a body that makes no
 sense -- is one exception type. The callers' answer is the same in each case:
 do not act on billing state this service could not establish.
 """
+
 from __future__ import annotations
 
 import logging
@@ -94,7 +95,9 @@ def _parse_plan(raw: object) -> GuildPlanView:
         raise BotBillingError("a plan in the bot's answer was not an object")
     tier, basis, standing = raw.get("tier"), raw.get("basis"), raw.get("standing")
     if tier not in _KNOWN_TIERS or basis not in _KNOWN_BASES or standing not in _KNOWN_STANDINGS:
-        raise BotBillingError("a plan in the bot's answer has an unrecognised tier, basis or standing")
+        raise BotBillingError(
+            "a plan in the bot's answer has an unrecognised tier, basis or standing"
+        )
     count = _strict_int(raw.get("in_force_subscription_count"))
     if count is None or count < 0:
         raise BotBillingError("a plan in the bot's answer has no usable subscription count")
@@ -112,7 +115,11 @@ def _parse_plan(raw: object) -> GuildPlanView:
         if not isinstance(entry, dict):
             raise BotBillingError("a subscription in the bot's answer was not an object")
         subscription_id, customer_id = entry.get("subscription_id"), entry.get("customer_id")
-        purchaser, status, grants = entry.get("purchaser_user_id"), entry.get("status"), entry.get("grants_access")
+        purchaser, status, grants = (
+            entry.get("purchaser_user_id"),
+            entry.get("status"),
+            entry.get("grants_access"),
+        )
         if (
             not isinstance(subscription_id, str)
             or not isinstance(customer_id, str)
@@ -121,7 +128,9 @@ def _parse_plan(raw: object) -> GuildPlanView:
             or not isinstance(grants, bool)
         ):
             raise BotBillingError("a subscription in the bot's answer is malformed")
-        subscriptions.append(SubscriptionView(subscription_id, customer_id, purchaser, status, grants))
+        subscriptions.append(
+            SubscriptionView(subscription_id, customer_id, purchaser, status, grants)
+        )
     return GuildPlanView(
         tier=tier,
         basis=basis,
@@ -142,7 +151,27 @@ class BotBillingClient:
         self._secret = secret
 
     async def get_sync_state(self, *, subscription_id: str, event_id: str | None) -> SyncState:
-        """Ask whether an event was applied and which version of the subscription is stored."""
+        """Ask whether an event was applied and which version of the subscription is stored.
+
+        Parameters
+        ----------
+        subscription_id
+            Stripe's subscription identifier.
+        event_id
+            The event about to be processed, or None for a reconciliation read.
+
+        Returns
+        -------
+        SyncState
+            Whether that event was already applied, and the version the bot has
+            stored.
+
+        Raises
+        ------
+        BotBillingError
+            For a transport failure, a rejected shared secret, or a body the bot's
+            internal API returned in an unexpected shape.
+        """
         body = await self._post(
             "/subscriptions/sync-state",
             {"subscription_id": subscription_id, "event_id": event_id},
@@ -162,7 +191,30 @@ class BotBillingClient:
         expected_version: int,
         snapshot: SubscriptionSnapshot,
     ) -> ApplyResult:
-        """Hand the bot one snapshot, to be stored only if the version is still expected_version."""
+        """Hand the bot one snapshot, to be stored only if the version is still expected_version.
+
+        Parameters
+        ----------
+        event_id, event_type
+            The Stripe event driving this write, or None for reconciliation.
+        expected_version
+            The version read before fetching from Stripe. The bot stores the
+            snapshot only if its stored version still matches.
+        snapshot
+            What Stripe says about the subscription.
+
+        Returns
+        -------
+        ApplyResult
+            Applied, duplicate, or version conflict -- the bot's own verdict,
+            relayed unchanged.
+
+        Raises
+        ------
+        BotBillingError
+            For a transport failure, a rejected shared secret, or a body the bot's
+            internal API returned in an unexpected shape.
+        """
         body = await self._post(
             "/subscriptions/apply",
             {
@@ -175,18 +227,41 @@ class BotBillingClient:
         )
         outcome = body.get("outcome")
         version = _strict_int(body.get("version"))
-        if outcome not in {member.value for member in ApplyOutcome} or version is None or version < 0:
+        if (
+            outcome not in {member.value for member in ApplyOutcome}
+            or version is None
+            or version < 0
+        ):
             raise BotBillingError("the bot's apply answer is malformed")
         return ApplyResult(outcome=ApplyOutcome(outcome), version=version)
 
     async def get_guild_plans(self, guild_ids: list[str]) -> dict[str, GuildPlanView]:
-        """Plans for the given guilds (at most 200), keyed by guild ID."""
+        """Plans for the given guilds (at most 200), keyed by guild ID.
+
+        Parameters
+        ----------
+        guild_ids
+            The guilds to ask about. At most 200, which is the bot's own limit.
+
+        Returns
+        -------
+        dict[str, GuildPlanView]
+            One entry per requested guild, keyed by guild ID.
+
+        Raises
+        ------
+        BotBillingError
+            For a transport failure, a rejected shared secret, or a body the bot's
+            internal API returned in an unexpected shape.
+        """
         if not guild_ids:
             return {}
         body = await self._post("/guilds/plans", {"guild_ids": guild_ids}, accepted_statuses=(200,))
         raw_plans = body.get("plans")
         if not isinstance(raw_plans, dict) or set(raw_plans) != set(guild_ids):
-            raise BotBillingError("the bot's plan answer does not cover exactly the guilds asked about")
+            raise BotBillingError(
+                "the bot's plan answer does not cover exactly the guilds asked about"
+            )
         return {guild_id: _parse_plan(raw_plans[guild_id]) for guild_id in guild_ids}
 
     async def _post(
@@ -199,7 +274,9 @@ class BotBillingClient:
                 headers={"Authorization": f"Bearer {self._secret}"},
             )
         except httpx.HTTPError as exc:
-            raise BotBillingError(f"Could not reach the bot's billing API ({type(exc).__name__})") from exc
+            raise BotBillingError(
+                f"Could not reach the bot's billing API ({type(exc).__name__})"
+            ) from exc
 
         if response.status_code == 401:
             # Not an outage: the two services disagree about the shared secret.

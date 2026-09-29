@@ -29,6 +29,7 @@ The filtering half is a pure predicate (should_classify) rather than inline
 conditions, so every exclusion is independently testable without a Discord
 connection, per CLAUDE.md's testing principle.
 """
+
 from __future__ import annotations
 
 import logging
@@ -59,9 +60,7 @@ logger = logging.getLogger(__name__)
 # Everything else Discord sends through this event is text Discord itself
 # wrote -- join notices, pin notifications, boost announcements, thread
 # creation, call updates -- not a member asking anything.
-_CLASSIFIABLE_MESSAGE_TYPES = frozenset(
-    {discord.MessageType.default, discord.MessageType.reply}
-)
+_CLASSIFIABLE_MESSAGE_TYPES = frozenset({discord.MessageType.default, discord.MessageType.reply})
 
 # Unicode general categories that render as nothing. Cf is the one that
 # matters in practice (zero-width space/joiner, bidi marks, BOM); Cc and the
@@ -98,11 +97,23 @@ def _has_visible_content(content: str) -> bool:
 
 
 def should_classify(message: discord.Message) -> bool:
-    """Whether message is human-written guild text worth scoring at all.
+    """Report whether a message is human-written guild text worth scoring.
 
-    Pure and side-effect free, and deliberately independent of any client
-    state: each exclusion below is a rule about the message itself, so each
-    can be verified on its own.
+    Parameters
+    ----------
+    message
+        The incoming Discord message.
+
+    Returns
+    -------
+    bool
+        True only for guild text written by a human that carries at least one
+        visible character. Every exclusion is a rule about the message itself.
+
+    Notes
+    -----
+    Pure and side-effect free, and deliberately independent of any client state,
+    so each exclusion can be verified on its own.
     """
     if message.guild is None:
         # A DM. Proactive relief is a server-scoped idea -- there is no
@@ -160,6 +171,31 @@ async def handle_message(
 ) -> None:
     """Run message through the full proactive pipeline, recording and (if confident) answering.
 
+    Parameters
+    ----------
+    message
+        The incoming Discord message.
+    db
+        Open database connection.
+    detector
+        The question detector, built once at startup.
+    model
+        The loaded embedding model.
+    config
+        The gate's thresholds.
+    settings
+        Loaded configuration.
+    grace_registry
+        Tracks the in-flight grace period for each channel.
+    plan_gate
+        Decides whether each guild may use this Pro trigger.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Catches every exception on purpose, and catches it around the filtering
     and the channel-enabled gate as well as the evaluation and the response.
     This runs on every message in every channel Aura can see, so one malformed
@@ -268,9 +304,7 @@ async def handle_message(
             if outcome.posted:
                 logger.info("Aura posted a proactive answer to message %s", _log_reference(message))
     except Exception:
-        logger.exception(
-            "Proactive pipeline failed for message %s", _log_reference(message)
-        )
+        logger.exception("Proactive pipeline failed for message %s", _log_reference(message))
 
 
 async def _wait_then_respond(

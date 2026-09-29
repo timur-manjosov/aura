@@ -1,0 +1,140 @@
+[project]
+name = "aura-bot"
+description = "A Discord bot that maintains a continuously distilled knowledge model of a server."
+requires-python = ">=3.12"
+dynamic = ["version", "dependencies"]
+
+# Aura is run from source (Dockerfile + `python -m aura.main`), never installed as
+# a distribution, so this file exists for the tooling sections below and declares
+# no build backend. Runtime dependencies stay in requirements.txt; the linter and
+# type checker stay in requirements-dev.txt, out of the runtime image entirely.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "scripts", "web/backend"]
+extend-exclude = ["web/frontend"]
+
+[tool.ruff.lint]
+# Deliberately a narrow, high-signal set rather than "everything ruff has".
+# Each family earns its place against a rule this project already commits to:
+#   E, W, F  -- pycodestyle/pyflakes: the errors any Python reader expects gone.
+#   I        -- one import order everywhere, so a diff never argues about it.
+#   UP       -- modern syntax for the declared floor (3.12+).
+#   B, SIM   -- bugbear and simplification: the two that catch real defects.
+#   ASYNC    -- CLAUDE.md's Performance rule ("never block the event loop") as
+#               an enforced check rather than a convention.
+#   DTZ      -- every timestamp in the knowledge model is UTC-aware; a naive
+#               datetime is a bug, not a style choice.
+#   RUF      -- ruff's own rules, notably RUF100 (a noqa that no longer applies).
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "ASYNC", "DTZ", "RUF"]
+ignore = [
+    # Formatter-owned: ruff format decides line breaks, and a long URL or a
+    # calibration comment that will not wrap is not worth a noqa on every line.
+    "E501",
+    # "Ambiguous unicode character": Turkish dotless ı, the fullwidth Japanese
+    # question mark and Korean/Cyrillic look-alikes are CORRECT here, not typos.
+    # Aura ships nine locales and its adversarial fixtures deliberately feed
+    # confusable and invisible characters through the pipeline; a rule that
+    # calls those a mistake is wrong about this codebase, in every one of its
+    # ~170 hits.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # "Use a single `with` statement with multiple contexts". The db layer's
+    # uniform idiom is `async with connection_lock(conn):` wrapping
+    # `async with conn.execute(...) as cursor:`, and the nesting is the point:
+    # it shows, at a glance and at every one of ~40 call sites, that the lock is
+    # held for the whole query. Flattening it buries a concurrency invariant
+    # inside a parenthesised tuple that the multi-line SQL makes harder to read,
+    # not easier. The same applies to the stacked `with patch(...)` blocks in
+    # the tests.
+    "SIM117",
+]
+
+# No per-file E402 exemption: the handful of modules that genuinely must import
+# after a sys.path edit (calibration harnesses under scripts/) already carry an
+# explicit `# noqa: E402` on the exact line, which says WHY at the site instead
+# of exempting a whole directory that mostly has no such need.
+
+[tool.ruff.lint.per-file-ignores]
+# scripts/ holds one-shot calibration and verification harnesses, each run as
+# `python scripts/<name>.py` and each the only thing in its process. ASYNC's
+# subject -- starving an event loop that is concurrently serving other work --
+# does not exist there: the blocking calls it flags are a confirmation prompt
+# before spending money and a report written to disk once the run is over. The
+# rule stays fully enforced for the bot itself, which is where CLAUDE.md's
+# "never block the event loop" applies.
+"scripts/**" = ["ASYNC240", "ASYNC250"]
+# Every naive datetime in the test suite sits inside a `pytest.raises` block
+# that exists precisely to prove the production code refuses naive datetimes
+# (verified: all 14, one per timestamped ledger). Flagging them inverts the
+# rule's meaning -- it is the presence of these that shows DTZ is honoured
+# where it counts.
+"tests/**" = ["DTZ001"]
+
+[tool.ruff.lint.isort]
+# Everything the repository itself provides, so the import blocks separate
+# "ours" from "theirs" rather than by accident of whether a module happens to
+# live in an installed package. The loose modules are the corpus/fixture and
+# fake-service helpers that scripts/ and web/backend/ import by bare name
+# because pytest.ini and each script's own sys.path edit put those roots on the
+# path; without naming them here isort files them under third-party.
+known-first-party = [
+    "aura",
+    "aura_web",
+    "bakeoff_cases",
+    "extraction_corpus",
+    "extraction_dedup_corpus_cases",
+    "extraction_eval_cases",
+    "fake_bot_billing",
+    "fake_discord",
+    "fake_stripe",
+    "grounding_verification_cases",
+    "helpers",
+    "supersession_bakeoff_cases",
+    "synthetic_corpus",
+    "verify_oauth_fixtures",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI expresses dependency injection as a call in a default argument
+# (Depends(...)), which B008 flags by design.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header", "fastapi.Cookie"]
+
+[tool.ruff.format]
+docstring-code-format = false
+skip-magic-trailing-comma = false
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src:scripts:web/backend"
+files = ["src", "web/backend/aura_web"]
+namespace_packages = true
+explicit_package_bases = true
+
+# Conservative on purpose: this codebase is annotated but not yet strict-clean,
+# and a refactor is the wrong place to change behaviour in order to satisfy a
+# checker. These are the checks that catch contract errors without demanding it.
+#
+# Two settings are deliberately OFF, both because this tree is checked by
+# pyright as well (see pyrightconfig.json) and by discord.py's stubs:
+#   warn_unused_ignores -- an ignore that only one of two checkers needs is not
+#     dead. aura.backfill.history's `error.response` ignore is exactly that.
+#   warn_unreachable -- discord.py types Guild.me as non-optional although it is
+#     genuinely None for an uncached guild. The `if me is None` guards in
+#     aura.commands.digest and .onboarding are defensive checks this project
+#     wants (both docstrings say so); a checker calling them dead is wrong, and
+#     silencing it line by line would bury the point.
+warn_redundant_casts = true
+no_implicit_optional = true
+strict_equality = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = true
+
+[[tool.mypy.overrides]]
+# Neither ships type information; both are used through narrow wrappers
+# (aura.embeddings, aura.synthesis) that annotate their own surface.
+module = ["fastembed.*", "litellm.*"]
+ignore_missing_imports = true

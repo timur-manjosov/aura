@@ -23,6 +23,7 @@ records, because synthesize_answer deliberately collapses every failure into
 None for its callers -- useful in production, not specific enough to choose a
 model on.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,16 +34,18 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from bakeoff_cases import CASES, BakeOffCase  # noqa: E402
-
-from aura.db.models import Fact, FactStatus  # noqa: E402
-from aura.synthesis import synthesize_answer  # noqa: E402
+from aura.db.models import Fact, FactStatus
+from aura.synthesis import synthesize_answer
+from bakeoff_cases import CASES, BakeOffCase
 
 RUN_REAL_LLM_ENV = "AURA_RUN_REAL_LLM"
 
@@ -85,7 +88,7 @@ def _make_fact(fact_id: int, content: str) -> Fact:
         content=content,
         embedding=b"",  # synthesis never touches the vector; retrieval already ran
         status=FactStatus.ACTIVE,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -163,8 +166,7 @@ async def run_case(case: BakeOffCase, model: str, capture: _FailureCapture) -> C
     failure = ""
     if not verdict_ok:
         failure = (
-            f"answers_question={result.answers_question}, "
-            f"expected {case.expected_answers_question}"
+            f"answers_question={result.answers_question}, expected {case.expected_answers_question}"
         )
     elif not cited_something:
         failure = "claimed to answer but cited no fact"
@@ -211,7 +213,7 @@ def _print_report(all_results: dict[str, list[CaseResult]]) -> None:
     print(header)
     print("-" * len(header))
     for index, case in enumerate(CASES):
-        row = f"{case.name:<26} {case.locale:<7} {str(case.expected_answers_question):<7} "
+        row = f"{case.name:<26} {case.locale:<7} {case.expected_answers_question!s:<7} "
         for model in models:
             result = all_results[model][index]
             row += f"{('PASS' if result.passed else 'FAIL'):<23} "
@@ -238,7 +240,7 @@ def _print_report(all_results: dict[str, list[CaseResult]]) -> None:
 def _write_report(all_results: dict[str, list[CaseResult]], path: Path) -> None:
     """Write the full raw results, including every answer, as JSON for later audit."""
     payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "models": {
             model: [
                 {

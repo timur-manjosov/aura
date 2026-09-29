@@ -22,6 +22,7 @@ is argued above the table definition in schema.sql. In short: it is a buffer
 with a lifetime of one batch window, not a record, and the alternative is
 re-fetching every message from Discord at flush time.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -41,14 +42,28 @@ from aura.db.connection import connection_lock, utc_iso
 MAX_BATCH_WINDOW_SECONDS = 24 * 60 * 60.0
 
 _QUEUED_COLUMNS = (
-    "channel_id, message_id, guild_id, channel_name, content, "
-    "message_created_at, enqueued_at"
+    "channel_id, message_id, guild_id, channel_name, content, message_created_at, enqueued_at"
 )
 
 
 class QueuedMessage(BaseModel):
     """One candidate message waiting to be distilled.
 
+    Attributes
+    ----------
+    channel_id, message_id, guild_id
+        Where the message came from.
+    channel_name
+        The channel's name AT ENQUEUE TIME.
+    content
+        The message text as it was when queued.
+    message_created_at
+        When Discord says the message was written.
+    enqueued_at
+        When Aura queued it.
+
+    Notes
+    -----
     channel_name and message_created_at are carried rather than re-derived at
     flush time because they are what the distillation model is actually shown
     as context (the phase brief's "channel context" decision), and both can
@@ -89,8 +104,31 @@ async def enqueue_message(
     message_created_at: datetime,
     now: datetime,
 ) -> bool:
-    """Add one message to its channel's pending batch. Returns False if already queued.
+    """Add one message to its channel's pending batch.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id, channel_id, message_id
+        Where the message came from. `(channel_id, message_id)` is the
+        idempotency key.
+    channel_name
+        The channel's name now, stored rather than re-derived at flush time.
+    content
+        The message text.
+    message_created_at
+        Discord's own timestamp for the message.
+    now
+        When it was queued.
+
+    Returns
+    -------
+    bool
+        True if a row was added; False if this message was already queued.
+
+    Notes
+    -----
     Idempotent against Discord redelivering the same message event after a
     resumed session -- the same hazard proactive_escalations documents at
     length, and the same answer: absorbed by naming the conflicting constraint
@@ -102,9 +140,7 @@ async def enqueue_message(
     wrong by whole hours, which here would mean flushing a batch early or late.
     """
     if message_created_at.tzinfo is None:
-        raise ValueError(
-            f"message_created_at must be timezone-aware, got {message_created_at!r}"
-        )
+        raise ValueError(f"message_created_at must be timezone-aware, got {message_created_at!r}")
     if now.tzinfo is None:
         raise ValueError(f"now must be a timezone-aware datetime, got {now!r}")
 
@@ -134,8 +170,23 @@ async def enqueue_message(
 async def remove_queued_message(
     conn: aiosqlite.Connection, *, channel_id: int, message_id: int
 ) -> bool:
-    """Withdraw one message from its pending batch. Returns whether a row was removed.
+    """Withdraw one message from its pending batch.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    channel_id, message_id
+        The message to withdraw.
+
+    Returns
+    -------
+    bool
+        Whether a row was actually removed. False both for a message that was
+        never queued and for one whose batch has already been flushed.
+
+    Notes
+    -----
     This is the edit/delete abort the phase brief asks for, and its whole scope:
     a message withdrawn before its batch closes is never distilled and never
     costs anything. A message already distilled is past this function's reach --
@@ -164,6 +215,27 @@ async def due_channels(
 ) -> list[int]:
     """Return the channels whose oldest queued message is past the batch window.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    window_seconds
+        The batch window. Must lie in [0, MAX_BATCH_WINDOW_SECONDS].
+    now
+        The moment to measure the window from.
+
+    Returns
+    -------
+    list[int]
+        Channel IDs whose OLDEST queued message is older than the window.
+
+    Raises
+    ------
+    ValueError
+        If `window_seconds` is outside its accepted range.
+
+    Notes
+    -----
     "Oldest message decides" rather than "newest message decides", which is the
     difference between a window and a debounce: a channel that receives one
     candidate every four minutes would, under a debounce, never flush at all
@@ -199,8 +271,31 @@ async def due_channels(
 async def read_batch(
     conn: aiosqlite.Connection, *, channel_id: int, limit: int
 ) -> list[QueuedMessage]:
-    """Read up to limit queued messages for one channel, oldest first.
+    """Read up to `limit` queued messages for one channel, oldest first.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    channel_id
+        Channel whose batch to read.
+    limit
+        Maximum rows to return. Must not be negative -- SQLite reads LIMIT -1
+        as "no limit", which would silently unbound the batch.
+
+    Returns
+    -------
+    list[QueuedMessage]
+        Up to `limit` messages, oldest first. Chronological order is what makes
+        supersession judgments land on the truly latest version.
+
+    Raises
+    ------
+    ValueError
+        If `limit` is negative.
+
+    Notes
+    -----
     Reads without deleting, deliberately. The rows are cleared only after the
     batch has been distilled and its candidates staged (see
     aura.extraction.pipeline), so a crash anywhere in between leaves the batch
@@ -231,6 +326,23 @@ async def clear_batch(
 ) -> int:
     """Delete exactly the messages a finished batch consumed, and return how many.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    channel_id
+        Channel the batch belonged to.
+    message_ids
+        Exactly the messages the finished batch consumed. An empty list is a
+        no-op.
+
+    Returns
+    -------
+    int
+        How many rows were deleted.
+
+    Notes
+    -----
     Scoped to the specific message IDs rather than "everything in this channel"
     on purpose: messages that arrived while the batch was being distilled are
     already queued for the NEXT batch, and deleting the channel wholesale would
@@ -253,10 +365,26 @@ async def clear_batch(
 async def count_queued(conn: aiosqlite.Connection, *, channel_id: int | None = None) -> int:
     """Return how many messages are waiting, in one channel or across all of them.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    channel_id
+        Restrict the count to one channel, or None to count every channel.
+
+    Returns
+    -------
+    int
+        How many messages are waiting.
+
+    Notes
+    -----
     Read-only; used by the tests that prove a restart loses nothing and by
     operational logging, never by a decision.
     """
     async with connection_lock(conn):
+        query: str
+        params: tuple[int, ...]
         if channel_id is None:
             query, params = "SELECT COUNT(*) FROM extraction_queue", ()
         else:
@@ -272,8 +400,26 @@ async def count_queued(conn: aiosqlite.Connection, *, channel_id: int | None = N
 async def queued_message_ids(
     conn: aiosqlite.Connection, *, channel_id: int, message_ids: list[int]
 ) -> set[int]:
-    """Which of message_ids are currently waiting in this channel's live batch.
+    """Return which of `message_ids` are waiting in this channel's live batch.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    channel_id
+        Channel whose live batch to check.
+    message_ids
+        Candidates to test. An empty list is a no-op.
+
+    Returns
+    -------
+    set[int]
+        The subset currently queued. A set rather than a list because the
+        caller's only question is membership, and because SQLite's IN clause
+        promises no order worth preserving.
+
+    Notes
+    -----
     Read-only, and one query for a whole page rather than one per message. Its
     only caller is backfill (see aura.backfill.worker), which uses it to answer a
     question this module is the authority on: is the LIVE extraction path

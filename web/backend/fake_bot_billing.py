@@ -13,6 +13,7 @@ Plans are whatever a test sets in `plans`: deciding a plan is the bot's job,
 tested in tests/test_billing_entitlement.py, and re-implementing it here would
 be a second copy to keep correct.
 """
+
 from __future__ import annotations
 
 import hmac
@@ -103,7 +104,9 @@ def create_fake_bot_billing(state: FakeBotBillingState) -> FastAPI:
         if body["event_id"] is not None and body["event_id"] in state.processed_events:
             return JSONResponse({"outcome": "duplicate", "version": current})
         if body["expected_version"] != current:
-            return JSONResponse({"outcome": "version_conflict", "version": current}, status_code=409)
+            return JSONResponse(
+                {"outcome": "version_conflict", "version": current}, status_code=409
+            )
         state.versions[subscription_id] = current + 1
         state.snapshots[subscription_id] = snapshot
         state.applied_snapshots.append(body)
@@ -118,6 +121,8 @@ def create_fake_bot_billing(state: FakeBotBillingState) -> FastAPI:
         if refusal is not None:
             return refusal
         body = await request.json()
-        return JSONResponse({"plans": {guild_id: state.plan_for(guild_id) for guild_id in body["guild_ids"]}})
+        return JSONResponse(
+            {"plans": {guild_id: state.plan_for(guild_id) for guild_id in body["guild_ids"]}}
+        )
 
     return app

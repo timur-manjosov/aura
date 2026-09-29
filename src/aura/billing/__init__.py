@@ -6,6 +6,7 @@ path on purpose: both depend on aura.db.subscriptions, which itself imports
 aura.billing.entitlement, so pulling them into this package's import would
 make every import of the rules a circular import of the database layer.
 """
+
 from aura.billing.entitlement import (
     AccessWindow,
     GracePolicy,

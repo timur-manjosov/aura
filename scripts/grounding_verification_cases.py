@@ -20,6 +20,7 @@ point is to control precisely what is and is not supported, which a generated
 answer cannot promise. The facts are the shapes this project's own corpora and
 live use already produce -- channel rules, event times, limits, status changes.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -73,10 +74,7 @@ ATTACK_CASES = [
         facts=[
             "Members may post links in #resources.",
         ],
-        answer=(
-            "Yes, you can post links in #resources — you just need the Verified "
-            "role first."
-        ),
+        answer=("Yes, you can post links in #resources — you just need the Verified role first."),
         expected_grounded=False,
         what_it_probes=(
             "An added QUALIFIER rather than an added value. The fact grants a "

@@ -6,10 +6,13 @@ received, not on the argument some function was called with -- the brief for
 this sub-phase asks for the flags to be checked in the HTTP response rather
 than in the source, and that distinction is the point of the whole file.
 """
+
 from __future__ import annotations
 
 import httpx
 import pytest
+
+from aura_web.discord_api import REQUIRED_SCOPES
 from fake_discord import FakeDiscordState
 from helpers import (
     FRONTEND_BASE,
@@ -18,8 +21,6 @@ from helpers import (
     set_cookie_header,
     start_login,
 )
-
-from aura_web.discord_api import REQUIRED_SCOPES
 
 
 class TestLoginRedirect:
@@ -207,11 +208,12 @@ class TestStateRejection:
             async with app.router.lifespan_context(app):
                 transport = httpx.ASGITransport(app=app)
                 # Two clients means two cookie jars, i.e. two browsers.
-                async with httpx.AsyncClient(
-                    transport=transport, base_url="https://testserver"
-                ) as attacker, httpx.AsyncClient(
-                    transport=transport, base_url="https://testserver"
-                ) as victim:
+                async with (
+                    httpx.AsyncClient(
+                        transport=transport, base_url="https://testserver"
+                    ) as attacker,
+                    httpx.AsyncClient(transport=transport, base_url="https://testserver") as victim,
+                ):
                     attacker_state = await start_login(attacker)
                     attacker_code = discord_state.issue_code("6000")
                     # The victim has their own pending login, hence their own
@@ -235,9 +237,7 @@ class TestStateRejection:
         app_client.cookies.delete("aura_oauth_state")
         code = discord_state.issue_code("5000")
 
-        response = await app_client.get(
-            "/api/auth/callback", params={"code": code, "state": state}
-        )
+        response = await app_client.get("/api/auth/callback", params={"code": code, "state": state})
 
         assert response.status_code == 400
         assert not app_client.cookies.get("aura_session")
@@ -248,9 +248,7 @@ class TestStateRejection:
         await start_login(app_client)
         code = discord_state.issue_code("5000")
 
-        response = await app_client.get(
-            "/api/auth/callback", params={"code": code, "state": ""}
-        )
+        response = await app_client.get("/api/auth/callback", params={"code": code, "state": ""})
 
         assert response.status_code == 400
 
@@ -331,9 +329,7 @@ class TestCodeRejection:
         state = await start_login(app_client)
         code = discord_state.issue_code("5000")
 
-        response = await app_client.get(
-            "/api/auth/callback", params={"code": code, "state": state}
-        )
+        response = await app_client.get("/api/auth/callback", params={"code": code, "state": state})
 
         assert response.status_code == 503
         assert response.json() == {"error": "discord_unavailable"}
@@ -351,9 +347,7 @@ class TestCodeRejection:
         state = await start_login(app_client)
         code = discord_state.issue_code("5000")
 
-        response = await app_client.get(
-            "/api/auth/callback", params={"code": code, "state": state}
-        )
+        response = await app_client.get("/api/auth/callback", params={"code": code, "state": state})
 
         assert response.status_code == 400
         assert response.json() == {"error": "oauth_failed"}

@@ -14,9 +14,10 @@ Two halves, one per kind of entry point:
     translated message and write nothing -- while switching a feature off stays
     possible, and /aura-plan explains the state in every locale.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -25,7 +26,14 @@ import pytest
 
 from aura.backfill.history import ChannelUnreadable
 from aura.backfill.worker import advance_due_backfills
-from aura.billing import GracePolicy, PlanBasis, PlanGate, Standing, SubscriptionRecord, SubscriptionStatus
+from aura.billing import (
+    GracePolicy,
+    PlanBasis,
+    PlanGate,
+    Standing,
+    SubscriptionRecord,
+    SubscriptionStatus,
+)
 from aura.billing.entitlement import InvoiceStatus, decide_plan
 from aura.commands.backfill import backfill_start
 from aura.commands.config import config_command
@@ -50,7 +58,7 @@ from aura.onboarding.listener import handle_member_join
 from aura.proactive.grace import GraceRegistry
 from aura.proactive.listener import _still_fresh_enough_for_synthesis, handle_message
 
-NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
 GUILD = 100000000000000001
 CHANNEL = 300000000000000003
 DASHBOARD = "https://aura.example/dashboard"
@@ -70,7 +78,9 @@ def free_gate() -> PlanGate:
 
 
 def pro_gate() -> PlanGate:
-    return PlanGate(enforced=True, policy=POLICY, complimentary_guild_ids=frozenset({GUILD}), records=[])
+    return PlanGate(
+        enforced=True, policy=POLICY, complimentary_guild_ids=frozenset({GUILD}), records=[]
+    )
 
 
 def llm_settings(**overrides: object) -> Settings:
@@ -105,15 +115,25 @@ def human_message(content: str = "where are the rules?") -> MagicMock:
 
 class TestProactiveRelief:
     async def _run(self, conn, gate: PlanGate) -> AsyncMock:
-        await set_channel_enabled(conn, guild_id=GUILD, channel_id=CHANNEL, enabled=True, updated_by_id=1)
+        await set_channel_enabled(
+            conn, guild_id=GUILD, channel_id=CHANNEL, enabled=True, updated_by_id=1
+        )
         decision = MagicMock(would_escalate=False)
         with (
-            patch("aura.proactive.listener.evaluate_message", AsyncMock(return_value=decision)) as evaluate,
+            patch(
+                "aura.proactive.listener.evaluate_message", AsyncMock(return_value=decision)
+            ) as evaluate,
             patch("aura.proactive.listener.record_signal", AsyncMock()),
         ):
             await handle_message(
-                human_message(), db=conn, detector=MagicMock(), model=MagicMock(), config=MagicMock(),
-                settings=llm_settings(), grace_registry=GraceRegistry(), plan_gate=gate,
+                human_message(),
+                db=conn,
+                detector=MagicMock(),
+                model=MagicMock(),
+                config=MagicMock(),
+                settings=llm_settings(),
+                grace_registry=GraceRegistry(),
+                plan_gate=gate,
             )
         return evaluate
 
@@ -137,42 +157,61 @@ class TestProactiveRelief:
 
 class TestExtraction:
     async def test_intake_on_a_free_guild_queues_nothing_and_embeds_nothing(self, conn) -> None:
-        await set_extraction_enabled(conn, guild_id=GUILD, channel_id=CHANNEL, enabled=True, updated_by_id=1)
+        await set_extraction_enabled(
+            conn, guild_id=GUILD, channel_id=CHANNEL, enabled=True, updated_by_id=1
+        )
         detector = MagicMock()
         detector.question_likeness = AsyncMock(return_value=0.9)
 
         await handle_extraction_message(
-            human_message("The event is on Saturday."), db=conn, detector=detector,
-            settings=llm_settings(), plan_gate=free_gate(),
+            human_message("The event is on Saturday."),
+            db=conn,
+            detector=detector,
+            settings=llm_settings(),
+            plan_gate=free_gate(),
         )
 
         detector.question_likeness.assert_not_awaited()
         assert await count_queued(conn) == 0
 
     async def test_intake_on_a_pro_guild_queues(self, conn) -> None:
-        await set_extraction_enabled(conn, guild_id=GUILD, channel_id=CHANNEL, enabled=True, updated_by_id=1)
+        await set_extraction_enabled(
+            conn, guild_id=GUILD, channel_id=CHANNEL, enabled=True, updated_by_id=1
+        )
         detector = MagicMock()
         detector.question_likeness = AsyncMock(return_value=0.9)
 
         await handle_extraction_message(
-            human_message("The event is on Saturday."), db=conn, detector=detector,
-            settings=llm_settings(), plan_gate=pro_gate(),
+            human_message("The event is on Saturday."),
+            db=conn,
+            detector=detector,
+            settings=llm_settings(),
+            plan_gate=pro_gate(),
         )
 
         assert await count_queued(conn) == 1
 
     async def _queue_a_due_batch(self, conn) -> None:
         await enqueue_message(
-            conn, guild_id=GUILD, channel_id=CHANNEL, message_id=1, channel_name="general",
-            content="The event is on Saturday.", message_created_at=NOW - timedelta(hours=1),
+            conn,
+            guild_id=GUILD,
+            channel_id=CHANNEL,
+            message_id=1,
+            channel_name="general",
+            content="The event is on Saturday.",
+            message_created_at=NOW - timedelta(hours=1),
             now=NOW - timedelta(hours=1),
         )
 
-    async def test_a_batch_queued_on_pro_and_flushed_on_free_is_dropped_without_spending(self, conn) -> None:
+    async def test_a_batch_queued_on_pro_and_flushed_on_free_is_dropped_without_spending(
+        self, conn
+    ) -> None:
         await self._queue_a_due_batch(conn)
 
         with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=[])) as distill:
-            flushed = await flush_due_batches(conn, MagicMock(), settings=llm_settings(), now=NOW, plan_gate=free_gate())
+            flushed = await flush_due_batches(
+                conn, MagicMock(), settings=llm_settings(), now=NOW, plan_gate=free_gate()
+            )
 
         assert flushed == 0
         distill.assert_not_awaited()
@@ -183,7 +222,9 @@ class TestExtraction:
         await self._queue_a_due_batch(conn)
 
         with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=[])) as distill:
-            await flush_due_batches(conn, MagicMock(), settings=llm_settings(), now=NOW, plan_gate=pro_gate())
+            await flush_due_batches(
+                conn, MagicMock(), settings=llm_settings(), now=NOW, plan_gate=pro_gate()
+            )
 
         distill.assert_awaited_once()
         assert await count_extraction_calls_on(conn, guild_id=GUILD, day=utc_day(NOW)) == 1
@@ -192,7 +233,12 @@ class TestExtraction:
 class TestDigest:
     async def _configure(self, conn) -> None:
         await set_digest_config(
-            conn, guild_id=GUILD, channel_id=CHANNEL, interval_seconds=86400, enabled=True, updated_by_id=1
+            conn,
+            guild_id=GUILD,
+            channel_id=CHANNEL,
+            interval_seconds=86400,
+            enabled=True,
+            updated_by_id=1,
         )
 
     async def test_a_free_guild_gets_no_digest_and_keeps_its_window_for_later(self, conn) -> None:
@@ -201,7 +247,7 @@ class TestDigest:
         gateway.resolve_channel = AsyncMock()
 
         posted = await send_due_digests(
-            conn, gateway, now=datetime.now(timezone.utc) + timedelta(days=3), plan_gate=free_gate()
+            conn, gateway, now=datetime.now(UTC) + timedelta(days=3), plan_gate=free_gate()
         )
 
         assert posted == 0
@@ -213,7 +259,10 @@ class TestDigest:
         await self._configure(conn)
 
         await send_due_digests(
-            conn, MagicMock(), now=datetime.now(timezone.utc) + timedelta(days=3), plan_gate=pro_gate()
+            conn,
+            MagicMock(),
+            now=datetime.now(UTC) + timedelta(days=3),
+            plan_gate=pro_gate(),
         )
 
         # No facts, so the window is claimed as empty -- which only happens past the gate.
@@ -227,8 +276,12 @@ class TestOnboarding:
         member.id = 42
         member.guild = MagicMock()
         member.guild.id = GUILD
-        with patch("aura.onboarding.listener.get_onboarding_config", AsyncMock(return_value=None)) as reader:
-            await handle_member_join(member, db=MagicMock(), gateway=MagicMock(), settings=llm_settings(), plan_gate=gate)
+        with patch(
+            "aura.onboarding.listener.get_onboarding_config", AsyncMock(return_value=None)
+        ) as reader:
+            await handle_member_join(
+                member, db=MagicMock(), gateway=MagicMock(), settings=llm_settings(), plan_gate=gate
+            )
         return reader
 
     async def test_a_free_guild_does_not_even_read_its_configuration(self) -> None:
@@ -241,17 +294,30 @@ class TestOnboarding:
 class TestBackfill:
     async def _start(self, conn) -> None:
         await start_backfill_run(
-            conn, guild_id=GUILD, channel_id=CHANNEL, until_message_id=2**62, after_message_id=None,
-            requested_by_id=1, now=NOW,
+            conn,
+            guild_id=GUILD,
+            channel_id=CHANNEL,
+            until_message_id=2**62,
+            after_message_id=None,
+            requested_by_id=1,
+            now=NOW,
         )
 
-    async def test_a_free_guilds_run_reads_nothing_and_stays_exactly_where_it_was(self, conn) -> None:
+    async def test_a_free_guilds_run_reads_nothing_and_stays_exactly_where_it_was(
+        self, conn
+    ) -> None:
         await self._start(conn)
         gateway = MagicMock()
         gateway.resolve_channel = AsyncMock()
 
         advanced = await advance_due_backfills(
-            conn, MagicMock(), gateway, MagicMock(), settings=llm_settings(), now=NOW, plan_gate=free_gate()
+            conn,
+            MagicMock(),
+            gateway,
+            MagicMock(),
+            settings=llm_settings(),
+            now=NOW,
+            plan_gate=free_gate(),
         )
 
         assert advanced == 0
@@ -265,13 +331,21 @@ class TestBackfill:
         gateway.resolve_channel = AsyncMock(side_effect=ChannelUnreadable("gone"))
 
         await advance_due_backfills(
-            conn, MagicMock(), gateway, MagicMock(), settings=llm_settings(), now=NOW, plan_gate=pro_gate()
+            conn,
+            MagicMock(),
+            gateway,
+            MagicMock(),
+            settings=llm_settings(),
+            now=NOW,
+            plan_gate=pro_gate(),
         )
 
         gateway.resolve_channel.assert_awaited_once()
 
 
-def interaction(conn, gate: PlanGate, *, locale: str = "en-US", dashboard: str | None = DASHBOARD) -> MagicMock:
+def interaction(
+    conn, gate: PlanGate, *, locale: str = "en-US", dashboard: str | None = DASHBOARD
+) -> MagicMock:
     fake = MagicMock(spec=discord.Interaction)
     fake.locale = locale
     fake.guild_id = GUILD
@@ -280,7 +354,9 @@ def interaction(conn, gate: PlanGate, *, locale: str = "en-US", dashboard: str |
     fake.client = MagicMock()
     fake.client.db = conn
     fake.client.plan_gate = gate
-    fake.client.settings = llm_settings() if dashboard else Settings(_env_file=None, discord_token="t")  # type: ignore[call-arg]
+    fake.client.settings = (
+        llm_settings() if dashboard else Settings(_env_file=None, discord_token="t")
+    )  # type: ignore[call-arg]
     fake.response = MagicMock()
     fake.response.send_message = AsyncMock()
     fake.response.is_done = MagicMock(return_value=False)
@@ -317,7 +393,9 @@ class TestCommandsRefuseOnFree:
 
         await config_command.callback(fake, text_channel(), True, None)  # pyright: ignore
 
-        assert reply(fake) == t("plan_pro_required", "en-US") + "\n" + t("plan_upgrade_link", "en-US", url=DASHBOARD)
+        assert reply(fake) == t("plan_pro_required", "en-US") + "\n" + t(
+            "plan_upgrade_link", "en-US", url=DASHBOARD
+        )
         assert await row_count(conn, "proactive_channel_config") == 0
 
     async def test_a_call_mixing_off_and_on_changes_nothing_at_all(self, conn) -> None:
@@ -346,7 +424,14 @@ class TestCommandsRefuseOnFree:
         assert await get_digest_config(conn, guild_id=GUILD) is None
 
     async def test_turning_an_existing_digest_off_on_free_is_allowed(self, conn) -> None:
-        await set_digest_config(conn, guild_id=GUILD, channel_id=CHANNEL, interval_seconds=86400, enabled=True, updated_by_id=1)
+        await set_digest_config(
+            conn,
+            guild_id=GUILD,
+            channel_id=CHANNEL,
+            interval_seconds=86400,
+            enabled=True,
+            updated_by_id=1,
+        )
         fake = interaction(conn, free_gate())
 
         await digest_command.callback(fake, None, None, False)  # pyright: ignore
@@ -363,7 +448,9 @@ class TestCommandsRefuseOnFree:
         assert t("plan_pro_required", "en-US") in reply(fake)
         assert await get_onboarding_config(conn, guild_id=GUILD) is None
 
-    async def test_starting_a_backfill_is_refused_before_anything_else_is_checked(self, conn) -> None:
+    async def test_starting_a_backfill_is_refused_before_anything_else_is_checked(
+        self, conn
+    ) -> None:
         fake = interaction(conn, free_gate())
 
         await backfill_start.callback(fake, text_channel(), None)  # pyright: ignore
@@ -396,18 +483,34 @@ class TestCommandsRefuseOnFree:
 
 def record(**overrides: object) -> SubscriptionRecord:
     values: dict[str, object] = {
-        "subscription_id": "sub_A", "guild_id": GUILD, "customer_id": "cus_A", "purchaser_user_id": 5000,
-        "status": SubscriptionStatus.ACTIVE, "cancel_at_period_end": False, "cancel_at": None,
-        "collection_paused": False, "latest_invoice_status": InvoiceStatus.PAID,
-        "current_period_start": NOW - timedelta(days=1), "current_period_end": NOW + timedelta(days=29),
-        "livemode": False, "version": 1, "confirmed_at": NOW,
+        "subscription_id": "sub_A",
+        "guild_id": GUILD,
+        "customer_id": "cus_A",
+        "purchaser_user_id": 5000,
+        "status": SubscriptionStatus.ACTIVE,
+        "cancel_at_period_end": False,
+        "cancel_at": None,
+        "collection_paused": False,
+        "latest_invoice_status": InvoiceStatus.PAID,
+        "current_period_start": NOW - timedelta(days=1),
+        "current_period_end": NOW + timedelta(days=29),
+        "livemode": False,
+        "version": 1,
+        "confirmed_at": NOW,
     }
     values.update(overrides)
     return SubscriptionRecord(**values)  # type: ignore[arg-type]
 
 
 def plan(records: list[SubscriptionRecord], *, enforced: bool = True, complimentary: bool = False):
-    return decide_plan(guild_id=GUILD, records=records, now=NOW, policy=POLICY, enforced=enforced, complimentary=complimentary)
+    return decide_plan(
+        guild_id=GUILD,
+        records=records,
+        now=NOW,
+        policy=POLICY,
+        enforced=enforced,
+        complimentary=complimentary,
+    )
 
 
 class TestPlanDescription:
@@ -418,12 +521,30 @@ class TestPlanDescription:
             ([], "plan_state_no_subscription"),
             ([record(status=SubscriptionStatus.CANCELED)], "plan_state_ended"),
             ([record()], "plan_state_active"),
-            ([record(current_period_end=NOW - timedelta(hours=1), current_period_start=NOW - timedelta(days=30))], "plan_state_renewal_pending"),
+            (
+                [
+                    record(
+                        current_period_end=NOW - timedelta(hours=1),
+                        current_period_start=NOW - timedelta(days=30),
+                    )
+                ],
+                "plan_state_renewal_pending",
+            ),
             ([record(cancel_at_period_end=True)], "plan_state_canceling"),
-            ([record(status=SubscriptionStatus.PAST_DUE, current_period_start=NOW - timedelta(days=2))], "plan_state_payment_grace"),
+            (
+                [
+                    record(
+                        status=SubscriptionStatus.PAST_DUE,
+                        current_period_start=NOW - timedelta(days=2),
+                    )
+                ],
+                "plan_state_payment_grace",
+            ),
         ],
     )
-    def test_every_standing_is_described_in_every_locale(self, records, expected_key: str, locale: str) -> None:
+    def test_every_standing_is_described_in_every_locale(
+        self, records, expected_key: str, locale: str
+    ) -> None:
         text = describe_plan(plan(records), locale=locale, dashboard_url=DASHBOARD)
 
         # Every literal fragment of the expected template, around its {date},
@@ -440,7 +561,9 @@ class TestPlanDescription:
         assert discord_timestamp(NOW + timedelta(days=29)) in text
 
     def test_payment_grace_shows_the_date_pro_ends(self) -> None:
-        failing = record(status=SubscriptionStatus.PAST_DUE, current_period_start=NOW - timedelta(days=2))
+        failing = record(
+            status=SubscriptionStatus.PAST_DUE, current_period_start=NOW - timedelta(days=2)
+        )
 
         text = describe_plan(plan([failing]), locale="en-US", dashboard_url=None)
 
@@ -454,7 +577,9 @@ class TestPlanDescription:
 
     def test_two_paying_subscriptions_are_pointed_out(self) -> None:
         text = describe_plan(
-            plan([record(subscription_id="sub_1"), record(subscription_id="sub_2")]), locale="en-US", dashboard_url=None
+            plan([record(subscription_id="sub_1"), record(subscription_id="sub_2")]),
+            locale="en-US",
+            dashboard_url=None,
         )
 
         assert t("plan_multiple_subscriptions", "en-US", count=2) in text
@@ -468,7 +593,9 @@ class TestPlanDescription:
         described = plan([], complimentary=True)
 
         assert described.basis is PlanBasis.COMPLIMENTARY
-        assert describe_plan(described, locale="en-US", dashboard_url=None) == t("plan_state_complimentary", "en-US")
+        assert describe_plan(described, locale="en-US", dashboard_url=None) == t(
+            "plan_state_complimentary", "en-US"
+        )
 
 
 class TestPlanCommand:

@@ -12,9 +12,10 @@ control: a fact's text is written by a server member and only ever passed
 through a distillation model, so it can contain newlines, markdown, brackets
 and mentions.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -26,7 +27,7 @@ from aura.i18n import SUPPORTED_LOCALES
 
 GUILD_A = 100000000000000001
 CHANNEL = 300000000000000003
-NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=UTC)
 WEEK = int(DigestInterval.WEEKLY)
 
 # Discord's own hard caps, restated here rather than imported from the module
@@ -89,14 +90,14 @@ class TestSections:
     def test_a_new_fact_is_listed_with_a_link_to_its_source(self) -> None:
         subject = fact(1, "Movie night is on Fridays.")
 
-        embed = build_digest_embed(content(new_facts=[subject]), locale="en-US", interval_seconds=WEEK)
+        embed = build_digest_embed(
+            content(new_facts=[subject]), locale="en-US", interval_seconds=WEEK
+        )
 
         value = field_named(embed, "New")
         assert value is not None
         assert "Movie night is on Fridays." in value
-        assert (
-            f"https://discord.com/channels/{GUILD_A}/{CHANNEL}/{subject.message_id}" in value
-        )
+        assert f"https://discord.com/channels/{GUILD_A}/{CHANNEL}/{subject.message_id}" in value
 
     def test_an_empty_section_is_omitted_entirely(self) -> None:
         embed = build_digest_embed(

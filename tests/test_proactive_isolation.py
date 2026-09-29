@@ -29,12 +29,13 @@ Several independent angles, because any one alone leaves a gap:
 * Data: every SQL statement the pipeline issues is captured and inspected, so
   the claim rests on what the database actually saw.
 """
+
 from __future__ import annotations
 
 import ast
 import re
 import socket
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -94,14 +95,13 @@ def _configured_settings() -> Settings:
         proactive_grace_period_seconds=0.0,
     )
 
+
 _SOURCE_ROOT = Path(aura.embeddings.__file__).parent
 
 # Word boundaries, not a substring search: the fact columns include
 # "created_at" and "superseded_at", so a naive `"CREATE" in statement` reads
 # every ordinary SELECT as a schema change and the check quietly inverts.
-_MUTATING_SQL = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE)\b", re.IGNORECASE
-)
+_MUTATING_SQL = re.compile(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE)\b", re.IGNORECASE)
 
 # Every module this sub-phase adds or routes a message through.
 _PHASE_MODULES = (
@@ -137,9 +137,7 @@ _FORBIDDEN_WRITE_NAMES = frozenset(
 # The knowledge-model WRITERS specifically -- a subset of _FORBIDDEN_WRITE_NAMES
 # that excludes the LLM names, so the responder (which legitimately reaches
 # synthesis) can still be held to "writes no fact".
-_FORBIDDEN_FACT_WRITERS = frozenset(
-    {"create_fact", "supersede_fact", "link_facts", "add_fact"}
-)
+_FORBIDDEN_FACT_WRITERS = frozenset({"create_fact", "supersede_fact", "link_facts", "add_fact"})
 
 # The stricter bar Phase 2a-1 applied to everything, still applied to the
 # scorer alone: it answers one question about one string and has no business
@@ -411,7 +409,7 @@ class TestRuntimeCallSurface:
                 message_id=1,
                 content="where are the rules?",
                 config=CONFIG,
-                now=datetime.now(timezone.utc),
+                now=datetime.now(UTC),
             )
 
         assert decision.would_escalate is True

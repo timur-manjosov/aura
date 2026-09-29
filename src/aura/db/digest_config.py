@@ -20,11 +20,13 @@ for the same isolation reason its two siblings give: a configuration switch is
 none of the four things CLAUDE.md admits into the knowledge model, and it should
 stay separable from the facts it schedules.
 """
+
 from __future__ import annotations
 
 import logging
 import sqlite3
 from datetime import datetime
+from typing import Final
 
 import aiosqlite
 from pydantic import BaseModel
@@ -34,8 +36,7 @@ from aura.db.connection import connection_lock, utc_now_iso
 logger = logging.getLogger(__name__)
 
 _CONFIG_COLUMNS = (
-    "guild_id, channel_id, interval_seconds, digest_enabled, enabled_at, "
-    "updated_by_id, updated_at"
+    "guild_id, channel_id, interval_seconds, digest_enabled, enabled_at, updated_by_id, updated_at"
 )
 
 # A stored interval outside this range cannot have come from the slash command,
@@ -46,14 +47,33 @@ _CONFIG_COLUMNS = (
 # "next digest" arithmetic meaningless rather than merely long. Such a row is
 # skipped with a warning rather than clamped -- Aura should not invent a
 # schedule an operator did not choose.
-MIN_INTERVAL_SECONDS = 60
-MAX_INTERVAL_SECONDS = 10 * 365 * 24 * 60 * 60
+MIN_INTERVAL_SECONDS: Final = 60
+MAX_INTERVAL_SECONDS: Final = 10 * 365 * 24 * 60 * 60
 
 
 class DigestConfig(BaseModel):
     """One guild's digest settings, as read back from the database.
 
-    enabled_at is the baseline the FIRST digest is measured from, not a
+    Attributes
+    ----------
+    guild_id
+        The guild these settings belong to. The table's primary key.
+    channel_id
+        Where the digest is posted.
+    interval_seconds
+        How often, in seconds. Always within
+        [`MIN_INTERVAL_SECONDS`, `MAX_INTERVAL_SECONDS`] when it reaches the
+        scheduler; see `get_enabled_digest_configs`.
+    digest_enabled
+        Whether the trigger runs at all.
+    enabled_at
+        The baseline the first digest's window starts from. See the note.
+    updated_by_id, updated_at
+        Who last changed these settings, and when.
+
+    Notes
+    -----
+    `enabled_at` is the baseline the FIRST digest is measured from, not a
     diagnostic timestamp: with no previous run to start from, a digest has to
     begin somewhere, and "when a moderator turned this on" is the only honest
     answer -- covering all of history instead is the onboarding trigger's job.
@@ -94,9 +114,38 @@ async def set_digest_config(
 ) -> None:
     """Write one guild's digest settings, recording who changed them.
 
-    An upsert keyed on guild_id, the same shape its two channel-scoped siblings
-    use: reconfiguring the same guild repeatedly leaves exactly one row, always
-    reflecting the most recent decision.
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to configure.
+    channel_id
+        Where digests should be posted.
+    interval_seconds
+        Cadence. Must lie in
+        [`MIN_INTERVAL_SECONDS`, `MAX_INTERVAL_SECONDS`].
+    enabled
+        Whether the trigger runs.
+    updated_by_id
+        The moderator making the change.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If `interval_seconds` is outside the accepted range. Refusing it at the
+        one write path is what keeps the reader's identical check a guard
+        rather than a policy.
+
+    Notes
+    -----
+    Idempotent per guild. An upsert keyed on guild_id, the same shape its two
+    channel-scoped siblings use: reconfiguring the same guild repeatedly leaves
+    exactly one row, always reflecting the most recent decision.
 
     The CASE expression on enabled_at is the only non-obvious part, and it
     encodes a product decision rather than a storage detail. The baseline is
@@ -113,11 +162,6 @@ async def set_digest_config(
         deliberately not retro-reported -- a digest re-enabled in March should
         not open with three months of accumulated changes.
       * on -> off: irrelevant while off, and reset for whenever it comes back.
-
-    Rejects an out-of-range interval here as well as at the reader, because a
-    value this function accepts is a value some later reader has to defend
-    against; refusing it at the one write path is what keeps that defence a
-    guard rather than a policy.
     """
     if not MIN_INTERVAL_SECONDS <= interval_seconds <= MAX_INTERVAL_SECONDS:
         raise ValueError(
@@ -150,11 +194,25 @@ async def set_digest_config(
         await conn.commit()
 
 
-async def get_digest_config(
-    conn: aiosqlite.Connection, *, guild_id: int
-) -> DigestConfig | None:
-    """Return one guild's digest settings, or None if it has never configured any.
+async def get_digest_config(conn: aiosqlite.Connection, *, guild_id: int) -> DigestConfig | None:
+    """Return one guild's digest settings, or None if never configured.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+
+    Returns
+    -------
+    DigestConfig or None
+        The stored settings, enabled or not, and without the range check
+        `get_enabled_digest_configs` applies; None only when the guild has no
+        row at all.
+
+    Notes
+    -----
     Returns a disabled row as a row, not as None: the slash command needs to
     tell "never set up" (where it must ask for a channel) apart from "set up and
     switched off" (where the previous channel and interval are still the
@@ -170,8 +228,22 @@ async def get_digest_config(
 
 
 async def get_enabled_digest_configs(conn: aiosqlite.Connection) -> list[DigestConfig]:
-    """Return every guild whose digest is switched on and configured sanely.
+    """Return every guild whose digest is switched on and sanely configured.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+
+    Returns
+    -------
+    list[DigestConfig]
+        Enabled guilds whose stored interval is within the accepted range,
+        ordered by guild ID. A guild that is off, absent, or out of range is
+        simply not in the list.
+
+    Notes
+    -----
     The scheduler's one read, and deliberately the only place a guild's digest
     settings enter the scheduling path: a guild that is off, or that has no row
     at all, is simply absent from the result rather than being represented and

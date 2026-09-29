@@ -16,6 +16,7 @@ which is why unscoreable text now returns the floor instead of zero.
 
 No Discord anywhere in this file, per CLAUDE.md's testing principle.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -203,9 +204,7 @@ class TestContrastiveSemantics:
     ) -> None:
         text = "Weiß jemand, wo die Serverregeln stehen?"
         embedding = await embed_text(embedding_model, text)
-        question_side = max(
-            cosine_similarity(e, embedding) for e in detector._question_embeddings
-        )
+        question_side = max(cosine_similarity(e, embedding) for e in detector._question_embeddings)
         statement_side = max(
             cosine_similarity(e, embedding) for e in detector._statement_embeddings
         )
@@ -220,9 +219,7 @@ class TestContrastiveSemantics:
         text = "Weiß jemand, wo die Serverregeln stehen?"
         embedding = await embed_text(embedding_model, text)
         per_question = [cosine_similarity(e, embedding) for e in detector._question_embeddings]
-        per_statement = [
-            cosine_similarity(e, embedding) for e in detector._statement_embeddings
-        ]
+        per_statement = [cosine_similarity(e, embedding) for e in detector._statement_embeddings]
 
         score = await detector.question_likeness(text)
 
@@ -253,7 +250,7 @@ class TestContrastiveSemantics:
         # The two sets are mirrored topic-for-topic, so this pair differs
         # almost entirely in interrogative form -- the hardest possible test
         # of whether form is what is being measured.
-        for question, statement in zip(QUESTION_EXEMPLARS, STATEMENT_EXEMPLARS):
+        for question, statement in zip(QUESTION_EXEMPLARS, STATEMENT_EXEMPLARS, strict=True):
             assert await detector.question_likeness(question) > await detector.question_likeness(
                 statement
             ), f"{question!r} did not outscore {statement!r}"
@@ -330,7 +327,6 @@ class TestSemanticBehaviour:
         # shipped default has to actually admit ordinary questions. Read from
         # Settings rather than hardcoded, so retuning the threshold in Phase
         # 2b updates this expectation with it.
-        from aura.config import Settings
 
         threshold = Settings(  # type: ignore[call-arg]
             _env_file=None, discord_token="token"

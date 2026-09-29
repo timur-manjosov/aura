@@ -6,6 +6,7 @@ actions (authenticated, but sent by a browser). Neither may let a caller decide
 how much memory a request costs, and neither may accept JSON two parsers could
 read differently.
 """
+
 from __future__ import annotations
 
 import json
@@ -21,6 +22,26 @@ class BodyTooLargeError(Exception):
 async def read_bounded_body(request: Request, limit: int) -> bytes:
     """Read the raw body, refusing it the moment it exceeds `limit` bytes.
 
+    Parameters
+    ----------
+    request
+        The incoming request.
+    limit
+        Maximum bytes to accept.
+
+    Returns
+    -------
+    bytes
+        The raw body.
+
+    Raises
+    ------
+    BodyTooLarge
+        The moment the stream exceeds `limit`, so an oversized body is never
+        fully buffered.
+
+    Notes
+    -----
     A declared Content-Length over the limit is refused before a byte is read;
     a body that lies about its length, or streams without one, is refused as
     soon as it crosses the limit rather than after being buffered in full.
@@ -54,7 +75,19 @@ def _reject_constant(name: str) -> Any:
 
 
 def parse_json_object(raw: bytes) -> dict[str, Any] | None:
-    """Parse a JSON object strictly: UTF-8, no duplicate keys, no NaN/Infinity. None if not."""
+    """Parse a JSON object strictly: UTF-8, no duplicate keys, no NaN/Infinity. None if not.
+
+    Parameters
+    ----------
+    raw
+        The raw request body.
+
+    Returns
+    -------
+    dict[str, Any] or None
+        The parsed object, or None when it is not valid UTF-8, not JSON, not a
+        JSON *object*, carries duplicate keys, or contains NaN/Infinity.
+    """
     try:
         parsed = json.loads(
             raw.decode("utf-8"),

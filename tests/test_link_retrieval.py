@@ -22,8 +22,10 @@ Four things are proven, in order: the gap is real; a link closes it; the gate
 is NOT widened by a link; and a fact cited only through a link survives all the
 way to the grounding check and the source permalinks a reader clicks.
 """
+
 from __future__ import annotations
 
+from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -36,6 +38,7 @@ from aura.commands.ask import ask_command
 from aura.config import CrossGuildBudgetMode, Settings
 from aura.db.models import Fact
 from aura.db.proactive_channel_config import set_channel_enabled
+from aura.db.proactive_signals import GateVerdict
 from aura.db.repository import (
     create_fact,
     init_schema,
@@ -45,7 +48,6 @@ from aura.db.repository import (
 from aura.embeddings import EMBEDDING_DTYPE, embed_text, find_similar_facts
 from aura.grounding import GroundingOutcome
 from aura.links_service import expand_with_linked_facts
-from aura.db.proactive_signals import GateVerdict
 from aura.proactive.gate import ProactiveGateConfig, evaluate_message
 from aura.proactive.question_detector import QuestionDetector
 from aura.proactive.responder import respond_with_synthesis
@@ -102,9 +104,7 @@ async def _add(
     )
 
 
-async def _seed_scenario(
-    conn: aiosqlite.Connection, model: TextEmbedding
-) -> tuple[Fact, Fact]:
+async def _seed_scenario(conn: aiosqlite.Connection, model: TextEmbedding) -> tuple[Fact, Fact]:
     fact_a = await _add(conn, model, content=FACT_A, channel_id=10, message_id=100)
     fact_b = await _add(conn, model, content=FACT_B, channel_id=20, message_id=200)
     return fact_a, fact_b
@@ -231,7 +231,7 @@ class TestTheGateIsNotWidened:
             cross_guild_daily_budget_usd=1_000_000.0,
             cross_guild_budget_mode=CrossGuildBudgetMode.WARN,
         )
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         trail = await evaluate_message(
             conn,
@@ -242,7 +242,7 @@ class TestTheGateIsNotWidened:
             message_id=777,
             content="what is the weather like today?",
             config=config,
-            now=datetime.now(timezone.utc),
+            now=datetime.now(UTC),
         )
         assert trail.verdict is not GateVerdict.ELIGIBLE
         assert trail.stage2_passed is False
@@ -278,13 +278,13 @@ def _settings(**overrides: object) -> Settings:
 
 
 def _ask_interaction(conn: aiosqlite.Connection, model: TextEmbedding) -> MagicMock:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     interaction = MagicMock(spec=discord.Interaction)
     interaction.locale = "en-US"
     interaction.guild_id = GUILD_A
     interaction.channel_id = CHANNEL
-    interaction.created_at = datetime.now(timezone.utc)
+    interaction.created_at = datetime.now(UTC)
     interaction.guild = None  # channel names fall back to IDs; irrelevant here
     interaction.user = MagicMock()
     interaction.user.id = 1
@@ -402,9 +402,9 @@ class TestLinkedFactsSurviveTheWholeProactivePath:
         message.channel.id = CHANNEL
         message.channel.send = AsyncMock()
         message.id = 777
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        message.created_at = datetime.now(timezone.utc)
+        message.created_at = datetime.now(UTC)
         return message
 
     def _settings(self) -> Settings:
@@ -413,9 +413,7 @@ class TestLinkedFactsSurviveTheWholeProactivePath:
         # similarity alone and make this test prove nothing. Pinned to the
         # direct-query bar instead, so what is being measured here is the
         # link, not the threshold of the day.
-        return _settings(
-            proactive_model=None, proactive_similarity_threshold=SIMILARITY_THRESHOLD
-        )
+        return _settings(proactive_model=None, proactive_similarity_threshold=SIMILARITY_THRESHOLD)
 
     async def test_synthesis_receives_the_linked_fact_too(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding

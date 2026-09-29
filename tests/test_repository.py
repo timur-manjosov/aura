@@ -1,4 +1,5 @@
 """Tests for aura.db.repository: the knowledge model's data-access layer."""
+
 from __future__ import annotations
 
 import asyncio
@@ -152,7 +153,14 @@ class TestInitSchema:
                 INSERT INTO facts (guild_id, channel_id, message_id, content, status, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (GUILD_A, 1, 1, "no embedding", FactStatus.ACTIVE, "2026-01-01T00:00:00.000000+00:00"),
+                (
+                    GUILD_A,
+                    1,
+                    1,
+                    "no embedding",
+                    FactStatus.ACTIVE,
+                    "2026-01-01T00:00:00.000000+00:00",
+                ),
             )
 
 
@@ -380,9 +388,7 @@ class TestSupersedeFact:
         [still_active] = await get_active_facts(conn, GUILD_A)
         assert still_active.id == fact.id
 
-    async def test_concurrent_supersede_exactly_one_wins(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_concurrent_supersede_exactly_one_wins(self, conn: aiosqlite.Connection) -> None:
         old = await _make_fact(conn, content="original")
 
         async def attempt(content: str) -> Fact:
@@ -849,18 +855,22 @@ class TestWindowedReads:
         )
 
         found = await get_facts_created_between(
-            conn, guild_id=GUILD_A, since="2000-01-01T00:00:00.000000+00:00", until="2999-01-01T00:00:00.000000+00:00"
+            conn,
+            guild_id=GUILD_A,
+            since="2000-01-01T00:00:00.000000+00:00",
+            until="2999-01-01T00:00:00.000000+00:00",
         )
 
         assert {fact.id for fact in found} == {inside.id, successor.id}
 
-    async def test_created_between_is_scoped_to_one_guild(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_created_between_is_scoped_to_one_guild(self, conn: aiosqlite.Connection) -> None:
         await _make_fact(conn, guild_id=GUILD_B, message_id=1, content="theirs")
 
         found = await get_facts_created_between(
-            conn, guild_id=GUILD_A, since="2000-01-01T00:00:00.000000+00:00", until="2999-01-01T00:00:00.000000+00:00"
+            conn,
+            guild_id=GUILD_A,
+            since="2000-01-01T00:00:00.000000+00:00",
+            until="2999-01-01T00:00:00.000000+00:00",
         )
 
         assert found == []
@@ -876,7 +886,10 @@ class TestWindowedReads:
         )
 
         found = await get_facts_superseded_between(
-            conn, guild_id=GUILD_A, since="2000-01-01T00:00:00.000000+00:00", until="2999-01-01T00:00:00.000000+00:00"
+            conn,
+            guild_id=GUILD_A,
+            since="2000-01-01T00:00:00.000000+00:00",
+            until="2999-01-01T00:00:00.000000+00:00",
         )
 
         assert [fact.id for fact in found] == [retired.id]
@@ -896,9 +909,7 @@ class TestWindowedReads:
         assert set(found) == {first.id, second.id}
         assert found[first.id].content == "first"
 
-    async def test_by_ids_never_crosses_a_guild_boundary(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_by_ids_never_crosses_a_guild_boundary(self, conn: aiosqlite.Connection) -> None:
         theirs = await _make_fact(conn, guild_id=GUILD_B, message_id=1, content="theirs")
 
         assert await get_facts_by_ids(conn, guild_id=GUILD_A, fact_ids=[theirs.id]) == {}
@@ -920,20 +931,14 @@ class TestWindowedReads:
             for index in range(1200)
         ]
 
-        found = await get_facts_by_ids(
-            conn, guild_id=GUILD_A, fact_ids=[fact.id for fact in facts]
-        )
+        found = await get_facts_by_ids(conn, guild_id=GUILD_A, fact_ids=[fact.id for fact in facts])
 
         assert len(found) == 1200
         assert found[facts[-1].id].content == "fact 1199"
 
-    async def test_by_ids_tolerates_duplicate_ids(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_by_ids_tolerates_duplicate_ids(self, conn: aiosqlite.Connection) -> None:
         only = await _make_fact(conn, message_id=1, content="once")
 
-        found = await get_facts_by_ids(
-            conn, guild_id=GUILD_A, fact_ids=[only.id, only.id, only.id]
-        )
+        found = await get_facts_by_ids(conn, guild_id=GUILD_A, fact_ids=[only.id, only.id, only.id])
 
         assert found == {only.id: found[only.id]}

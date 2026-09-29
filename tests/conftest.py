@@ -1,4 +1,5 @@
 """Shared pytest fixtures across the test suite."""
+
 from __future__ import annotations
 
 import os
@@ -39,7 +40,9 @@ def block_real_llm_calls() -> Iterator[None]:
     if os.environ.get(RUN_REAL_LLM_ENV):
         yield
         return
-    message = "a test reached a real litellm.acompletion; mock it (see conftest.block_real_llm_calls)"
+    message = (
+        "a test reached a real litellm.acompletion; mock it (see conftest.block_real_llm_calls)"
+    )
     with patch("litellm.acompletion", side_effect=AssertionError(message)):
         yield
 

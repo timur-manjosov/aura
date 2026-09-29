@@ -10,6 +10,7 @@ and TestNoOptionsGiven for the behaviour that added, on top of the original
 proactive-only coverage below (now exercised by passing extraction=None
 explicitly, which is what an unset slash-command option looks like).
 """
+
 from __future__ import annotations
 
 import logging
@@ -255,7 +256,7 @@ class TestExtractionSwitch:
 
 
 class TestLocalization:
-    @pytest.mark.parametrize("locale", sorted(SUPPORTED_LOCALES) + ["xx-INVALID"])
+    @pytest.mark.parametrize("locale", [*sorted(SUPPORTED_LOCALES), "xx-INVALID"])
     async def test_any_locale_including_an_unsupported_one_replies_without_crashing(
         self, conn: aiosqlite.Connection, locale: str
     ) -> None:

@@ -15,6 +15,7 @@ conservative" mandate). is_channel_enabled returns False for an unconfigured
 channel rather than assuming a default, and the pipeline reads it as the very
 first, cheapest gate so a disabled channel incurs zero further computation.
 """
+
 from __future__ import annotations
 
 import aiosqlite
@@ -30,9 +31,28 @@ async def set_channel_enabled(
     enabled: bool,
     updated_by_id: int,
 ) -> None:
-    """Turn proactive relief on or off for one channel, recording who did it.
+    """Turn proactive relief on or off for one channel.
 
-    An upsert keyed on channel_id: toggling the same channel repeatedly leaves
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild the channel belongs to.
+    channel_id
+        Channel to configure. The table's primary key.
+    enabled
+        The new state.
+    updated_by_id
+        The moderator who made the change, recorded for accountability.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Idempotent per channel. An upsert keyed on channel_id: toggling the same channel repeatedly leaves
     exactly one row, always reflecting the most recent decision. Writes through
     the shared per-connection lock like every other writer (see
     aura.db.connection), since an unsynchronized COMMIT here would end another
@@ -55,8 +75,22 @@ async def set_channel_enabled(
 
 
 async def is_channel_enabled(conn: aiosqlite.Connection, *, channel_id: int) -> bool:
-    """Whether proactive relief is enabled for channel_id. False if never configured.
+    """Report whether proactive relief is enabled for one channel.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    channel_id
+        Channel to check.
+
+    Returns
+    -------
+    bool
+        The configured state, or False when the channel has no row.
+
+    Notes
+    -----
     The default is OFF, not ON: a channel with no row has never been opted in,
     and Aura must stay silent there. This is read once per incoming message as
     the pipeline's first gate, so it is a single indexed primary-key lookup and

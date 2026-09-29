@@ -5,6 +5,7 @@ below) so behavior is deterministic regardless of what's actually exported
 in the shell running the tests, or whether a real .env happens to exist in
 the current working directory.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -79,7 +80,10 @@ class TestDefaults:
         assert settings.synthesis_model is None
         assert settings.similarity_threshold == 0.4
         assert settings.database_path == "data/aura.db"
-        assert settings.embedding_model == "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        assert (
+            settings.embedding_model
+            == "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        )
         assert settings.log_level == "INFO"
 
     def test_proactive_defaults(self) -> None:
@@ -154,9 +158,7 @@ class TestDefaults:
         # Deliberate: backfill runs the extraction chain, so a separate model
         # value would be a second definition of what a fact looks like. There is
         # no BACKFILL_MODEL and there should not be one.
-        assert not any(
-            component.value.startswith("backfill") for component in ModelComponent
-        )
+        assert not any(component.value.startswith("backfill") for component in ModelComponent)
         assert not hasattr(_settings(discord_token="valid-token"), "backfill_model")
 
     def test_the_proactive_gate_bar_may_now_be_looser_than_the_direct_query_bar(self) -> None:
@@ -325,9 +327,7 @@ class TestIsLlmConfigured:
         assert settings.is_llm_configured(ModelComponent.PROACTIVE) is True
 
     def test_proactive_needs_the_api_key_like_synthesis_does(self) -> None:
-        settings = _settings(
-            discord_token="valid-token", proactive_model="openrouter/foo/bar"
-        )
+        settings = _settings(discord_token="valid-token", proactive_model="openrouter/foo/bar")
         assert settings.is_llm_configured(ModelComponent.PROACTIVE) is False
 
 
@@ -421,9 +421,7 @@ class TestResolveModel:
         assert load_settings().supersession_model == "openrouter/some/judge"
 
     def test_supersession_needs_the_api_key_like_the_others(self) -> None:
-        settings = _settings(
-            discord_token="valid-token", supersession_model="openrouter/foo/bar"
-        )
+        settings = _settings(discord_token="valid-token", supersession_model="openrouter/foo/bar")
         assert settings.is_llm_configured(ModelComponent.SUPERSESSION) is False
 
     def test_every_component_is_resolvable(self) -> None:
@@ -520,9 +518,7 @@ class TestVariantModelResolution:
         assert settings.is_llm_configured(ModelComponent.VARIANT_AUDIT) is False
 
     def test_variant_audit_needs_the_api_key_like_the_others(self) -> None:
-        settings = _settings(
-            discord_token="valid-token", variant_audit_model="openrouter/foo/bar"
-        )
+        settings = _settings(discord_token="valid-token", variant_audit_model="openrouter/foo/bar")
         assert settings.is_llm_configured(ModelComponent.VARIANT_AUDIT) is False
 
     def test_variant_count_default(self) -> None:
@@ -542,11 +538,11 @@ class TestVariantModelResolution:
         assert load_settings().variant_count == 3
 
     def test_variant_count_rejects_zero(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             _settings(discord_token="valid-token", variant_count="0")
 
     def test_variant_daily_cap_rejects_negative(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             _settings(discord_token="valid-token", variant_daily_cap="-1")
 
 

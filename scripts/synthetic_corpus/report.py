@@ -10,6 +10,7 @@ The sweeps therefore print the whole range, with the currently-configured value
 marked in place, so a reader sees what the present setting costs and what the
 alternatives cost side by side rather than being handed a conclusion.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -174,9 +175,11 @@ def stage2_sweep_table(
         for gap in gaps:
             counts = _stage2_confusion(scoreable, similarity, gap)
             row += f"{counts.recall:>7.2f}/{counts.specificity:<6.2f}"
-        marker = "  <-- currently configured similarity" if (
-            abs(similarity - current_similarity) < 1e-9
-        ) else ""
+        marker = (
+            "  <-- currently configured similarity"
+            if (abs(similarity - current_similarity) < 1e-9)
+            else ""
+        )
         lines.append(row + marker)
 
     lines += [
@@ -186,9 +189,7 @@ def stage2_sweep_table(
     return lines
 
 
-def _stage2_confusion(
-    cases: list[ScoredCase], similarity: float, gap: float
-) -> ConfusionCounts:
+def _stage2_confusion(cases: list[ScoredCase], similarity: float, gap: float) -> ConfusionCounts:
     """Confusion counts for one (similarity, gap) pair, using the gate's own rule."""
     scored: list[tuple[float, bool]] = []
     for case in cases:
@@ -278,7 +279,8 @@ def partial_answer_tradeoff(
         "Partial-answer cases: how many reach paid synthesis at each threshold",
         "  (not scored as right or wrong -- see the note above)",
         "",
-        f"{'similarity':>12} " + "".join(f"{f'gap={gap:.2f}':>12}" for gap in threshold_range(0.0, 0.25, 0.05)),
+        f"{'similarity':>12} "
+        + "".join(f"{f'gap={gap:.2f}':>12}" for gap in threshold_range(0.0, 0.25, 0.05)),
         _THIN,
     ]
     for similarity in threshold_range(0.30, 0.65, 0.05):
@@ -324,11 +326,7 @@ def adversarial_report(
     stopped only by the model's own refusal are the same outcome with very
     different amounts of margin behind them.
     """
-    adversarial = [
-        case
-        for case in cases
-        if case.message.adversarial_kind is not None
-    ]
+    adversarial = [case for case in cases if case.message.adversarial_kind is not None]
     if not adversarial:
         return ["no adversarial cases in this corpus"]
 
@@ -400,7 +398,8 @@ def adversarial_report(
     forced = [
         outcome
         for outcome in stage3.values()
-        if outcome.category in {
+        if outcome.category
+        in {
             MessageCategory.ADVERSARIAL_INJECTION,
             MessageCategory.ADVERSARIAL_TOXIC,
             MessageCategory.ADVERSARIAL_MALFORMED,
@@ -412,12 +411,8 @@ def adversarial_report(
         by_category = defaultdict(int)
         for outcome in confident:
             by_category[outcome.category.value] += 1
-        lines.append(
-            "  Every adversarial case was ALSO put straight to the live model,"
-        )
-        lines.append(
-            "  bypassing Stages 1 and 2, to test the last line of defence on its own."
-        )
+        lines.append("  Every adversarial case was ALSO put straight to the live model,")
+        lines.append("  bypassing Stages 1 and 2, to test the last line of defence on its own.")
         lines.append(
             f"  {len(called)} reached the model; {len(confident)} came back with "
             "answers_question=true and a citation."
@@ -432,19 +427,16 @@ def adversarial_report(
         ]
         if seized:
             lines.append(
-                "  MANIPULATED -- an injection or toxic case talked the model into "
-                "confidence:"
+                "  MANIPULATED -- an injection or toxic case talked the model into confidence:"
             )
             for outcome in seized:
                 lines.append(f"    {outcome.case_key} -> {outcome.answer_excerpt[:120]!r}")
         else:
             lines.append(
-                "  NO injection and NO toxic case obtained answers_question=true, even "
-                "with"
+                "  NO injection and NO toxic case obtained answers_question=true, even with"
             )
             lines.append(
-                "  Stages 1 and 2 removed entirely. Every confident answer above is a "
-                "malformed"
+                "  Stages 1 and 2 removed entirely. Every confident answer above is a malformed"
             )
             lines.append(
                 "  case that is an obfuscated real question -- i.e. a correct answer to a "
@@ -490,9 +482,7 @@ def label_audit_summary(corpus: SyntheticCorpus) -> list[str]:
         unavailable = row.get(LabelAudit.UNAVAILABLE.value, 0)
         audited = agree + dispute
         rate = f"{dispute / audited:.1%}" if audited else "-"
-        lines.append(
-            f"  {category:<24} {agree:>7} {dispute:>8} {unavailable:>6} {rate:>13}"
-        )
+        lines.append(f"  {category:<24} {agree:>7} {dispute:>8} {unavailable:>6} {rate:>13}")
     return lines
 
 
@@ -598,11 +588,7 @@ def key_observations(
         if case.stage2_top_score is None or case.stage2_top_score < current_similarity
     ]
     target_first = sum(1 for case in answered if case.target_is_top)
-    end_to_end = [
-        case
-        for case in survived_stage2
-        if case.stage1_score >= current_threshold
-    ]
+    end_to_end = [case for case in survived_stage2 if case.stage1_score >= current_threshold]
 
     gaps = sorted(case.stage2_gap for case in answered if case.stage2_gap is not None)
     median_gap = gaps[len(gaps) // 2] if gaps else 0.0
@@ -612,9 +598,7 @@ def key_observations(
     # printing "gap=0.0", which reads like a tuned value that happens to be
     # zero rather than a check that no longer exists.
     gap_description = (
-        "no confidence gap (retired in Phase 2b-4)"
-        if current_gap == 0.0
-        else f"gap={current_gap}"
+        "no confidence gap (retired in Phase 2b-4)" if current_gap == 0.0 else f"gap={current_gap}"
     )
 
     return [

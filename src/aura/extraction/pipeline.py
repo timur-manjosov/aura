@@ -41,6 +41,7 @@ that an automatic path proposes knowledge with no human having pointed at the
 message and said "that one", which is exactly why both of those gates stay
 human.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -86,9 +87,7 @@ logger = logging.getLogger(__name__)
 # The same set aura.proactive.listener excludes, arrived at independently and
 # kept independently. See should_extract for why this is a deliberate duplicate
 # rather than a shared constant.
-_EXTRACTABLE_MESSAGE_TYPES = frozenset(
-    {discord.MessageType.default, discord.MessageType.reply}
-)
+_EXTRACTABLE_MESSAGE_TYPES = frozenset({discord.MessageType.default, discord.MessageType.reply})
 
 # How often the sweeper wakes to look for batches whose window has closed.
 # Bounded below so a tiny configured window (tests use zero) does not spin, and
@@ -107,8 +106,22 @@ _INVISIBLE_CATEGORIES = frozenset({"Cf", "Cc", "Zs", "Zl", "Zp"})
 
 
 def sweep_interval_seconds(window_seconds: float) -> float:
-    """The sweeper's wake interval for a given batch window.
+    """Return the sweeper's wake interval for a given batch window.
 
+    Parameters
+    ----------
+    window_seconds
+        The configured batch window.
+
+    Returns
+    -------
+    float
+        Half the window, clamped to
+        [`_MIN_SWEEP_INTERVAL_SECONDS`, `_MAX_SWEEP_INTERVAL_SECONDS`], so a due
+        batch waits at most half a window longer than its own deadline.
+
+    Notes
+    -----
     A function rather than a constant so the relationship between the two is
     stated once and testable, instead of a magic number that quietly stops
     making sense if someone configures a ten-second window.
@@ -117,8 +130,21 @@ def sweep_interval_seconds(window_seconds: float) -> float:
 
 
 def should_extract(message: discord.Message) -> bool:
-    """Whether message is human-written guild text worth considering for extraction.
+    """Report whether a message is human-written guild text worth considering.
 
+    Parameters
+    ----------
+    message
+        The incoming Discord message.
+
+    Returns
+    -------
+    bool
+        True only for guild text written by a human that carries at least one
+        visible character.
+
+    Notes
+    -----
     Pure and side-effect free, and a DELIBERATE DUPLICATE of
     aura.proactive.listener.should_classify rather than a call to it. The two
     predicates happen to agree today, and sharing one function would be the
@@ -206,6 +232,25 @@ async def handle_extraction_message(
 ) -> None:
     """Run one message through the free gates and enqueue it if it survives them.
 
+    Parameters
+    ----------
+    message
+        The incoming Discord message.
+    db
+        Open database connection.
+    detector
+        The fact-worthiness detector.
+    settings
+        Loaded configuration.
+    plan_gate
+        Decides whether each guild may use this Pro trigger.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Catches every exception on purpose, and around the filtering as well as the
     scoring and the write. This runs on every message in every channel Aura can
     see, so one malformed message, one embedding failure or one busy database
@@ -262,11 +307,22 @@ async def handle_extraction_message(
         logger.exception("Extraction intake failed for message %s", _log_reference(message))
 
 
-async def withdraw_message(
-    db: aiosqlite.Connection, *, channel_id: int, message_id: int
-) -> None:
+async def withdraw_message(db: aiosqlite.Connection, *, channel_id: int, message_id: int) -> None:
     """Remove a message from its pending batch after an edit or a deletion.
 
+    Parameters
+    ----------
+    db
+        Open database connection.
+    channel_id, message_id
+        The message whose queued copy should be withdrawn.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     The scope of the edit/delete handling this sub-phase builds, and its limit
     is deliberate: a message withdrawn before its batch closes is never
     distilled and never costs anything, which covers the common case (a typo
@@ -309,8 +365,31 @@ async def flush_due_batches(
     now: datetime,
     plan_gate: PlanGate,
 ) -> int:
-    """Distill and stage every batch whose window has closed. Returns how many ran.
+    """Distill and stage every batch whose window has closed.
 
+    Parameters
+    ----------
+    db
+        Open database connection.
+    model
+        The loaded embedding model.
+    settings
+        Loaded configuration: batch sizes, caps, models.
+    now
+        Timezone-aware moment driving both the window comparison and the
+        daily-cap day key.
+    plan_gate
+        Decides whether each channel's guild may use this Pro trigger.
+
+    Returns
+    -------
+    int
+        How many batches actually ran. A channel that was not due, was refused
+        by a cap or the plan gate, or whose distillation failed contributes
+        nothing.
+
+    Notes
+    -----
     One channel at a time, sequentially rather than concurrently: the
     per-connection lock serializes the database work anyway, the distillation
     calls are not on anyone's critical path, and running them in sequence keeps
@@ -376,7 +455,9 @@ async def _flush_channel(
     would quietly become "an unbounded wait". Extraction is best-effort by
     design, and the manual "Add as Aura Fact" context menu is unaffected.
     """
-    batch = await read_batch(db, channel_id=channel_id, limit=settings.extraction_batch_max_messages)
+    batch = await read_batch(
+        db, channel_id=channel_id, limit=settings.extraction_batch_max_messages
+    )
     if not batch:
         # Raced with a withdrawal that emptied the channel between due_channels
         # and here. Nothing to do, nothing spent.
@@ -508,13 +589,36 @@ async def stage_distilled_candidates(
     settings: Settings,
     now: datetime,
 ) -> int:
-    """Embed, dedup-check, stage and (where flagged) judge every candidate from one batch.
+    """Embed, dedup-check, stage and (where flagged) judge every candidate in a batch.
 
-    Returns how many candidates this call actually staged -- which is not
-    len(distilled) whenever the UNIQUE constraint absorbs a repeat, and is what
-    a caller tracking progress (aura.backfill.worker) has to count rather than
-    assume.
+    Parameters
+    ----------
+    db
+        Open database connection.
+    model
+        The loaded embedding model.
+    guild_id
+        Guild the batch belongs to.
+    batch
+        The queued messages the candidates were distilled from, used to resolve
+        each candidate's origin reference.
+    distilled
+        What the distillation model returned.
+    settings
+        Loaded configuration: the dedup threshold, the judgment cap, the model.
+    now
+        Timezone-aware moment for the judgment ledger's day key.
 
+    Returns
+    -------
+    int
+        How many candidates this call actually staged -- NOT `len(distilled)`
+        whenever the UNIQUE constraint absorbs a repeat, which is what a caller
+        tracking progress (`aura.backfill.worker`) has to count rather than
+        assume.
+
+    Notes
+    -----
     PUBLIC, and shared with backfill on purpose. Phase 3b applies this exact
     chain to a channel's existing history, and the phase brief is explicit that
     the recognition logic is reused rather than reimplemented: the dedup
@@ -562,9 +666,7 @@ async def stage_distilled_candidates(
     # single embedding against each EXISTING active fact's canonical sentence
     # and its variants, never the reverse. Fetched once for the whole batch,
     # like active_facts above, not once per candidate.
-    active_variants_by_fact = group_variants_by_fact(
-        await get_active_fact_variants(db, guild_id)
-    )
+    active_variants_by_fact = group_variants_by_fact(await get_active_fact_variants(db, guild_id))
 
     staged_count = 0
     for candidate, embedding in zip(distilled, embeddings, strict=True):
@@ -783,6 +885,24 @@ async def run_extraction_sweeper(
 ) -> None:
     """Wake periodically and flush whatever batches are due. Runs for the process's life.
 
+    Parameters
+    ----------
+    db
+        Open database connection.
+    model
+        The loaded embedding model.
+    settings
+        Loaded configuration.
+    plan_gate
+        Decides whether each guild may use this Pro trigger.
+
+    Returns
+    -------
+    None
+        Runs until cancelled.
+
+    Notes
+    -----
     A single sweeper task for the whole bot rather than a timer per channel,
     which is what makes the batch durable across restarts (see
     aura.db.extraction_queue): there is no per-channel state to lose, only rows,

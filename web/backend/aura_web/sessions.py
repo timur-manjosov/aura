@@ -21,6 +21,7 @@ Neither store awaits anywhere inside a method, so each method is atomic with
 respect to the event loop: no request can observe a half-evicted store or
 lose a write to an interleaving one, and no lock is needed to say so.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -30,7 +31,7 @@ import secrets
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +44,19 @@ _TOKEN_BYTES = 32
 def utc_now() -> datetime:
     """Current time as a timezone-aware UTC datetime.
 
+    Returns
+    -------
+    datetime
+        Now, in UTC, always timezone-aware.
+
+    Notes
+    -----
     Deliberately the same shape as aura.db.connection.utc_now (which this
     service does not import -- see aura_web.config for why the two processes
     share no modules), so a reader moving between them finds one convention
     rather than two.
     """
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _digest(token: str) -> str:
@@ -73,6 +81,21 @@ class DiscordTokens:
     def is_expired(self, *, now: datetime, leeway_seconds: float = 60.0) -> bool:
         """Whether this access token is expired, or close enough to treat as expired.
 
+        Parameters
+        ----------
+        now
+            The moment to judge against.
+        leeway_seconds
+            How long before true expiry to start treating the token as expired, so
+            a request never goes out with a token about to lapse mid-flight.
+
+        Returns
+        -------
+        bool
+            Whether this access token should be refreshed before use.
+
+        Notes
+        -----
         The leeway exists because the alternative is a race we would lose
         silently: a token with four seconds left passes a naive check, then
         expires in flight, and the user sees an unexplained 401 instead of a
@@ -132,6 +155,21 @@ class SessionStore:
     def create(self, user: DiscordUser, tokens: DiscordTokens) -> str:
         """Store a new session and return its opaque identifier.
 
+        Parameters
+        ----------
+        user
+            The identity behind the session.
+        tokens
+            The Discord token pair to hold for it.
+
+        Returns
+        -------
+        str
+            An opaque session identifier. The only thing that reaches the browser;
+            the tokens themselves never leave this process.
+
+        Notes
+        -----
         A fresh identifier every time, never one supplied or influenced by the
         caller: session fixation needs an attacker-chosen identifier to
         survive the login, and there is no code path here that lets one in.
@@ -152,6 +190,19 @@ class SessionStore:
     def get(self, token: str | None) -> Session | None:
         """Resolve an identifier to its live session, or None.
 
+        Parameters
+        ----------
+        token
+            A session identifier, or None.
+
+        Returns
+        -------
+        Session or None
+            The live session, or None when the identifier is absent, unknown, or
+            its session has expired.
+
+        Notes
+        -----
         An expired session is deleted on the way out rather than merely
         hidden, so a store left running without traffic on a particular key
         does not accumulate records that can never be returned.
@@ -170,6 +221,21 @@ class SessionStore:
     def replace_tokens(self, token: str, tokens: DiscordTokens) -> bool:
         """Swap in a refreshed token pair, keeping the same session identifier.
 
+        Parameters
+        ----------
+        token
+            The session to update.
+        tokens
+            The refreshed Discord token pair.
+
+        Returns
+        -------
+        bool
+            Whether the session still existed to update. The identifier is
+            deliberately kept, so a refresh does not require a new cookie.
+
+        Notes
+        -----
         Rotating the identifier on refresh would log out every other tab of
         the same browser for no security gain -- the identifier is not the
         thing that expired.
@@ -181,7 +247,19 @@ class SessionStore:
         return True
 
     def delete(self, token: str | None) -> Session | None:
-        """Remove a session, returning it so the caller can revoke its tokens."""
+        """Remove a session, returning it so the caller can revoke its tokens.
+
+        Parameters
+        ----------
+        token
+            A session identifier, or None.
+
+        Returns
+        -------
+        Session or None
+            The removed session, returned so the caller can revoke its tokens at
+            Discord; None when there was nothing to remove.
+        """
         if not token:
             return None
         return self._sessions.pop(_digest(token), None)
@@ -244,7 +322,14 @@ class OAuthStateStore:
         self._states: OrderedDict[str, datetime] = OrderedDict()
 
     def issue(self) -> str:
-        """Mint a new state value, evicting expired and then oldest entries to fit."""
+        """Mint a new state value, evicting expired and then oldest entries to fit.
+
+        Returns
+        -------
+        str
+            A fresh OAuth state value. Expired entries, and then the oldest live
+            ones, are evicted to keep the store within its size ceiling.
+        """
         now = self._clock()
         self._purge_expired(now)
         self._evict_to_fit(self._max_states - 1)
@@ -256,6 +341,19 @@ class OAuthStateStore:
     def consume(self, state: str | None) -> bool:
         """Validate and burn a state value; False if unknown, expired or already used.
 
+        Parameters
+        ----------
+        state
+            The state value returned by the OAuth callback, or None.
+
+        Returns
+        -------
+        bool
+            True exactly once for a state this store issued and has not yet burned;
+            False when it is unknown, expired, or already used.
+
+        Notes
+        -----
         Single-use by construction: the entry is removed before the expiry is
         checked, so a replay of an expired state cannot be distinguished from
         a replay of a live one by timing or by outcome, and neither succeeds.
@@ -291,6 +389,20 @@ class OAuthStateStore:
 def constant_time_equals(left: str | None, right: str | None) -> bool:
     """Compare two secrets without leaking their common prefix length via timing.
 
+    Parameters
+    ----------
+    left, right
+        The two secrets. Either may be None, which compares as unequal without
+        short-circuiting on the other's length.
+
+    Returns
+    -------
+    bool
+        Whether they are equal, compared in time independent of their common
+        prefix length.
+
+    Notes
+    -----
     Used for the state-cookie binding check. The values are short-lived and
     the endpoint is not a practical timing oracle, but ``==`` on a secret is
     the kind of detail that is free to get right here and expensive to notice

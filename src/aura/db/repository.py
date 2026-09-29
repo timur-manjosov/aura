@@ -19,6 +19,7 @@ preference -- see each function's own docstring for the reasoning:
     once and must follow a link to whatever is current rather than to whatever
     the moderator happened to point at months ago.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -184,6 +185,19 @@ def _row_to_fact(row: sqlite3.Row) -> Fact:
 async def init_schema(conn: aiosqlite.Connection) -> None:
     """Enable required PRAGMAs and create the knowledge-model tables if they don't exist.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Idempotent: every statement in schema.sql is CREATE ... IF NOT EXISTS, so
+    this runs on every startup and on a fresh database alike.
     Must run exactly once per connection, before any other function in this
     module is called: PRAGMA foreign_keys is a per-connection setting SQLite
     never infers or persists on its own, so a connection it hasn't run
@@ -206,8 +220,29 @@ async def insert_fact_within_transaction(
     embedding: bytes,
     created_at: str,
 ) -> Fact:
-    """Insert one active fact. THE CALLER MUST ALREADY HOLD THE CONNECTION LOCK.
+    """Insert one active fact into an already-open transaction.
 
+    Parameters
+    ----------
+    conn
+        Open database connection. THE CALLER MUST ALREADY HOLD THE CONNECTION
+        LOCK and is responsible for the commit.
+    guild_id, channel_id, message_id
+        The origin reference (a Discord permalink).
+    content
+        The distilled sentence.
+    embedding
+        `content`'s vector, `EMBEDDING_DTYPE` bytes.
+    created_at
+        The fact's timestamp, as fixed-width UTC ISO-8601 text.
+
+    Returns
+    -------
+    Fact
+        The inserted row, with its assigned id.
+
+    Notes
+    -----
     The single statement that brings a fact into existence, factored out so
     there is exactly one of it in the codebase rather than one per operation
     that has to compose a fact insert into a larger transaction. Three callers
@@ -256,6 +291,24 @@ async def create_fact(
 ) -> Fact:
     """Insert a new active fact in its own transaction and return it.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id, channel_id, message_id
+        The origin reference.
+    content
+        The distilled sentence.
+    embedding
+        `content`'s vector.
+
+    Returns
+    -------
+    Fact
+        The inserted row, with its assigned id and timestamp.
+
+    Notes
+    -----
     embedding is required, not optional: every fact this schema can produce
     must carry one from the moment it's written, or find_similar_facts (see
     aura.embeddings) has a silent invariant violation waiting to happen the
@@ -287,8 +340,34 @@ async def supersede_fact(
     content: str,
     embedding: bytes,
 ) -> Fact:
-    """Insert a new active fact and mark old_fact_id superseded by it, atomically.
+    """Insert a new active fact and mark an older one superseded by it, atomically.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    old_fact_id
+        The fact being replaced. Must be ACTIVE.
+    guild_id, channel_id, message_id
+        The successor's origin reference.
+    content
+        The successor's distilled sentence.
+    embedding
+        The successor's vector.
+
+    Returns
+    -------
+    Fact
+        The newly created successor.
+
+    Raises
+    ------
+    FactAlreadySupersededError
+        If `old_fact_id` does not exist in this guild, or is already superseded.
+        Nothing is written when this is raised.
+
+    Notes
+    -----
     embedding is required for the same reason it's required on create_fact:
     the new fact's content is different text than the one it replaces, so it
     needs its own vector, computed by the caller before this is called. Not
@@ -345,8 +424,36 @@ async def supersede_fact_with_existing_successor(
     new_fact_id: int,
     guild_id: int,
 ) -> None:
-    """Mark old_fact_id superseded by the already-existing new_fact_id, atomically.
+    """Mark one fact superseded by another that already exists, atomically.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    old_fact_id
+        The fact being retired. Must be ACTIVE in this guild.
+    new_fact_id
+        The fact that replaces it. Must be ACTIVE in this guild and different
+        from `old_fact_id`.
+    guild_id
+        Guild both facts must belong to. Passed explicitly so a moderator in one
+        guild can never retire another guild's fact.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    SelfSupersessionError
+        If the two IDs are equal.
+    SuccessorNotActiveError
+        If `new_fact_id` is missing from this guild or is not active.
+    FactAlreadySupersededError
+        If `old_fact_id` is missing from this guild or is already superseded.
+
+    Notes
+    -----
     This is the manual /aura-supersede command's operation, not a variant of
     supersede_fact above: supersede_fact creates a brand-new fact row and
     supersedes the old one with it in the same transaction, for Phase 3a's
@@ -410,8 +517,25 @@ async def supersede_fact_with_existing_successor(
 
 
 async def get_fact_by_id(conn: aiosqlite.Connection, *, guild_id: int, fact_id: int) -> Fact | None:
-    """Return the fact with fact_id in guild_id, or None if no such fact exists there.
+    """Return one fact of a guild, or None if it has no such fact.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to look in. Part of the lookup, not a filter applied afterwards.
+    fact_id
+        The fact to fetch.
+
+    Returns
+    -------
+    Fact or None
+        The fact, whatever its status; None if this guild has no fact with that
+        id.
+
+    Notes
+    -----
     Scoped by guild_id, not just fact_id, so a moderator in one guild can
     never reference (or learn anything about) another guild's fact by
     guessing its numeric ID -- the same isolation get_active_facts and
@@ -431,8 +555,34 @@ async def get_fact_by_id(conn: aiosqlite.Connection, *, guild_id: int, fact_id: 
 async def link_facts(
     conn: aiosqlite.Connection, *, guild_id: int, fact_id_1: int, fact_id_2: int
 ) -> bool:
-    """Link two active facts of one guild thematically. Returns whether a row was created.
+    """Link two active facts of one guild thematically.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild both facts must belong to.
+    fact_id_1, fact_id_2
+        The facts to link, in either order. Stored normalised so one
+        relationship is one row.
+
+    Returns
+    -------
+    bool
+        True if a row was created; False if the link already existed.
+
+    Raises
+    ------
+    SelfLinkError
+        If the two IDs are equal.
+    FactNotFoundError
+        If either fact is missing from this guild.
+    FactNotActiveError
+        If either fact exists here but is superseded.
+
+    Notes
+    -----
     CLAUDE.md's fourth knowledge-model component, written: a moderator has
     decided these two DIFFERENT facts belong in one answer together, which is
     the one relationship no similarity search can derive on its own -- it is
@@ -483,9 +633,7 @@ async def link_facts(
             # pre-flight checks, which run in the same two passes.
             for fact_id in (fact_a_id, fact_b_id):
                 if fact_id not in status_by_id:
-                    raise FactNotFoundError(
-                        f"Fact {fact_id} does not exist in guild {guild_id}."
-                    )
+                    raise FactNotFoundError(f"Fact {fact_id} does not exist in guild {guild_id}.")
             for fact_id in (fact_a_id, fact_b_id):
                 if status_by_id[fact_id] is not FactStatus.ACTIVE:
                     raise FactNotActiveError(
@@ -510,8 +658,31 @@ async def link_facts(
 async def unlink_facts(
     conn: aiosqlite.Connection, *, guild_id: int, fact_id_1: int, fact_id_2: int
 ) -> bool:
-    """Remove the link between two facts of one guild. Returns whether a row was deleted.
+    """Remove the link between two facts of one guild.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild both facts must belong to.
+    fact_id_1, fact_id_2
+        The linked pair, in either order.
+
+    Returns
+    -------
+    bool
+        True if a row was deleted; False if no such link existed.
+
+    Raises
+    ------
+    SelfLinkError
+        If the two IDs are equal.
+    FactNotFoundError
+        If either fact is missing from this guild.
+
+    Notes
+    -----
     The exact inverse of link_facts, including the same argument-order
     indifference (the pair is sorted the same way), and the same guild
     scoping: the EXISTS guards mean a moderator cannot delete another guild's
@@ -558,7 +729,20 @@ async def unlink_facts(
 
 
 async def get_active_facts(conn: aiosqlite.Connection, guild_id: int) -> list[Fact]:
-    """Return every currently-active fact for a guild."""
+    """Return every currently-active fact for a guild.
+
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+
+    Returns
+    -------
+    list[Fact]
+        Every ACTIVE fact of that guild.
+    """
     async with connection_lock(conn):
         async with conn.execute(
             f"SELECT {_FACT_COLUMNS} FROM facts WHERE guild_id = ? AND status = ?",
@@ -571,8 +755,27 @@ async def get_active_facts(conn: aiosqlite.Connection, guild_id: int) -> list[Fa
 async def get_facts_created_between(
     conn: aiosqlite.Connection, *, guild_id: int, since: str, until: str
 ) -> list[Fact]:
-    """Return the facts a guild gained in the half-open window (since, until], oldest first.
+    """Return the facts a guild gained in the half-open window (since, until].
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+    since, until
+        Window bounds as fixed-width UTC ISO-8601 text. Half-open: `since`
+        exclusive, `until` inclusive, so consecutive windows neither overlap nor
+        leave a gap.
+
+    Returns
+    -------
+    list[Fact]
+        Facts created in the window, oldest first, whatever their current
+        status.
+
+    Notes
+    -----
     ACTIVE facts only, and that filter carries a decision rather than being a
     copy of get_active_facts' habit: a fact created inside the window and
     already superseded before the window closed is not something the server
@@ -609,8 +812,25 @@ async def get_facts_created_between(
 async def get_facts_superseded_between(
     conn: aiosqlite.Connection, *, guild_id: int, since: str, until: str
 ) -> list[Fact]:
-    """Return the facts a guild retired in the half-open window (since, until], oldest first.
+    """Return the facts a guild retired in the half-open window (since, until].
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+    since, until
+        Window bounds as fixed-width UTC ISO-8601 text, half-open exactly as in
+        `get_facts_created_between`.
+
+    Returns
+    -------
+    list[Fact]
+        Facts whose `superseded_at` falls in the window, oldest first.
+
+    Notes
+    -----
     The other half of "what changed", read off the supersession chain the
     knowledge model has carried since Phase 1b: a fact whose `superseded_at`
     falls in the window stopped being true during it, and `superseded_by_id`
@@ -636,8 +856,27 @@ async def get_facts_superseded_between(
 async def get_facts_by_ids(
     conn: aiosqlite.Connection, *, guild_id: int, fact_ids: Iterable[int]
 ) -> dict[int, Fact]:
-    """Return the requested facts of one guild, keyed by ID; missing IDs are absent.
+    """Return the requested facts of one guild, keyed by ID.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read. Facts of other guilds are never returned, whatever IDs
+        are asked for.
+    fact_ids
+        The IDs to fetch. An empty list is a no-op.
+
+    Returns
+    -------
+    dict[int, Fact]
+        One entry per fact that exists in this guild. An ID that does not is
+        simply absent -- callers get a partial result, never a KeyError and
+        never a silent substitution.
+
+    Notes
+    -----
     Returns a mapping rather than a list because every caller so far is
     following references (a supersession chain's next link) and asks about one
     ID at a time after fetching -- handing back a list would make each of them
@@ -659,8 +898,7 @@ async def get_facts_by_ids(
         placeholders = ", ".join("?" for _ in chunk)
         async with connection_lock(conn):
             async with conn.execute(
-                f"SELECT {_FACT_COLUMNS} FROM facts "
-                f"WHERE guild_id = ? AND id IN ({placeholders})",
+                f"SELECT {_FACT_COLUMNS} FROM facts WHERE guild_id = ? AND id IN ({placeholders})",
                 (guild_id, *chunk),
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -673,8 +911,24 @@ async def get_facts_by_ids(
 async def get_linked_facts(
     conn: aiosqlite.Connection, *, guild_id: int, fact_id: int
 ) -> list[Fact]:
-    """Return every fact of guild_id linked to fact_id, whatever its status, oldest ID first.
+    """Return every fact of a guild linked to one given fact.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+    fact_id
+        The fact whose neighbours to fetch.
+
+    Returns
+    -------
+    list[Fact]
+        The linked facts, whatever their status, ordered by ascending ID.
+
+    Notes
+    -----
     Checks both sides of the undirected link, which is what makes "linked" a
     symmetric question rather than one that depends on which ID a moderator
     happened to type first.
@@ -713,8 +967,25 @@ async def get_linked_facts(
 async def get_linked_fact_ids(
     conn: aiosqlite.Connection, *, guild_id: int, fact_ids: Iterable[int]
 ) -> dict[int, list[int]]:
-    """Return each requested fact's linked neighbour IDs, keyed by the fact asked about.
+    """Return each requested fact's linked neighbour IDs.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+    fact_ids
+        The facts to look up. An empty list is a no-op.
+
+    Returns
+    -------
+    dict[int, list[int]]
+        Keyed by the fact asked about, each value its neighbours' IDs. A fact
+        with no links is absent rather than present with an empty list.
+
+    Notes
+    -----
     The batched counterpart to get_linked_facts, and the reason it exists is
     CLAUDE.md's Performance rule rather than taste: retrieval asks this about
     every citation candidate at once (up to SYNTHESIS_FACT_LIMIT of them), and
@@ -776,8 +1047,28 @@ async def get_linked_fact_ids(
 async def resolve_active_successors(
     conn: aiosqlite.Connection, *, guild_id: int, fact_ids: Iterable[int]
 ) -> dict[int, Fact]:
-    """Map each requested fact ID to the ACTIVE fact it resolves to, following supersession.
+    """Map each requested fact ID to the ACTIVE fact it resolves to.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+    fact_ids
+        The facts to resolve. An empty list is a no-op.
+
+    Returns
+    -------
+    dict[int, Fact]
+        Keyed by the ID asked about, each value the active fact at the end of
+        that supersession chain. An ID whose chain does not end at an active
+        fact -- because it is missing, because the chain is broken, or because
+        it exceeds the hop limit -- is absent rather than resolved to something
+        stale.
+
+    Notes
+    -----
     A fact that is still active resolves to itself. A superseded one resolves
     to whatever `superseded_by_id` chains to, transitively, however many times
     it has been replaced -- so a link a moderator drew at a fact months ago

@@ -1,4 +1,5 @@
 """HTTP routes for the web backend."""
+
 from __future__ import annotations
 
 from aura_web.routes.auth import router as auth_router

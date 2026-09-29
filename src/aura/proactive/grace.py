@@ -28,6 +28,7 @@ treat as "a human answered". Racing a sleep against an Event, and cancelling
 whichever loses, keeps "someone else answered" a plain return value instead of
 hijacking asyncio's own shutdown-cancellation channel.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -64,30 +65,53 @@ class _PendingGrace:
 class GraceRegistry:
     """Tracks at most one in-flight grace period per channel, in memory only.
 
-    Built once per process (see AuraClient.setup_hook) and shared across every
-    message handled afterwards, the same way the question detector and
+    Notes
+    -----
+    Built once per process (see `AuraClient.setup_hook`) and shared across
+    every message handled afterwards, the same way the question detector and
     embedding model are -- it is exactly the kind of cross-message state a
     fresh instance per call would silently defeat.
+
+    Not thread-safe, and does not need to be: every method runs on the single
+    event loop that dispatches Discord events. The only concurrency it faces
+    is interleaving coroutines, which is why `wait` re-checks that the slot is
+    still its own before clearing it.
     """
 
     def __init__(self) -> None:
         self._pending: dict[int, _PendingGrace] = {}
 
     def notice_human_message(self, *, channel_id: int, author_id: int, message_id: int) -> None:
-        """Cancel channel_id's pending grace period if message_id is a genuinely different human.
+        """Cancel this channel's grace period if a genuinely different human posted.
+
+        Parameters
+        ----------
+        channel_id
+            Channel the message arrived in.
+        author_id
+            Who wrote it.
+        message_id
+            The message's ID.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        Idempotent and total: safe, and intended, to be called unconditionally
+        for every classifiable message Aura sees, before that message's own
+        gate evaluation begins. Cancellation must not depend on whatever this
+        message's own pipeline decides.
 
         Three ways this is a deliberate no-op:
-          * no grace period is pending in this channel at all -- the common
-            case, and the only work done for it is one dict lookup;
-          * message_id is the very message the grace period is waiting on
-            (its own arrival, or a gateway redelivery of it) -- not a reply;
-          * author_id is the same person who asked -- their own follow-up
-            message is not "someone else answered", per this phase's design.
 
-        Safe, and intended, to be called unconditionally for every
-        classifiable message Aura sees, before that message's own gate
-        evaluation even begins: cancellation must not depend on whatever this
-        message's own pipeline decides.
+        * no grace period is pending in this channel at all -- the common
+          case, and the only work done for it is one dict lookup;
+        * `message_id` is the very message the grace period is waiting on (its
+          own arrival, or a gateway redelivery of it) -- not a reply;
+        * `author_id` is the same person who asked -- their own follow-up
+          message is not "someone else answered", per this phase's design.
         """
         pending = self._pending.get(channel_id)
         if pending is None:
@@ -99,8 +123,21 @@ class GraceRegistry:
         pending.cancel_event.set()
 
     def notice_message_gone(self, *, channel_id: int, message_id: int) -> None:
-        """Cancel channel_id's pending grace period if it was waiting on message_id.
+        """Cancel this channel's grace period if it was waiting on this message.
 
+        Parameters
+        ----------
+        channel_id
+            Channel the vanished message belonged to.
+        message_id
+            The message that was deleted or edited.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
         Called from both on_message_delete and on_message_edit (see
         aura.main): an edit may change the question into something the
         original gate scores no longer describe, and re-validating edited
@@ -116,8 +153,35 @@ class GraceRegistry:
     async def wait(
         self, *, channel_id: int, asker_id: int, message_id: int, seconds: float
     ) -> GraceWaitOutcome:
-        """Wait out the grace period for one eligible message, or return early if cancelled.
+        """Wait out the grace period for one eligible message, or stop early.
 
+        Parameters
+        ----------
+        channel_id
+            Channel to hold the pending slot for.
+        asker_id
+            Who asked; their own later messages do not cancel the wait.
+        message_id
+            The message being waited on.
+        seconds
+            How long to wait before reporting EXPIRED.
+
+        Returns
+        -------
+        GraceWaitOutcome
+            EXPIRED if the full period elapsed with no qualifying human
+            message; CANCELLED_BY_HUMAN if one arrived first.
+
+        Raises
+        ------
+        asyncio.CancelledError
+            If this coroutine's own task is cancelled (a shutdown). Propagated
+            untouched and deliberately NOT reported as an outcome -- see the
+            module docstring on why cancellation is an Event and not
+            `Task.cancel`.
+
+        Notes
+        -----
         Registers this message as channel_id's pending grace period for the
         duration of the wait and removes it again on every exit path --
         expiry, human cancellation, or this coroutine's own task being
@@ -166,9 +230,26 @@ class GraceRegistry:
     async def _race_sleep_against_cancellation(
         pending: _PendingGrace, seconds: float
     ) -> GraceWaitOutcome:
-        """Run the timer and the cancellation signal concurrently; report whichever wins.
+        """Run the timer and the cancellation signal concurrently; report the winner.
 
-        Both helper tasks are always cancelled and awaited in the finally
+        Parameters
+        ----------
+        pending
+            The registration whose `cancel_event` ends the wait early.
+        seconds
+            Timer duration.
+
+        Returns
+        -------
+        GraceWaitOutcome
+            CANCELLED_BY_HUMAN if the event fired, EXPIRED otherwise. A tie --
+            both completing in the same loop iteration -- resolves to
+            CANCELLED_BY_HUMAN, because staying silent is the conservative
+            outcome.
+
+        Notes
+        -----
+        Leaks no tasks. Both helper tasks are always cancelled and awaited in the finally
         block, whether this coroutine's own task is cancelled from outside
         (a shutdown, propagating through asyncio.wait) or returns normally --
         so no orphaned task and no "Task was destroyed but it is pending"

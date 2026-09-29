@@ -33,6 +33,7 @@ and the hint tells the moderator to open both source messages instead of
 offering them a next command to run. The three signals are deliberately
 redundant, because any one of them alone is easy to skim past.
 """
+
 from __future__ import annotations
 
 import logging
@@ -215,9 +216,7 @@ async def _build_candidate_embed(
                 value=_truncate(similar.content, _FIELD_VALUE_DISPLAY_LIMIT),
                 inline=False,
             )
-            _add_relationship_fields(
-                embed, candidate, similar_fact_id=similar.id, locale=locale
-            )
+            _add_relationship_fields(embed, candidate, similar_fact_id=similar.id, locale=locale)
 
     embed.set_footer(text=t("pending_review_footer", locale, remaining=remaining))
     return embed
@@ -266,7 +265,19 @@ class PendingReviewView(discord.ui.View):
         self._resolved = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Reject a button press from anyone but the moderator who ran the command."""
+        """Reject a button press from anyone but the moderator who ran the command.
+
+        Parameters
+        ----------
+        interaction
+            The button press to authorise.
+
+        Returns
+        -------
+        bool
+            True only for the moderator who ran the command. Anyone else gets an
+            ephemeral refusal and False, so discord.py never dispatches the callback.
+        """
         if interaction.user.id != self._invoker_id:
             await interaction.response.send_message(
                 t("pending_wrong_user_error", self._locale), ephemeral=True
@@ -276,7 +287,20 @@ class PendingReviewView(discord.ui.View):
 
     @discord.ui.button(style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
-        """Turn the candidate into a real active fact, or report that someone else got there first."""
+        """Turn the candidate into a real active fact, or report that someone else got there first.
+
+        Parameters
+        ----------
+        interaction
+            The button press. Already authorised by `interaction_check`.
+        _button
+            discord.py's button object. Unused: this callback is bound to one
+            button already.
+
+        Returns
+        -------
+        None
+        """
         if self._resolved:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -318,7 +342,20 @@ class PendingReviewView(discord.ui.View):
 
     @discord.ui.button(style=discord.ButtonStyle.secondary)
     async def discard(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
-        """Reject the candidate. No fact is ever written, and the rejection is kept as evidence."""
+        """Reject the candidate. No fact is ever written, and the rejection is kept as evidence.
+
+        Parameters
+        ----------
+        interaction
+            The button press. Already authorised by `interaction_check`.
+        _button
+            discord.py's button object. Unused: this callback is bound to one
+            button already.
+
+        Returns
+        -------
+        None
+        """
         if self._resolved:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -393,6 +430,18 @@ async def _handle_pending_command_error(
 async def pending_command(interaction: discord.Interaction[AuraClient]) -> None:
     """Show the oldest unreviewed candidate with confirm/discard buttons.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Oldest first because this is a work queue: reviewing newest-first would let
     a candidate sit at the bottom indefinitely while newer ones keep landing on
     top of it. Running the command again after resolving one shows the next.
@@ -432,5 +481,15 @@ pending_command.error(_handle_pending_command_error)
 
 
 def register_pending_command(tree: app_commands.CommandTree) -> None:
-    """Register /aura-pending onto tree."""
+    """Register /aura-pending onto tree.
+
+    Parameters
+    ----------
+    tree
+        The command tree to register into.
+
+    Returns
+    -------
+    None
+    """
     tree.add_command(pending_command)

@@ -24,6 +24,7 @@ question-shaped, and scoring the detector as wrong for saying so would bake a
 false expectation into the evidence Phase 2b-3 reads. Those cases are reported
 in their own section against their own criteria instead.
 """
+
 from __future__ import annotations
 
 from datetime import datetime

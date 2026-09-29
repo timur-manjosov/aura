@@ -4,10 +4,10 @@ The one authorization decision this service makes reduces to a bit test on a
 number that arrives as text over the network. That makes the parser -- not the
 bit test -- the part worth attacking, so most of this file is malformed input.
 """
+
 from __future__ import annotations
 
 import pytest
-from fake_discord import PERMISSION_ADMINISTRATOR, PERMISSION_MANAGE_GUILD
 
 from aura_web.permissions import (
     MANAGE_GUILD,
@@ -18,6 +18,7 @@ from aura_web.permissions import (
     sanitize_guild_name,
     sanitize_icon_hash,
 )
+from fake_discord import PERMISSION_ADMINISTRATOR, PERMISSION_MANAGE_GUILD
 
 
 class TestBitValuesMatchDiscord:

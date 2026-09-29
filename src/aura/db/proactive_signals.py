@@ -22,6 +22,7 @@ aura.db.connection): these rows are throwaway, but they are written on the
 same aiosqlite connection facts are, and an unsynchronized commit here would
 end another operation's in-flight transaction early.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -159,6 +160,14 @@ class DecisionTrail(BaseModel):
     def would_escalate(self) -> bool:
         """Whether this message would proceed to paid synthesis once Phase 2a-3 exists.
 
+        Returns
+        -------
+        bool
+            Whether the gate's verdict was ELIGIBLE -- that is, whether this
+            message reached the paid stage.
+
+        Notes
+        -----
         The one place that reads the verdict as a yes/no, so no call site has
         to re-derive "eligible" from the individual stage flags and get it
         subtly wrong.
@@ -198,6 +207,23 @@ class ProactiveSignal(DecisionTrail):
 async def verify_signal_schema(conn: aiosqlite.Connection) -> None:
     """Reconcile an existing proactive_signals table with the current shape.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    OutdatedDiagnosticTableError
+        If the table still has a shape this cannot reconcile in place.
+
+    Notes
+    -----
+    Idempotent: safe on every startup and on a fresh database alike.
     Called once at startup, after init_schema. `CREATE TABLE IF NOT EXISTS`
     cannot reshape a table that already exists, so an INSERT against a table
     from an older phase would fail at runtime -- one logged exception per
@@ -273,8 +299,26 @@ async def record_signal(
     message_id: int,
     decision: DecisionTrail,
 ) -> None:
-    """Record one message's decision trail, ignoring a message already recorded.
+    """Record one message's decision trail.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id, channel_id, message_id
+        Which message this trail describes. `(channel_id, message_id)` is the
+        idempotency key.
+    decision
+        The gate's verdict and the numbers behind it.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Idempotent: a message already recorded is ignored rather than duplicated or
+    overwritten, which is what makes a Discord redelivery harmless here.
     Duplicates are absorbed by name -- ON CONFLICT on the
     (channel_id, message_id) constraint -- and not with a blanket
     INSERT OR IGNORE, which suppresses *every* constraint violation on the
@@ -335,6 +379,25 @@ async def update_synthesis_outcome(
 ) -> None:
     """Record what synthesis decided for an already-recorded eligible message.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    channel_id, message_id
+        The message whose trail to complete.
+    answers_question
+        The model's own self-assessment.
+    posted
+        Whether Aura actually sent the answer.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    A no-op for a message with no recorded trail: this completes an existing
+    row, it never creates one.
     Split from record_signal on purpose. The gate trail is written the instant
     the gate decides (record_signal), before the seconds-long synthesis call
     runs, so that a concurrent redelivery cannot win the (channel_id,
@@ -375,8 +438,25 @@ async def update_grace_outcome(
     message_id: int,
     outcome: GracePeriodOutcome,
 ) -> None:
-    """Record Phase 2b-1's grace-period outcome for an already-recorded eligible message.
+    """Record the grace-period outcome for an already-recorded eligible message.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    channel_id, message_id
+        The message whose trail to complete.
+    outcome
+        How the wait was resolved.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    A no-op for a message with no recorded trail, exactly like
+    `update_synthesis_outcome`.
     Split from record_signal for the same reason update_synthesis_outcome is:
     the ELIGIBLE trail is written before the (now much longer) wait begins, so
     a concurrent redelivery cannot win the row and replace a real decision
@@ -398,8 +478,30 @@ async def update_grace_outcome(
 async def get_recent_signals(
     conn: aiosqlite.Connection, *, guild_id: int, limit: int
 ) -> list[ProactiveSignal]:
-    """Return guild_id's most recently recorded decision trails, newest first.
+    """Return a guild's most recently recorded decision trails, newest first.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+    limit
+        Maximum rows. Must not be negative -- SQLite reads LIMIT -1 as "no
+        limit".
+
+    Returns
+    -------
+    list[ProactiveSignal]
+        Up to `limit` trails, newest first.
+
+    Raises
+    ------
+    ValueError
+        If `limit` is negative.
+
+    Notes
+    -----
     Ordered by id rather than created_at: insertion order is what "most
     recent" means here, and two messages classified within the same
     microsecond would otherwise tie on their timestamp and come back in an

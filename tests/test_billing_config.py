@@ -1,4 +1,5 @@
 """Phase 4c's settings: safe defaults, and every misconfiguration refused at startup with a readable reason."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -35,7 +36,9 @@ class TestDefaults:
 
 
 class TestEnforcement:
-    def test_enforcement_without_the_internal_api_is_refused_with_the_reason(self, monkeypatch) -> None:
+    def test_enforcement_without_the_internal_api_is_refused_with_the_reason(
+        self, monkeypatch
+    ) -> None:
         monkeypatch.setenv("DISCORD_TOKEN", "fake-token")
         monkeypatch.setenv("BILLING_MODE", "enforced")
         monkeypatch.delenv("INTERNAL_API_SECRET", raising=False)
@@ -47,7 +50,10 @@ class TestEnforcement:
         assert "INTERNAL_API_SECRET" in str(raised.value)
 
     def test_enforcement_with_the_internal_api_is_accepted(self) -> None:
-        assert settings(billing_mode="enforced", internal_api_secret="s" * 32).billing_mode is BillingMode.ENFORCED
+        assert (
+            settings(billing_mode="enforced", internal_api_secret="s" * 32).billing_mode
+            is BillingMode.ENFORCED
+        )
 
     @pytest.mark.parametrize("mode", ["on", "ENFORCED ", "true", ""])
     def test_an_unknown_mode_is_refused(self, mode: str) -> None:
@@ -61,7 +67,14 @@ class TestInternalApiSecret:
         assert settings(internal_api_secret=blank).internal_api_secret is None
 
     @pytest.mark.parametrize(
-        "secret", ["short", "s" * 31, "has a space and is otherwise long enough 00", "ünïcödé-secret-long-enough-000000000", "tab\tseparated-secret-long-enough-00000"]
+        "secret",
+        [
+            "short",
+            "s" * 31,
+            "has a space and is otherwise long enough 00",
+            "ünïcödé-secret-long-enough-000000000",
+            "tab\tseparated-secret-long-enough-00000",
+        ],
     )
     def test_a_weak_or_header_unsafe_secret_is_refused(self, secret: str) -> None:
         with pytest.raises(ValidationError) as raised:
@@ -74,7 +87,11 @@ class TestNoSecretInErrors:
     def test_a_refused_configuration_does_not_carry_any_secret_in_its_error(self) -> None:
         """Enforcement refused at the model level must not echo the other secrets validated with it."""
         with pytest.raises(ValidationError) as raised:
-            settings(billing_mode="enforced", llm_api_key="sk-or-never-echo-this", internal_api_secret=None)
+            settings(
+                billing_mode="enforced",
+                llm_api_key="sk-or-never-echo-this",
+                internal_api_secret=None,
+            )
 
         assert "sk-or-never-echo-this" not in str(raised.value)
         assert "fake-token" not in str(raised.value)
@@ -82,11 +99,17 @@ class TestNoSecretInErrors:
 
 class TestComplimentaryGuilds:
     def test_entries_are_trimmed_and_empty_entries_ignored(self) -> None:
-        configured = settings(billing_complimentary_guild_ids=" 100000000000000001, ,200000000000000002,")
+        configured = settings(
+            billing_complimentary_guild_ids=" 100000000000000001, ,200000000000000002,"
+        )
 
-        assert configured.complimentary_guild_ids == frozenset({100000000000000001, 200000000000000002})
+        assert configured.complimentary_guild_ids == frozenset(
+            {100000000000000001, 200000000000000002}
+        )
 
-    @pytest.mark.parametrize("entry", ["abc", "0", "-5", "1.5", "9223372036854775808", "١٢٣", "1e18"])
+    @pytest.mark.parametrize(
+        "entry", ["abc", "0", "-5", "1.5", "9223372036854775808", "١٢٣", "1e18"]
+    )
     def test_an_entry_that_is_not_a_guild_id_refuses_startup_and_is_named(self, entry: str) -> None:
         with pytest.raises(ValidationError) as raised:
             settings(billing_complimentary_guild_ids=f"100000000000000001,{entry}")

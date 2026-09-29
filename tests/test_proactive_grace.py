@@ -10,6 +10,7 @@ the clock: this module's entire job is racing two coroutines against each
 other, and a mocked clock would test the mock's model of that race, not the
 real one.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -198,17 +199,13 @@ class TestNoLeaksUnderConcurrency:
         registry = GraceRegistry()
         tasks = {
             channel: asyncio.create_task(
-                registry.wait(
-                    channel_id=channel, asker_id=ASKER, message_id=channel, seconds=5.0
-                )
+                registry.wait(channel_id=channel, asker_id=ASKER, message_id=channel, seconds=5.0)
             )
             for channel in (CHANNEL_A, CHANNEL_B)
         }
         await asyncio.sleep(0.05)
 
-        registry.notice_human_message(
-            channel_id=CHANNEL_A, author_id=OTHER_HUMAN, message_id=99999
-        )
+        registry.notice_human_message(channel_id=CHANNEL_A, author_id=OTHER_HUMAN, message_id=99999)
 
         cancelled = await asyncio.wait_for(tasks[CHANNEL_A], timeout=1.0)
         assert cancelled is GraceWaitOutcome.CANCELLED_BY_HUMAN
@@ -225,9 +222,7 @@ class TestNoLeaksUnderConcurrency:
         registry = GraceRegistry()
         tasks = {
             channel: asyncio.create_task(
-                registry.wait(
-                    channel_id=channel, asker_id=ASKER, message_id=channel, seconds=0.3
-                )
+                registry.wait(channel_id=channel, asker_id=ASKER, message_id=channel, seconds=0.3)
             )
             for channel in range(2000, 2020)
         }

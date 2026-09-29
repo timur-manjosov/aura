@@ -27,6 +27,7 @@ anything that is not one (see synthetic_corpus.scratch_db).
 This tool does not choose a threshold. It prints the whole sweep with the
 current value marked, and Phase 2b-3 decides from it.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -37,38 +38,41 @@ import os
 import random
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fastembed import TextEmbedding  # noqa: E402
+from fastembed import TextEmbedding
 
-from aura.config import ModelComponent, load_settings  # noqa: E402
-from aura.proactive.gate import ProactiveGateConfig  # noqa: E402
-from aura.proactive.question_detector import QuestionDetector  # noqa: E402
-from synthetic_corpus import report as report_sections  # noqa: E402
-from synthetic_corpus.budget import BudgetExceededError, CallBudget  # noqa: E402
-from synthetic_corpus.corpus_model import (  # noqa: E402
+from aura.config import ModelComponent, load_settings
+from aura.proactive.gate import ProactiveGateConfig
+from aura.proactive.question_detector import QuestionDetector
+from synthetic_corpus import report as report_sections
+from synthetic_corpus.budget import BudgetExceededError, CallBudget
+from synthetic_corpus.corpus_model import (
     CALIBRATION_CATEGORIES,
     LabelAudit,
     MessageCategory,
     Stage1Truth,
     effective_stage1_truth,
 )
-from synthetic_corpus.corpus_store import (  # noqa: E402
+from synthetic_corpus.corpus_store import (
     assert_corpus_matches_database,
     assert_corpus_matches_scenario_grid,
     read_corpus,
     read_fact_key_map,
 )
-from synthetic_corpus.leakage import LeakageChecker  # noqa: E402
-from synthetic_corpus.llm import RUN_REAL_LLM_ENV  # noqa: E402
-from synthetic_corpus.pricing import PricingUnavailableError, fetch_model_prices  # noqa: E402
-from synthetic_corpus.scenarios import describe_grid  # noqa: E402
-from synthetic_corpus.scratch_db import DEFAULT_SCRATCH_PATH, open_scratch_database  # noqa: E402
-from synthetic_corpus.simulation import (  # noqa: E402
+from synthetic_corpus.leakage import LeakageChecker
+from synthetic_corpus.llm import RUN_REAL_LLM_ENV
+from synthetic_corpus.pricing import PricingUnavailableError, fetch_model_prices
+from synthetic_corpus.scenarios import describe_grid
+from synthetic_corpus.scratch_db import DEFAULT_SCRATCH_PATH, open_scratch_database
+from synthetic_corpus.simulation import (
     ScoredCase,
     Stage3Outcome,
     run_stage3,
@@ -311,9 +315,7 @@ async def main() -> int:
     parser.add_argument("--results", type=Path, default=DEFAULT_RESULTS_PATH)
     parser.add_argument("--stage3-adversarial", action="store_true")
     parser.add_argument("--stage3-calibration", action="store_true")
-    parser.add_argument(
-        "--stage3-max-spend-usd", type=float, default=DEFAULT_STAGE3_MAX_SPEND_USD
-    )
+    parser.add_argument("--stage3-max-spend-usd", type=float, default=DEFAULT_STAGE3_MAX_SPEND_USD)
     parser.add_argument(
         "--reuse-stage3",
         type=Path,
@@ -395,7 +397,7 @@ async def main() -> int:
             corpus,
             scored,
             agreement_config,
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
         )
 
         print("re-running the leakage check against the shipped exemplars...", flush=True)
@@ -489,7 +491,7 @@ async def main() -> int:
         scored,
         stage3,
         {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "corpus_generated_at": corpus.generated_at.isoformat(),
             "generator_model": corpus.generator_model,
             "reviewer_model": corpus.reviewer_model,
@@ -535,9 +537,7 @@ def _build_report(
     """Assemble the whole written report from the scored cases."""
     calibration = [case for case in scored if case.message.category in CALIBRATION_CATEGORIES]
     undisputed = [
-        case
-        for case in calibration
-        if case.message.label_audit is not LabelAudit.DISPUTE
+        case for case in calibration if case.message.label_audit is not LabelAudit.DISPUTE
     ]
     adversarial_scoreable = [
         case
@@ -548,7 +548,7 @@ def _build_report(
 
     lines: list[str] = [
         "PHASE 2b-2 -- SYNTHETIC DISCORD-SCENARIO CORPUS & PIPELINE SIMULATION",
-        f"Generated: {datetime.now(timezone.utc).date().isoformat()}",
+        f"Generated: {datetime.now(UTC).date().isoformat()}",
         "",
         "This report produces evidence. It does not choose a threshold -- that is",
         "Phase 2b-3's decision, and every sweep below prints its whole range with the",

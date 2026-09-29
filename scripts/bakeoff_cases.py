@@ -18,6 +18,7 @@ says "yes, answered" while citing the wrong fact has not passed, it has been
 lucky. For a case expecting False, citations are not scored -- the correct
 behaviour is to decline, and what it points at while declining does not matter.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -203,8 +204,7 @@ CASES: list[BakeOffCase] = [
         message="oh fantastic, the server is down AGAIN. does anyone here even know "
         "how to run a server properly?",
         facts=[
-            "Scheduled maintenance runs on the first Sunday of each month from "
-            "03:00 to 05:00 UTC.",
+            "Scheduled maintenance runs on the first Sunday of each month from 03:00 to 05:00 UTC.",
             "Outage reports should be posted in #status-updates.",
         ],
         expected_answers_question=False,

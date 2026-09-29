@@ -21,6 +21,7 @@ onboarding (aura.onboarding.formatter) through aura.rendering -- see that
 module's docstring for why a link-hijack fix must live in exactly one place
 rather than being copied.
 """
+
 from __future__ import annotations
 
 import discord
@@ -49,8 +50,21 @@ _MILESTONE_ICON = "🏆"
 
 
 def digest_locale(guild: discord.Guild | None) -> str:
-    """The language one guild's digest is written in.
+    """Return the language one guild's digest is written in.
 
+    Parameters
+    ----------
+    guild
+        The guild the digest is for, or None when it cannot be resolved.
+
+    Returns
+    -------
+    str
+        The guild's preferred locale, or the default locale when the guild is
+        unknown or its locale is not one Aura supports.
+
+    Notes
+    -----
     A digest has no asking user whose interaction.locale could be read, so it
     uses the guild's own preferred locale -- the same signal, and the same
     fallback, that an unprompted proactive answer uses (see
@@ -104,15 +118,31 @@ def build_digest_embed(
 ) -> discord.Embed:
     """Render an assembled digest as the embed that gets posted.
 
+    Parameters
+    ----------
+    content
+        The assembled digest. Never empty: that case is decided before this
+        function is reached, because "post nothing" is not a rendering decision.
+    locale
+        Language to render in.
+    interval_seconds
+        The guild's cadence, named in the embed so a reader knows what period
+        the digest covers.
+
+    Returns
+    -------
+    discord.Embed
+        The embed to post, within Discord's field and value limits (see
+        `aura.rendering`).
+
+    Notes
+    -----
     Sections are ordered by how much a reader cares: milestones first because
     they are the reason that category exists as its own thing, then what is new,
     then what changed. A section with nothing in it is omitted entirely rather
     than shown as "New facts (0)" -- a digest is only ever built when at least
     one section has content (see DigestContent.is_empty), so an empty section is
     a real absence, not a nothing-happened digest.
-
-    Never called for an empty digest; that case is decided before this function
-    is reached, because "post nothing" is not a rendering decision.
     """
     embed = discord.Embed(
         title=t("digest_title", locale),
@@ -143,9 +173,7 @@ def build_digest_embed(
     if content.changes:
         embed.add_field(
             name=t("digest_changes_label", locale, count=len(content.changes)),
-            value=_fit_lines(
-                [_change_line(change, locale) for change in content.changes], locale
-            ),
+            value=_fit_lines([_change_line(change, locale) for change in content.changes], locale),
             inline=False,
         )
 

@@ -1,0 +1,11 @@
+# Development-only tooling. Deliberately NOT in requirements.txt: the Dockerfile
+# copies that file into the runtime image, and a linter has no business there.
+#
+#   .venv/bin/pip install -r requirements-dev.txt
+#   ruff format . && ruff check . && mypy
+#
+# Configuration for both lives in pyproject.toml.
+-r requirements.txt
+
+ruff>=0.16
+mypy>=1.11

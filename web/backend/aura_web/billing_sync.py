@@ -22,6 +22,7 @@ A refused write (version conflict) is retried from step 1 a bounded number of
 times, then reported as a failure, so Stripe redelivers the event later rather
 than this service looping.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -72,6 +73,28 @@ async def sync_subscription(
 ) -> SyncOutcome:
     """Bring the bot's copy of one subscription up to Stripe's current state.
 
+    Parameters
+    ----------
+    stripe
+        Reads the subscription's current state.
+    bot
+        Holds the stored copy and applies the write.
+    subscription_id
+        The subscription to bring up to date.
+    event_id, event_type
+        The Stripe event driving this sync, or None for reconciliation.
+    live_mode
+        Whether this deployment accepts live events.
+
+    Returns
+    -------
+    SyncOutcome
+        What happened: applied, already applied, a version conflict, or a
+        refusal. Never raises for an expected failure -- a webhook that cannot
+        be synced now is retried by Stripe and by the reconciler.
+
+    Notes
+    -----
     Raises StripeAPIError or BotBillingError when either side cannot be
     reached, SyncConflictError after MAX_SYNC_ATTEMPTS lost races, and
     LivemodeMismatchError for a subscription from the wrong mode. Every one of
@@ -130,6 +153,23 @@ async def reconcile_subscriptions(
 ) -> ReconciliationReport:
     """Re-sync every Aura subscription in the Stripe account, one at a time.
 
+    Parameters
+    ----------
+    stripe
+        Lists and reads the account's Aura subscriptions.
+    bot
+        Receives each snapshot.
+    live_mode
+        Whether this deployment accepts live events.
+
+    Returns
+    -------
+    ReconciliationReport
+        Counts per outcome. One subscription at a time, so a failure on one
+        does not abandon the rest.
+
+    Notes
+    -----
     Recovers what a webhook cannot: an event Stripe stopped retrying while this
     service or the bot was down. A failure on one subscription is logged and
     the pass continues, so one broken subscription cannot starve the others --
@@ -148,7 +188,9 @@ async def reconcile_subscriptions(
                 live_mode=live_mode,
             )
         except (StripeAPIError, BotBillingError, SyncConflictError, LivemodeMismatchError) as exc:
-            logger.warning("Reconciliation could not sync subscription %s: %s", subscription_id, exc)
+            logger.warning(
+                "Reconciliation could not sync subscription %s: %s", subscription_id, exc
+            )
             report.failed.append(subscription_id)
             continue
         if outcome is SyncOutcome.APPLIED:
@@ -164,7 +206,26 @@ async def run_reconciler(
     interval_seconds: float,
     first_delay_seconds: float = FIRST_RECONCILIATION_DELAY_SECONDS,
 ) -> None:
-    """Reconcile periodically for the process's life. Never dies of a failure it can survive."""
+    """Reconcile periodically for the process's life. Never dies of a failure it can survive.
+
+    Parameters
+    ----------
+    stripe, bot
+        Passed through to each reconciliation pass.
+    live_mode
+        Whether this deployment accepts live events.
+    interval_seconds
+        How long to wait between passes.
+    first_delay_seconds
+        How long to wait before the first pass, so startup is not slowed by it.
+
+    Returns
+    -------
+    None
+        Runs until cancelled. Every failure a pass can survive is logged and
+        the loop continues, because a reconciler that dies is a reconciler
+        nobody notices is gone.
+    """
     await asyncio.sleep(first_delay_seconds)
     while True:
         try:

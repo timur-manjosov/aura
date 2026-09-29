@@ -22,6 +22,7 @@ bot. A channel with no setting is OFF for both switches (see
 aura.db.proactive_channel_config and aura.db.extraction_channel_config), so
 this command is how a moderator turns either on -- and off again.
 """
+
 from __future__ import annotations
 
 import logging
@@ -85,6 +86,25 @@ async def config_command(
 ) -> None:
     """Turn proactive relief and/or automatic fact extraction on or off for one channel.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    channel
+        The channel to configure.
+    proactive
+        Turn proactive relief on or off there, or None to leave it unchanged.
+    extraction
+        Turn automatic extraction on or off there, or None to leave it
+        unchanged.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Both switches are independent (see this module's docstring); each is only
     written, and only mentioned in the confirmation, if the moderator actually
     passed a value for it. A call with neither is rejected before either
@@ -148,5 +168,15 @@ config_command.error(_handle_config_command_error)
 
 
 def register_config_command(tree: app_commands.CommandTree) -> None:
-    """Register /aura-config onto tree."""
+    """Register /aura-config onto tree.
+
+    Parameters
+    ----------
+    tree
+        The command tree to register into.
+
+    Returns
+    -------
+    None
+    """
     tree.add_command(config_command)

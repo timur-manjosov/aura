@@ -24,6 +24,7 @@ specific, friendly sentence naming what went wrong, while the repository's own
 checks close the window between reading a fact and writing the link. Both are
 needed, exactly as /aura-supersede uses both.
 """
+
 from __future__ import annotations
 
 import logging
@@ -160,7 +161,22 @@ async def _handle_link_command_error(
 async def link_command(
     interaction: discord.Interaction[AuraClient], fact_a_id: _FactId, fact_b_id: _FactId
 ) -> None:
-    """Validate both fact references, then link them; report whether anything changed."""
+    """Validate both fact references, then link them; report whether anything changed.
+
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    fact_a_id
+        One end of the relationship.
+    fact_b_id
+        The other end. Order does not matter: the link is undirected.
+
+    Returns
+    -------
+    None
+    """
     assert interaction.guild_id is not None  # guaranteed by guild_only()
     locale = str(interaction.locale)
     guild_id = interaction.guild_id
@@ -191,9 +207,7 @@ async def link_command(
 
     fact_a, fact_b = facts
     try:
-        created = await link_facts(
-            db, guild_id=guild_id, fact_id_1=fact_a.id, fact_id_2=fact_b.id
-        )
+        created = await link_facts(db, guild_id=guild_id, fact_id_1=fact_a.id, fact_id_2=fact_b.id)
     except FactNotFoundError:
         # Both facts existed a moment ago; one no longer does. Only a direct
         # database edit can produce this, but it must still be a sentence.
@@ -232,6 +246,22 @@ async def unlink_command(
 ) -> None:
     """Remove the link between two facts of this guild, reporting whether one existed.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    fact_a_id
+        One end of the relationship.
+    fact_b_id
+        The other end. Order does not matter: the link is undirected.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Deliberately does NOT require either fact to still be active, mirroring
     aura.db.repository.unlink_facts: the links most worth cleaning up are
     exactly the ones whose facts have moved on since.
@@ -256,9 +286,7 @@ async def unlink_command(
             await interaction.response.send_message(error_message, ephemeral=True)
             return
 
-    removed = await unlink_facts(
-        db, guild_id=guild_id, fact_id_1=fact_a_id, fact_id_2=fact_b_id
-    )
+    removed = await unlink_facts(db, guild_id=guild_id, fact_id_1=fact_a_id, fact_id_2=fact_b_id)
     message_key = "unlink_success" if removed else "unlink_not_linked"
     await interaction.response.send_message(
         t(message_key, locale, fact_a_id=fact_a_id, fact_b_id=fact_b_id), ephemeral=True
@@ -270,6 +298,16 @@ unlink_command.error(_handle_link_command_error)
 
 
 def register_link_commands(tree: app_commands.CommandTree) -> None:
-    """Register /aura-link and /aura-unlink onto tree."""
+    """Register /aura-link and /aura-unlink onto tree.
+
+    Parameters
+    ----------
+    tree
+        The command tree to register into.
+
+    Returns
+    -------
+    None
+    """
     tree.add_command(link_command)
     tree.add_command(unlink_command)

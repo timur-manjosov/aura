@@ -22,6 +22,7 @@ connection to verify:
   * scheduler -- when it happens, and the bookkeeping that makes "when" survive
                  a restart. Its durable half lives in aura.db.digest_state.
 """
+
 from aura.digest.builder import DigestChange, DigestContent, build_digest
 from aura.digest.formatter import build_digest_embed, digest_locale
 from aura.digest.gateway import ClientDigestGateway, DigestGateway

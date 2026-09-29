@@ -8,6 +8,7 @@ aura.db.connection documents at length for asyncio locks), and a global makes
 patching, which is exactly the kind of test this sub-phase's verification
 needs to be able to write.
 """
+
 from __future__ import annotations
 
 import logging
@@ -45,7 +46,18 @@ class ServiceContext:
 
 
 def get_context(request: Request) -> ServiceContext:
-    """FastAPI dependency resolving the shared context off the application."""
+    """FastAPI dependency resolving the shared context off the application.
+
+    Parameters
+    ----------
+    request
+        The incoming request; the context hangs off its application.
+
+    Returns
+    -------
+    ServiceContext
+        The shared, process-wide context: settings, stores and clients.
+    """
     context: ServiceContext = request.app.state.context
     return context
 
@@ -53,6 +65,20 @@ def get_context(request: Request) -> ServiceContext:
 def read_session_cookie(request: Request, settings: WebSettings) -> str | None:
     """Read the raw session identifier out of the request's cookies.
 
+    Parameters
+    ----------
+    request
+        The incoming request.
+    settings
+        Supplies the cookie's configured name.
+
+    Returns
+    -------
+    str or None
+        The raw session identifier, or None when the cookie is absent.
+
+    Notes
+    -----
     One place, so no handler reaches for ``request.cookies`` with a literal
     name and quietly misses a configured rename.
     """
@@ -64,6 +90,22 @@ async def resolve_active_session(
 ) -> tuple[str, Session] | None:
     """Resolve the caller's session, refreshing its Discord token if needed.
 
+    Parameters
+    ----------
+    request
+        The incoming request.
+    context
+        The shared context: the session store and the Discord client.
+
+    Returns
+    -------
+    tuple[str, Session] or None
+        The session identifier and the live session, or None when there is no
+        usable session -- no cookie, an unknown or expired one, or one whose
+        Discord token could not be refreshed.
+
+    Notes
+    -----
     Returns None for every way a caller can fail to be logged in -- no
     cookie, an unknown or expired identifier, or a refresh Discord refuses --
     so callers have one "not authenticated" branch instead of four.
@@ -105,6 +147,19 @@ async def resolve_active_session(
 def session_cookie_max_age(settings: WebSettings) -> int:
     """The session cookie's lifetime, in seconds, matched to the server-side TTL.
 
+    Parameters
+    ----------
+    settings
+        Supplies the server-side session TTL.
+
+    Returns
+    -------
+    int
+        The cookie lifetime in seconds, matched to the server-side TTL so a
+        browser never holds a cookie the store has already forgotten.
+
+    Notes
+    -----
     Kept equal on purpose. A cookie outliving its record leaves the browser
     presenting an identifier the server has already forgotten; a record
     outliving its cookie leaks memory the user can never reclaim by logging

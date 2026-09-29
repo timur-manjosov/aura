@@ -11,10 +11,11 @@ The race tests use real asyncio.gather, and the restart tests use a real file on
 disk: an in-memory database cannot demonstrate durability, since closing it
 loses the data whether or not the design was durable.
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -35,7 +36,7 @@ GUILD_A = 100000000000000001
 GUILD_B = 200000000000000002
 CHANNEL_A = 500000000000000005
 
-NOON = datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc)
+NOON = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
 
 EMBEDDING = b"\x00" * 16
 
@@ -83,9 +84,7 @@ async def _acquire(
 
 
 class TestAcquisition:
-    async def test_the_first_call_of_the_day_is_granted(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_the_first_call_of_the_day_is_granted(self, conn: aiosqlite.Connection) -> None:
         attempt = await _acquire(conn, pending_fact_id=await _candidate(conn))
         assert attempt.granted
         assert attempt.outcome is SupersessionCallOutcome.GRANTED
@@ -100,9 +99,7 @@ class TestAcquisition:
             attempt = await _acquire(conn, pending_fact_id=candidate)
             assert attempt.daily_count == expected
 
-    async def test_the_cap_refuses_once_it_is_reached(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_the_cap_refuses_once_it_is_reached(self, conn: aiosqlite.Connection) -> None:
         for message_id in range(1, 4):
             candidate = await _candidate(conn, message_id=message_id)
             assert (await _acquire(conn, pending_fact_id=candidate)).granted
@@ -111,20 +108,12 @@ class TestAcquisition:
         assert not refused.granted
         assert refused.outcome is SupersessionCallOutcome.DAILY_CAP_REACHED
         assert refused.daily_count == 3
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOON)
-        ) == 3
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOON)) == 3
 
-    async def test_a_zero_cap_is_a_valid_off_switch(
-        self, conn: aiosqlite.Connection
-    ) -> None:
-        attempt = await _acquire(
-            conn, pending_fact_id=await _candidate(conn), daily_cap=0
-        )
+    async def test_a_zero_cap_is_a_valid_off_switch(self, conn: aiosqlite.Connection) -> None:
+        attempt = await _acquire(conn, pending_fact_id=await _candidate(conn), daily_cap=0)
         assert not attempt.granted
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOON)
-        ) == 0
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOON)) == 0
 
     async def test_a_refusal_writes_nothing(self, conn: aiosqlite.Connection) -> None:
         await _acquire(conn, pending_fact_id=await _candidate(conn), daily_cap=0)
@@ -154,13 +143,9 @@ class TestAcquisition:
             candidate = await _candidate(conn, message_id=message_id)
             await _acquire(conn, pending_fact_id=candidate)
 
-        assert await count_extraction_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOON)
-        ) == 0
+        assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOON)) == 0
 
-    async def test_the_cap_resets_on_the_next_utc_day(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_the_cap_resets_on_the_next_utc_day(self, conn: aiosqlite.Connection) -> None:
         for message_id in range(1, 4):
             candidate = await _candidate(conn, message_id=message_id)
             await _acquire(conn, pending_fact_id=candidate)
@@ -183,12 +168,8 @@ class TestAcquisition:
         # local date would hand the guild a second daily budget.
         late = datetime(2026, 8, 1, 1, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
         await _acquire(conn, pending_fact_id=await _candidate(conn), now=late)
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day="2026-07-31"
-        ) == 1
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day="2026-08-01"
-        ) == 0
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day="2026-07-31") == 1
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day="2026-08-01") == 0
 
     async def test_the_ledger_records_which_candidate_it_paid_for(
         self, conn: aiosqlite.Connection
@@ -249,9 +230,7 @@ class TestCapRaces:
         )
 
         assert len([a for a in attempts if a.granted]) == 3
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOON)
-        ) == 3
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOON)) == 3
 
     async def test_concurrent_acquisitions_report_a_consistent_running_count(
         self, conn: aiosqlite.Connection
@@ -280,9 +259,7 @@ class TestCapRaces:
     ) -> None:
         pairs = [
             (guild, await _candidate(conn, guild_id=guild, message_id=index))
-            for index, guild in enumerate(
-                [GUILD_A] * 10 + [GUILD_B] * 10, start=1
-            )
+            for index, guild in enumerate([GUILD_A] * 10 + [GUILD_B] * 10, start=1)
         ]
         attempts = await asyncio.gather(
             *(
@@ -291,12 +268,8 @@ class TestCapRaces:
             )
         )
         assert len([a for a in attempts if a.granted]) == 4
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOON)
-        ) == 2
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_B, day=utc_day(NOON)
-        ) == 2
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOON)) == 2
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_B, day=utc_day(NOON)) == 2
 
 
 class TestRestartDurability:
@@ -317,9 +290,9 @@ class TestRestartDurability:
         second = await aiosqlite.connect(database)
         await init_schema(second)
         try:
-            assert await count_supersession_calls_on(
-                second, guild_id=GUILD_A, day=utc_day(NOON)
-            ) == 3
+            assert (
+                await count_supersession_calls_on(second, guild_id=GUILD_A, day=utc_day(NOON)) == 3
+            )
             refused = await _acquire(
                 second,
                 pending_fact_id=await _candidate(second, message_id=4),
@@ -330,9 +303,7 @@ class TestRestartDurability:
         finally:
             await second.close()
 
-    async def test_a_slot_claimed_before_a_crash_is_not_refunded(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_a_slot_claimed_before_a_crash_is_not_refunded(self, tmp_path: Path) -> None:
         # The deliberate conservative direction: a crash between claiming a slot
         # and receiving the judgement spends the slot. For a spend limit, erring
         # toward "already spent" is the only safe way to err -- and the cost of
@@ -342,9 +313,7 @@ class TestRestartDurability:
 
         first = await aiosqlite.connect(database)
         await init_schema(first)
-        assert (
-            await _acquire(first, pending_fact_id=await _candidate(first), daily_cap=2)
-        ).granted
+        assert (await _acquire(first, pending_fact_id=await _candidate(first), daily_cap=2)).granted
         await first.close()  # crash before the judgement call returns
 
         second = await aiosqlite.connect(database)

@@ -7,9 +7,11 @@ unrelated text, that concurrent inference doesn't corrupt results -- which a
 mock can't meaningfully exercise. cosine_similarity's own unit tests are the
 one exception, since they only need plain numpy arrays.
 """
+
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC
 
 import aiosqlite
 import numpy as np
@@ -99,7 +101,9 @@ class TestEmbedText:
         assert vector.shape == (_MODEL_DIM,)
         assert vector.dtype == EMBEDDING_DTYPE
 
-    async def test_whitespace_only_text_does_not_crash(self, embedding_model: TextEmbedding) -> None:
+    async def test_whitespace_only_text_does_not_crash(
+        self, embedding_model: TextEmbedding
+    ) -> None:
         vector = await embed_text(embedding_model, "   \n\t  ")
         assert vector.shape == (_MODEL_DIM,)
 
@@ -132,7 +136,7 @@ class TestEmbedText:
         sequential = [await embed_text(embedding_model, text) for text in texts]
         concurrent = await asyncio.gather(*(embed_text(embedding_model, text) for text in texts))
 
-        for seq_vec, conc_vec in zip(sequential, concurrent):
+        for seq_vec, conc_vec in zip(sequential, concurrent, strict=True):
             assert np.array_equal(seq_vec, conc_vec)
 
 
@@ -145,7 +149,7 @@ class TestEmbedTexts:
         batched = await embed_texts(embedding_model, texts)
 
         assert len(batched) == len(texts)
-        for text, vector in zip(texts, batched):
+        for text, vector in zip(texts, batched, strict=True):
             individually = await embed_text(embedding_model, text)
             assert np.array_equal(vector, individually)
 
@@ -182,7 +186,9 @@ class TestFindSimilarFacts:
     async def test_zero_facts_in_guild_returns_empty_list_not_an_error(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
-        results = await find_similar_facts(conn, embedding_model, guild_id=GUILD_A, query="anything")
+        results = await find_similar_facts(
+            conn, embedding_model, guild_id=GUILD_A, query="anything"
+        )
         assert results == []
 
     async def test_top_k_larger_than_available_facts_does_not_error(
@@ -201,7 +207,11 @@ class TestFindSimilarFacts:
     ) -> None:
         for i in range(8):
             await add_fact(
-                conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=i,
+                conn,
+                embedding_model,
+                guild_id=GUILD_A,
+                channel_id=1,
+                message_id=i,
                 content=f"distinct fact number {i}",
             )
         results = await find_similar_facts(
@@ -213,15 +223,27 @@ class TestFindSimilarFacts:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="the server was founded in 2020",
         )
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=2,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=2,
             content="we sell homemade candles on weekends",
         )
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=3,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=3,
             content="the server's founding year is 2020",
         )
 
@@ -240,11 +262,19 @@ class TestFindSimilarFacts:
         # matter for dissimilar content), this is where it would surface.
         identical_content = "the server rules were updated last week"
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content=identical_content,
         )
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_B, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_B,
+            channel_id=1,
+            message_id=1,
             content=identical_content,
         )
 
@@ -272,8 +302,11 @@ class TestFindSimilarFacts:
         )
 
         results = await find_similar_facts(
-            conn, embedding_model, guild_id=GUILD_A,
-            query="The server rules were updated last week.", top_k=10,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            query="The server rules were updated last week.",
+            top_k=10,
         )
         scores_by_content = {fact.content: score for fact, score in results}
 
@@ -340,29 +373,31 @@ class TestBestSimilarity:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         fact = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="the sky is blue",
         )
         query_embedding = await embed_text(embedding_model, "the sky is blue")
         assert best_similarity(query_embedding, fact) == pytest.approx(
-            cosine_similarity(
-                query_embedding, np.frombuffer(fact.embedding, dtype=EMBEDDING_DTYPE)
-            )
+            cosine_similarity(query_embedding, np.frombuffer(fact.embedding, dtype=EMBEDDING_DTYPE))
         )
 
     async def test_a_variant_that_matches_better_than_canonical_wins_the_max(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         fact = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="the sky is blue",
         )
-        await _store_variant(
-            conn, embedding_model, fact_id=fact.id, content="the exact query text"
-        )
-        variants_by_fact = group_variants_by_fact(
-            await get_active_fact_variants(conn, GUILD_A)
-        )
+        await _store_variant(conn, embedding_model, fact_id=fact.id, content="the exact query text")
+        variants_by_fact = group_variants_by_fact(await get_active_fact_variants(conn, GUILD_A))
         query_embedding = await embed_text(embedding_model, "the exact query text")
 
         canonical_only = best_similarity(query_embedding, fact)
@@ -372,22 +407,29 @@ class TestBestSimilarity:
         assert with_variant == pytest.approx(1.0, abs=1e-4)
 
     def test_non_finite_canonical_vector_is_skipped_not_allowed_to_win(self) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from aura.db.models import Fact, FactStatus
 
         nan_bytes = np.full(4, np.nan, dtype=EMBEDDING_DTYPE).tobytes()
         fact = Fact(
-            id=1, guild_id=GUILD_A, channel_id=1, message_id=1, content="x",
-            embedding=nan_bytes, status=FactStatus.ACTIVE, superseded_by_id=None,
-            created_at=datetime.now(timezone.utc), superseded_at=None,
+            id=1,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            content="x",
+            embedding=nan_bytes,
+            status=FactStatus.ACTIVE,
+            superseded_by_id=None,
+            created_at=datetime.now(UTC),
+            superseded_at=None,
         )
         query_embedding = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         result = best_similarity(query_embedding, fact)
         assert np.isnan(result)
 
     def test_a_non_finite_variant_does_not_poison_a_finite_canonical_score(self) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from aura.db.fact_variants import FactVariant
         from aura.db.models import Fact, FactStatus
@@ -395,13 +437,23 @@ class TestBestSimilarity:
         good = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         nan_bytes = np.full(4, np.nan, dtype=EMBEDDING_DTYPE).tobytes()
         fact = Fact(
-            id=1, guild_id=GUILD_A, channel_id=1, message_id=1, content="x",
-            embedding=good.tobytes(), status=FactStatus.ACTIVE, superseded_by_id=None,
-            created_at=datetime.now(timezone.utc), superseded_at=None,
+            id=1,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            content="x",
+            embedding=good.tobytes(),
+            status=FactStatus.ACTIVE,
+            superseded_by_id=None,
+            created_at=datetime.now(UTC),
+            superseded_at=None,
         )
         variant = FactVariant(
-            id=1, fact_id=1, content="bad variant", embedding=nan_bytes,
-            created_at=datetime.now(timezone.utc),
+            id=1,
+            fact_id=1,
+            content="bad variant",
+            embedding=nan_bytes,
+            created_at=datetime.now(UTC),
         )
         result = best_similarity(good, fact, {1: [variant]})
         assert result == pytest.approx(1.0)
@@ -435,11 +487,19 @@ class TestFindSimilarFactsWithVariants:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         target = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content=self._CANONICAL,
         )
         distractor = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=2,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=2,
             content=self._DISTRACTOR,
         )
 
@@ -477,7 +537,11 @@ class TestFindSimilarFactsWithVariants:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         old = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content=self._CANONICAL,
         )
         await _store_variant(conn, embedding_model, fact_id=old.id, content=self._VARIANT)
@@ -515,7 +579,11 @@ class TestFindSimilarFactsWithVariants:
         # in this class rather than only in the older one.
         for i in range(5):
             await add_fact(
-                conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=i,
+                conn,
+                embedding_model,
+                guild_id=GUILD_A,
+                channel_id=1,
+                message_id=i,
                 content=f"distinct fact number {i} about server topic {i}",
             )
         first = await find_similar_facts(

@@ -33,6 +33,7 @@ different) when they last looked.
     were never told existed; the net effect for them is simply that the
     successor is new, which the new-facts section already says.
 """
+
 from __future__ import annotations
 
 import logging
@@ -103,8 +104,15 @@ class DigestContent(BaseModel):
 
     @property
     def is_empty(self) -> bool:
-        """Whether this window produced nothing worth posting.
+        """Report whether this window produced nothing worth posting.
 
+        Returns
+        -------
+        bool
+            True only when all three sections are empty.
+
+        Notes
+        -----
         The digest's one silence rule, and the reason it is a property here
         rather than a check at the call site: an empty digest must be skipped
         rather than posted (CLAUDE.md's "deliberately conservative" stance --
@@ -116,7 +124,13 @@ class DigestContent(BaseModel):
 
     @property
     def total_items(self) -> int:
-        """How many individual entries this digest would render."""
+        """Return how many individual entries this digest would render.
+
+        Returns
+        -------
+        int
+            New facts plus milestones plus changes.
+        """
         return len(self.new_facts) + len(self.milestones) + len(self.changes)
 
 
@@ -125,11 +139,26 @@ async def build_digest(
 ) -> DigestContent:
     """Assemble one guild's digest for the half-open window (since, until].
 
-    Both bounds are fixed-width UTC ISO-8601 strings (aura.db.connection.utc_iso),
-    not datetimes, because that is what the ledger stores and what SQL compares
-    against; converting them here and back at every query would add a parsing
-    failure mode to a path that has none.
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to build for.
+    since, until
+        Window bounds as fixed-width UTC ISO-8601 text, not datetimes, because
+        that is what the ledger stores and what SQL compares against; converting
+        here and back at every query would add a parsing failure mode to a path
+        that has none. Half-open: `since` exclusive, `until` inclusive.
 
+    Returns
+    -------
+    DigestContent
+        What the window contains. Possibly empty -- see `DigestContent.is_empty`,
+        which is what decides whether anything is posted.
+
+    Notes
+    -----
     Read-only from start to finish. Nothing in a digest writes to the knowledge
     model, marks anything as reported, or has any effect on a fact whatsoever --
     the bookkeeping that records the window as covered belongs to the scheduler

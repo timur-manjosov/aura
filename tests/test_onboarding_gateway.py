@@ -7,6 +7,7 @@ with a logged reason rather than escaping into discord.py's own event
 dispatch, which for on_member_join means a stack trace per join instead of a
 skipped welcome.
 """
+
 from __future__ import annotations
 
 import logging

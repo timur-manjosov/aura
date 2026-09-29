@@ -11,10 +11,11 @@ answers a question the moderator would otherwise have to work out from a status
 reply an hour later: the channel is not opted in, a run is already going, the
 paused run's range cannot be changed, or the date is not a date.
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -51,7 +52,7 @@ CHANNEL_A = 300000000000000003
 CHANNEL_B = 400000000000000004
 MODERATOR = 4242
 
-NOW = datetime(2026, 8, 26, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 26, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -146,9 +147,7 @@ class TestPermissionGate:
     async def test_a_permission_failure_replies_in_the_users_own_locale(self) -> None:
         interaction = _make_interaction(db=None, locale="de")
 
-        await _handle_backfill_error(
-            interaction, app_commands.MissingPermissions(["manage_guild"])
-        )
+        await _handle_backfill_error(interaction, app_commands.MissingPermissions(["manage_guild"]))
 
         interaction.response.send_message.assert_awaited_once_with(
             t("backfill_permission_error", "de"), ephemeral=True
@@ -158,9 +157,7 @@ class TestPermissionGate:
         interaction = _make_interaction(db=None)
         interaction.response.is_done = MagicMock(return_value=True)
 
-        await _handle_backfill_error(
-            interaction, app_commands.MissingPermissions(["manage_guild"])
-        )
+        await _handle_backfill_error(interaction, app_commands.MissingPermissions(["manage_guild"]))
 
         interaction.followup.send.assert_awaited_once()
         interaction.response.send_message.assert_not_awaited()
@@ -182,9 +179,7 @@ class TestPermissionGate:
 
 class TestSinceParsing:
     def test_a_plain_iso_date_becomes_utc_midnight(self) -> None:
-        assert _parse_since("2025-03-14", now=NOW) == datetime(
-            2025, 3, 14, tzinfo=timezone.utc
-        )
+        assert _parse_since("2025-03-14", now=NOW) == datetime(2025, 3, 14, tzinfo=UTC)
 
     def test_surrounding_whitespace_is_tolerated(self) -> None:
         assert _parse_since("  2025-03-14 ", now=NOW) is not None
@@ -225,20 +220,18 @@ class TestSinceSnowflake:
     """The adversarial pass's one real find: a pre-Discord date is not a snowflake."""
 
     def test_an_ordinary_date_becomes_the_lowest_snowflake_for_that_instant(self) -> None:
-        since = datetime(2025, 3, 14, tzinfo=timezone.utc)
+        since = datetime(2025, 3, 14, tzinfo=UTC)
 
         assert _since_snowflake(since) == discord.utils.time_snowflake(since, high=False)
 
     @pytest.mark.parametrize("year", [1, 1000, 1969, 1970, 2014])
     def test_a_date_before_discord_existed_clamps_to_the_whole_history(self, year) -> None:
         """time_snowflake is arithmetic: it returns a huge NEGATIVE number here."""
-        assert discord.utils.time_snowflake(
-            datetime(year, 1, 1, tzinfo=timezone.utc), high=False
-        ) < 0
-        assert _since_snowflake(datetime(year, 1, 1, tzinfo=timezone.utc)) is None
+        assert discord.utils.time_snowflake(datetime(year, 1, 1, tzinfo=UTC), high=False) < 0
+        assert _since_snowflake(datetime(year, 1, 1, tzinfo=UTC)) is None
 
     def test_discords_own_epoch_clamps_too_because_a_snowflake_is_never_zero(self) -> None:
-        assert _since_snowflake(datetime(2015, 1, 1, tzinfo=timezone.utc)) is None
+        assert _since_snowflake(datetime(2015, 1, 1, tzinfo=UTC)) is None
 
     async def test_a_pre_discord_since_produces_a_whole_history_run_rather_than_a_stuck_one(
         self, conn
@@ -311,12 +304,10 @@ class TestStart:
         run = await get_active_run(conn, channel_id=CHANNEL_A)
         assert run is not None
         assert run.after_message_id == discord.utils.time_snowflake(
-            datetime(2025, 3, 14, tzinfo=timezone.utc), high=False
+            datetime(2025, 3, 14, tzinfo=UTC), high=False
         )
 
-    async def test_an_unusable_since_is_refused_before_anything_is_written(
-        self, conn
-    ) -> None:
+    async def test_an_unusable_since_is_refused_before_anything_is_written(self, conn) -> None:
         await _enable(conn)
         interaction = _make_interaction(db=conn)
 
@@ -333,9 +324,7 @@ class TestStart:
 
         assert "17" in _reply(interaction)
 
-    async def test_the_confirmation_says_a_since_run_starts_from_that_date(
-        self, conn
-    ) -> None:
+    async def test_the_confirmation_says_a_since_run_starts_from_that_date(self, conn) -> None:
         await _enable(conn)
         interaction = _make_interaction(db=conn)
 
@@ -350,9 +339,7 @@ class TestStart:
 
         await _start(second, _make_channel())
 
-        assert t("backfill_already_running", "en-US", channel="<#%d>" % CHANNEL_A) in _reply(
-            second
-        )
+        assert t("backfill_already_running", "en-US", channel=f"<#{CHANNEL_A}>") in _reply(second)
         assert len(await get_recent_runs(conn, guild_id=GUILD_A, limit=10)) == 1
 
     async def test_the_reply_is_ephemeral(self, conn) -> None:
@@ -390,9 +377,7 @@ class TestStart:
 
 
 class TestResume:
-    async def test_start_resumes_a_paused_run_rather_than_opening_a_new_one(
-        self, conn
-    ) -> None:
+    async def test_start_resumes_a_paused_run_rather_than_opening_a_new_one(self, conn) -> None:
         await _enable(conn)
         run = await start_backfill_run(
             conn,
@@ -600,8 +585,7 @@ class TestStatus:
         embed = _embed(interaction)
         assert embed.description is not None and "30" in embed.description
         assert any(
-            t("backfill_status_none", "en-US") in (field.value or "")
-            for field in embed.fields
+            t("backfill_status_none", "en-US") in (field.value or "") for field in embed.fields
         )
 
     async def test_a_run_waiting_on_its_cap_is_distinguishable_from_a_stalled_one(
@@ -633,13 +617,9 @@ class TestStatus:
             await backfill_status.callback(interaction, None)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
         embed = _embed(interaction)
-        assert embed.description == t(
-            "backfill_status_budget", "en-US", spent=3, cap=3
-        )
+        assert embed.description == t("backfill_status_budget", "en-US", spent=3, cap=3)
 
-    async def test_a_run_with_a_cursor_shows_a_position_and_a_permalink(
-        self, conn
-    ) -> None:
+    async def test_a_run_with_a_cursor_shows_a_position_and_a_permalink(self, conn) -> None:
         await _enable(conn)
         run = await start_backfill_run(
             conn,

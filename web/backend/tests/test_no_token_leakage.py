@@ -12,10 +12,12 @@ That framing is what makes the test durable. A future handler that adds
 echoing an upstream payload, fails here without anyone having remembered to
 extend a list of forbidden field names.
 """
+
 from __future__ import annotations
 
 import httpx
 import pytest
+
 from fake_discord import FakeDiscordState
 from helpers import complete_login, start_login
 
@@ -120,9 +122,7 @@ class TestNoTokenReachesTheBrowser:
         state = await start_login(app_client)
         code = discord_state.issue_code("5000")
 
-        response = await app_client.get(
-            "/api/auth/callback", params={"code": code, "state": state}
-        )
+        response = await app_client.get("/api/auth/callback", params={"code": code, "state": state})
 
         assert response.json() == {"error": "discord_unavailable"}
         assert b"500" not in response.content
@@ -138,9 +138,7 @@ class TestNoTokenReachesTheBrowser:
         assert discord_state.client_secret not in response.headers["location"]
         assert discord_state.bot_token not in response.headers["location"]
 
-    @pytest.mark.parametrize(
-        "path", ["/api/me", "/api/guilds", "/api/health", "/api/auth/login"]
-    )
+    @pytest.mark.parametrize("path", ["/api/me", "/api/guilds", "/api/health", "/api/auth/login"])
     async def test_no_response_carries_a_debug_header_naming_a_secret(
         self, app_client: httpx.AsyncClient, discord_state: FakeDiscordState, path: str
     ) -> None:

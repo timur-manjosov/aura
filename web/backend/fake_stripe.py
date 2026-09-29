@@ -14,6 +14,7 @@ implementation could not catch that implementation being wrong.
 
 Excluded from the backend image by .dockerignore, like fake_discord.py.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -39,7 +40,9 @@ def sign_webhook(payload: bytes, secret: str, *, timestamp: int | None = None) -
     sent as t=<timestamp>,v1=<hex digest>.
     """
     moment = int(time.time()) if timestamp is None else timestamp
-    digest = hmac.new(secret.encode("utf-8"), f"{moment}.".encode() + payload, hashlib.sha256).hexdigest()
+    digest = hmac.new(
+        secret.encode("utf-8"), f"{moment}.".encode() + payload, hashlib.sha256
+    ).hexdigest()
     return f"t={moment},v1={digest}"
 
 
@@ -172,7 +175,9 @@ class FakeStripeState:
         session["customer"] = subscription.customer
         return subscription
 
-    def event(self, event_type: str, data_object: dict[str, Any], *, event_id: str | None = None) -> dict[str, Any]:
+    def event(
+        self, event_type: str, data_object: dict[str, Any], *, event_id: str | None = None
+    ) -> dict[str, Any]:
         """A snapshot event envelope, as Stripe delivers it."""
         return {
             "id": event_id or _stripe_id("evt"),
@@ -185,10 +190,14 @@ class FakeStripeState:
             "data": {"object": data_object},
         }
 
-    def subscription_event(self, event_type: str, subscription_id: str, **kwargs: Any) -> dict[str, Any]:
+    def subscription_event(
+        self, event_type: str, subscription_id: str, **kwargs: Any
+    ) -> dict[str, Any]:
         """A customer.subscription.* event carrying the subscription as it is now."""
         return self.event(
-            event_type, self.subscriptions[subscription_id].to_object(expand_invoice=False), **kwargs
+            event_type,
+            self.subscriptions[subscription_id].to_object(expand_invoice=False),
+            **kwargs,
         )
 
     def checkout_completed_event(self, session_id: str, **kwargs: Any) -> dict[str, Any]:
@@ -241,7 +250,13 @@ def _session_object(session: dict[str, Any]) -> dict[str, Any]:
 
 def _stripe_error(status: int, error_type: str, code: str) -> JSONResponse:
     return JSONResponse(
-        {"error": {"type": error_type, "code": code, "message": "The stand-in refused this request."}},
+        {
+            "error": {
+                "type": error_type,
+                "code": code,
+                "message": "The stand-in refused this request.",
+            }
+        },
         status_code=status,
     )
 
@@ -251,7 +266,9 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     def authorized(request: Request) -> bool:
-        state.received_headers.append({key.lower(): value for key, value in request.headers.items()})
+        state.received_headers.append(
+            {key.lower(): value for key, value in request.headers.items()}
+        )
         return request.headers.get("authorization") == f"Bearer {state.secret_key}"
 
     async def read_form(request: Request) -> dict[str, str] | None:
@@ -353,7 +370,9 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
         if state.fail_portal_status is not None:
             return _stripe_error(state.fail_portal_status, "api_error", "internal")
         form = await read_form(request)
-        if form is None or form.get("customer") not in {sub.customer for sub in state.subscriptions.values()}:
+        if form is None or form.get("customer") not in {
+            sub.customer for sub in state.subscriptions.values()
+        }:
             return _stripe_error(400, "invalid_request_error", "resource_missing")
         state.portal_sessions.append(form)
         return JSONResponse(

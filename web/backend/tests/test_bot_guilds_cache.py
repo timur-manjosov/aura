@@ -6,6 +6,7 @@ guild list empty; one that returned "everything" would list servers Aura is
 not in. Neither is acceptable, so the failure path raises -- and these tests
 pin that down rather than the happy path.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -189,9 +190,7 @@ class TestRefreshLock:
         client.delay = 0.01
         cache = BotGuildCache(client, ttl_seconds=60, stale_tolerance_seconds=0)  # type: ignore[arg-type]
 
-        results = await asyncio.gather(
-            *(cache.get() for _ in range(5)), return_exceptions=True
-        )
+        results = await asyncio.gather(*(cache.get() for _ in range(5)), return_exceptions=True)
 
         assert all(isinstance(result, DiscordUnavailableError) for result in results)
 

@@ -27,6 +27,7 @@ readable. The confirmation says so, because a moderator who expected a summary
 of the existing knowledge model should find that out from the reply rather than
 from a week of waiting.
 """
+
 from __future__ import annotations
 
 import logging
@@ -137,6 +138,24 @@ async def digest_command(
 ) -> None:
     """Set the digest's channel and/or cadence, or switch it off.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    channel
+        Where digests should be posted, or None to keep the configured one.
+    interval
+        One of the offered cadences, or None to keep the configured one.
+    enabled
+        Turn the digest on or off, or None to leave it unchanged.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Every option is optional and they compose, which keeps the common edits to
     one word each: name a channel to start, pass an interval to change the
     cadence, pass enabled:false to stop. Two rules resolve the combinations, and
@@ -238,5 +257,15 @@ digest_command.error(_handle_digest_command_error)
 
 
 def register_digest_command(tree: app_commands.CommandTree) -> None:
-    """Register /aura-digest onto tree."""
+    """Register /aura-digest onto tree.
+
+    Parameters
+    ----------
+    tree
+        The command tree to register into.
+
+    Returns
+    -------
+    None
+    """
     tree.add_command(digest_command)
