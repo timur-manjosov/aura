@@ -177,5 +177,19 @@
     "backfill_state_completed": "Bitti — geçmişin sonuna ulaştı.",
     "backfill_state_cancelled": "Bir moderatör tarafından sonlandırıldı.",
     "backfill_state_failed": "Durdu: kanal okunamadı (silinmiş ya da Aura orada Mesaj Geçmişini Gör yetkisini kaybetmiş).",
-    "operator_budget_permission_error": "Bu komut yalnızca Aura'nın operatörüne özeldir."
+    "operator_budget_permission_error": "Bu komut yalnızca Aura'nın operatörüne özeldir.",
+    "plan_permission_error": "Bunu yapmak için “Sunucuyu Yönet” iznine ihtiyacın var.",
+    "plan_pro_required": "Bu bir Aura Pro özelliği ve bu sunucu Free planında olduğu için hiçbir şey değiştirilmedi. /aura-ask ve bilgileri elle yönetme eskisi gibi çalışmaya devam ediyor.",
+    "plan_upgrade_link": "Bir sunucu yöneticisi buradan Pro'ya geçebilir: {url}",
+    "plan_state_not_enforced": "Bu sunucuda Aura'nın tüm özellikleri kullanılabilir: bu kurulum plan kullanmıyor.",
+    "plan_state_complimentary": "Bu sunucu, Aura'nın işletmecisi tarafından sağlanan **Pro** planında. Abonelik gerekmiyor.",
+    "plan_state_no_subscription": "Bu sunucu **Free** planında.",
+    "plan_state_ended": "Bu sunucu **Free** planında: Pro aboneliği sona erdi. Pro sırasında yapılan ayarlar korunur ve Pro yenilenirse yeniden devreye girer.",
+    "plan_state_active": "Bu sunucu **Pro** planında. Mevcut dönemin ödemesi {date} tarihine kadar yapıldı ve otomatik olarak yenilenir.",
+    "plan_state_renewal_pending": "Bu sunucu **Pro** planında. Yenileme henüz onaylanmadı; bu arada Pro {date} tarihine kadar açık kalır.",
+    "plan_state_canceling": "Bu sunucu {date} tarihine kadar **Pro** planında. Abonelik o tarihte sona erecek ve yenilenmeyecek.",
+    "plan_state_payment_grace": "⚠️ Bu sunucunun Pro aboneliği için son ödeme başarısız oldu. Pro {date} tarihine kadar açık kalır. Aboneliği başlatan kişi o zamana kadar fatura portalından ödeme yöntemini güncelleyebilir; aksi halde bu sunucu Free planına geçer.",
+    "plan_free_includes": "Free planı /aura-ask'i ve bilgileri elle yönetmeyi içerir. Proaktif yanıtlar, otomatik bilgi çıkarımı, düzenli özetler, karşılama mesajları ve geçmiş taraması için Pro gerekir.",
+    "plan_multiple_subscriptions": "⚠️ Bu sunucunun {count} aktif aboneliği var ve biri yeterli. Fazladan ödeme yapan kişi fazla olanı fatura portalından iptal edebilir.",
+    "plan_manage_link": "Planı yönet: {url}"
 }

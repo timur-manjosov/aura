@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
+from aura.commands.plan import pro_feature_refusal
 from aura.db.extraction_channel_config import set_extraction_enabled
 from aura.db.proactive_channel_config import set_channel_enabled
 from aura.i18n import t
@@ -97,6 +98,16 @@ async def config_command(
             t("config_no_options_error", locale), ephemeral=True
         )
         return
+
+    # Phase 4c: switching either Pro trigger ON needs Pro. Checked before
+    # EITHER switch is written, so a call that mixes an "on" with an "off" on a
+    # Free server changes nothing rather than half of what was asked -- the
+    # refusal says "nothing was changed", and that has to be true.
+    if proactive is True or extraction is True:
+        refusal = pro_feature_refusal(interaction)
+        if refusal is not None:
+            await interaction.response.send_message(refusal, ephemeral=True)
+            return
 
     db = interaction.client.db
     assert db is not None  # setup_hook always finishes before commands go live

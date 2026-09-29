@@ -2,11 +2,22 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from urllib.parse import urlparse
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_EXAMPLE_HINT = "Copy .env.example to .env and fill in the required values."
+
+# The shortest INTERNAL_API_SECRET accepted. 32 characters of a random token is
+# well past brute-forcing over a network, and a floor is what stops "changeme"
+# from being the one credential that decides who is on Pro.
+MIN_INTERNAL_API_SECRET_LENGTH = 32
+
+# Discord snowflakes are unsigned 64-bit, but every guild ID this project stores
+# goes into a SQLite INTEGER, which is signed 64-bit -- the binding raises past
+# this value, so a configured ID beyond it is refused at startup instead.
+MAX_SQLITE_INTEGER = 2**63 - 1
 
 
 class ModelComponent(StrEnum):
@@ -53,6 +64,26 @@ class CrossGuildBudgetMode(StrEnum):
     HARD = "hard"
 
 
+class BillingMode(StrEnum):
+    """Whether this deployment gates Pro features on a subscription (Phase 4c).
+
+    DISABLED (the default): every guild gets every feature, exactly as before
+    Phase 4c. Subscription state is still recorded if the internal billing API
+    is running -- so a guild can subscribe before enforcement is switched on
+    -- it simply decides nothing. See Settings.billing_mode for why this, not
+    ENFORCED, is the default.
+
+    ENFORCED: the Pro-only triggers (proactive relief, automatic extraction,
+    the periodic digest, onboarding and backfill) run only for guilds whose
+    subscription is in good standing or which the operator lists as
+    complimentary. The Free features -- /aura-ask and manual fact management
+    -- are never gated, in either mode.
+    """
+
+    DISABLED = "disabled"
+    ENFORCED = "enforced"
+
+
 class ConfigurationError(Exception):
     """Raised when application configuration is missing or invalid.
 
@@ -74,6 +105,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        # Phase 4c: a refused value is never echoed into the error. Pydantic
+        # otherwise includes `input_value` -- for a model-level validator,
+        # every input at once -- so a traceback around settings loading would
+        # carry DISCORD_TOKEN, LLM_API_KEY and INTERNAL_API_SECRET with it.
+        hide_input_in_errors=True,
     )
 
     # No default (would make a blank/missing token indistinguishable from a
@@ -1009,6 +1045,93 @@ class Settings(BaseSettings):
     # onboarding has no periodic sweep to retry from, unlike the digest.
     onboarding_daily_cap: int = Field(default=20, ge=0, le=1_000_000)
 
+    # --- Plans and billing (Phase 4c) ---------------------------------------
+    # Whether the Pro-only triggers are gated on a subscription at all. See
+    # BillingMode for what each value does, and aura.billing for the rules.
+    #
+    # DISABLED by default, and the reason is the live VPS rather than billing
+    # itself: Aura already runs for real guilds, and a routine
+    # `git pull && docker compose up` must not quietly move every one of them
+    # to Free the moment this code lands. Turning enforcement on is a decision
+    # with consequences for real servers, so it is something an operator sets
+    # on purpose, never something they inherit. The default also fails in the
+    # recoverable direction: forgetting to enable enforcement gives features
+    # away for a while; inheriting it by accident takes them away from guilds
+    # that did nothing wrong.
+    billing_mode: BillingMode = BillingMode.DISABLED
+
+    # How long Pro survives past a subscription's paid-through date while the
+    # renewal has not yet been CONFIRMED to Aura. This is the bounded grace for
+    # "subscription status cannot be established right now": it extends trust
+    # in the last known good state by a fixed amount past what was actually
+    # paid for, and never further.
+    #
+    # 72 hours is Stripe's own delivery horizon, not a round number. At the end
+    # of a period Stripe creates the renewal invoice, holds it as a draft for
+    # about an hour, then charges it, and the confirmation reaches Aura as a
+    # webhook after that. If the web backend or this bot is down at that
+    # moment, Stripe retries the delivery for up to three days in live mode.
+    # Shorter than that would move a paying guild to Free during an outage
+    # Stripe itself would still heal; longer buys nothing, because an event
+    # Stripe has stopped retrying is recovered by the web backend's periodic
+    # reconciliation (aura_web.billing_sync), not by waiting longer here.
+    #
+    # Not applied to a subscription that is already set to end: "cancels at
+    # the end of this period" is a known end date, so Pro ends exactly there.
+    billing_renewal_grace_hours: float = Field(
+        default=72.0, ge=0.0, le=30 * 24.0, allow_inf_nan=False
+    )
+
+    # How long Pro survives a failed renewal payment (subscription past_due)
+    # before the guild moves to Free.
+    #
+    # Cards fail for harmless reasons -- an expired card, a bank's fraud
+    # heuristic, a temporary limit -- and Stripe keeps retrying the charge on
+    # its own schedule (its recommended default is 8 attempts within 2 weeks)
+    # while emailing the payer. Seven days covers a weekend plus a working week
+    # for a server admin who does not read billing mail every day, which is the
+    # realistic person on the other end of this, while keeping unpaid Pro
+    # bounded to a quarter of a monthly period.
+    #
+    # Anchored at the START of the unpaid period, never at "the first failure
+    # Aura heard about": a retry that fails again cannot extend it, and a
+    # webhook that arrives late cannot restart it. Stripe's own final decision
+    # -- canceled or unpaid after its last retry -- ends Pro immediately
+    # regardless of this number.
+    billing_payment_grace_days: float = Field(
+        default=7.0, ge=0.0, le=60.0, allow_inf_nan=False
+    )
+
+    # Comma-separated guild IDs that are on Pro without any subscription: the
+    # operator's own test servers, or community servers they choose to support.
+    # This is the rollout valve for BILLING_MODE=enforced -- without it,
+    # switching enforcement on would move the operator's own servers to Free
+    # together with everyone else's. Configuration rather than a command
+    # because granting Pro for free is a decision about the operator's money,
+    # and this project's operator decisions live in configuration (see
+    # OPERATOR_DISCORD_USER_ID above).
+    billing_complimentary_guild_ids: str = ""
+
+    # Where a moderator can subscribe or manage billing (the web dashboard).
+    # Shown in /aura-plan and in every "this is a Pro feature" refusal.
+    # Optional: a refusal without a link is still a clear refusal.
+    billing_dashboard_url: str | None = None
+
+    # The shared secret the web backend presents to this process's internal
+    # billing API (aura.billing.internal_api) -- the ONLY path by which
+    # subscription state changes while the bot is running. Unset means the API
+    # is not started at all. Required when BILLING_MODE=enforced: an enforced
+    # deployment whose subscription state can never change would move every
+    # paying guild to Free the day its first period ends.
+    internal_api_secret: str | None = None
+
+    # Where the internal billing API listens. 127.0.0.1 by default, so a process
+    # that was never configured for billing never listens on a reachable
+    # interface; the compose file sets 0.0.0.0 inside the container, where only
+    # the dedicated internal network can reach it and no host port is published.
+    internal_api_host: str = "127.0.0.1"
+    internal_api_port: int = Field(default=8081, ge=1, le=65535)
+
     log_level: str = "INFO"
 
     @field_validator("discord_token")
@@ -1041,6 +1164,115 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("internal_api_secret", "billing_dashboard_url", mode="before")
+    @classmethod
+    def _blank_optional_billing_string_means_unset(cls, value: object) -> object:
+        """Treat `INTERNAL_API_SECRET=` and `BILLING_DASHBOARD_URL=` left blank as unset.
+
+        .env.example ships both lines blank. Without this, a blank secret
+        would reach the length check below and crash startup for a deployment
+        that never asked for billing at all -- the same "routine git pull
+        becomes an outage" shape _blank_operator_id_means_unset exists for.
+        """
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return value
+
+    @field_validator("internal_api_secret")
+    @classmethod
+    def _internal_api_secret_is_strong_and_header_safe(cls, value: str | None) -> str | None:
+        """Refuse a short secret, and one that cannot travel in an HTTP header intact.
+
+        A space, a control character or a non-ASCII character in a bearer
+        credential is not a strong secret, it is one that some layer between
+        the two services will eventually normalise or strip -- producing a
+        401 on every sync that looks like an outage rather than a typo.
+        """
+        if value is None:
+            return None
+        if len(value) < MIN_INTERNAL_API_SECRET_LENGTH:
+            raise ValueError(
+                f"INTERNAL_API_SECRET must be at least {MIN_INTERNAL_API_SECRET_LENGTH} "
+                "characters (generate one with `python -c \"import secrets; "
+                "print(secrets.token_urlsafe(48))\"`)."
+            )
+        if not all(character.isascii() and character.isprintable() and not character.isspace() for character in value):
+            raise ValueError(
+                "INTERNAL_API_SECRET may contain only printable ASCII characters without spaces."
+            )
+        return value
+
+    @field_validator("billing_dashboard_url")
+    @classmethod
+    def _dashboard_url_is_absolute(cls, value: str | None) -> str | None:
+        """Reject a dashboard URL Discord would render as plain, unclickable text."""
+        if value is None:
+            return None
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(
+                f"BILLING_DASHBOARD_URL must be an absolute http(s) URL, got {value!r}."
+            )
+        return value
+
+    @field_validator("billing_complimentary_guild_ids")
+    @classmethod
+    def _complimentary_ids_are_guild_ids(cls, value: str) -> str:
+        """Validate the comma-separated list once, at startup, and normalise it.
+
+        A typo here is not harmless: an ID that silently fails to parse is a
+        server the operator believes is on Pro and is not. So every entry must
+        be a plain positive decimal ID that fits the database's integer type,
+        and anything else refuses to start with the offending entry named.
+        Empty entries (a trailing comma) are ignored, since they carry no
+        intent to be wrong about.
+        """
+        normalised: list[str] = []
+        for raw_entry in value.split(","):
+            entry = raw_entry.strip()
+            if not entry:
+                continue
+            if not (entry.isascii() and entry.isdigit()) or int(entry) <= 0 or int(entry) > MAX_SQLITE_INTEGER:
+                raise ValueError(
+                    f"BILLING_COMPLIMENTARY_GUILD_IDS contains {entry!r}, which is not a Discord guild ID."
+                )
+            normalised.append(str(int(entry)))
+        return ",".join(normalised)
+
+    @field_validator("internal_api_host")
+    @classmethod
+    def _internal_api_host_is_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("INTERNAL_API_HOST must not be blank.")
+        return stripped
+
+    @model_validator(mode="after")
+    def _enforced_billing_needs_the_internal_api(self) -> Settings:
+        """Refuse BILLING_MODE=enforced without a way for subscription state to change.
+
+        Enforcement reads subscription state that only the internal billing
+        API can write. Enforcing with the API switched off would start a bot
+        that looks healthy while every guild -- paying or not -- is on Free and
+        can never leave it, which is the "paying guild wrongly locked out"
+        failure this sub-phase exists to prevent. Failing at startup with the
+        reason named is the honest version of that.
+        """
+        if self.billing_mode is BillingMode.ENFORCED and self.internal_api_secret is None:
+            raise ValueError(
+                "BILLING_MODE=enforced requires INTERNAL_API_SECRET, otherwise no "
+                "subscription could ever reach this process."
+            )
+        return self
+
+    @property
+    def complimentary_guild_ids(self) -> frozenset[int]:
+        """The operator's complimentary Pro guilds, parsed from the validated setting."""
+        if not self.billing_complimentary_guild_ids:
+            return frozenset()
+        return frozenset(int(entry) for entry in self.billing_complimentary_guild_ids.split(","))
 
     def resolve_model(self, component: ModelComponent) -> str | None:
         """Resolve the model a given LLM-calling component should use.
@@ -1107,7 +1339,10 @@ def load_settings() -> Settings:
     try:
         return Settings()
     except ValidationError as exc:
+        # include_input=False: the raw values -- DISCORD_TOKEN, LLM_API_KEY,
+        # INTERNAL_API_SECRET -- are not even handed to this loop.
         messages = [
-            str(error.get("ctx", {}).get("error", error["msg"])) for error in exc.errors()
+            str(error.get("ctx", {}).get("error", error["msg"]))
+            for error in exc.errors(include_input=False)
         ]
         raise ConfigurationError(" ".join(messages)) from exc

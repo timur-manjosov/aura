@@ -1,4 +1,7 @@
 discord.py>=2.4.0
+# Phase 4c's internal billing API (aura.billing.internal_api). Already installed
+# as a dependency of discord.py; declared because Aura now imports it directly.
+aiohttp>=3.9
 python-dotenv>=1.0.1
 pydantic>=2.7.0
 pydantic-settings>=2.3.0

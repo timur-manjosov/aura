@@ -15,6 +15,7 @@ import discord
 import pytest
 
 from aura.backfill import ClientBackfillGateway
+from aura.billing import PlanGate
 from aura.config import Settings
 from aura.main import AuraClient, build_intents
 from aura.proactive.gate import ProactiveGateConfig
@@ -68,6 +69,7 @@ _STARTUP_ATTRIBUTES = (
     "fact_worthiness_detector",
     "embedding_model",
     "gate_config",
+    "plan_gate",
 )
 
 
@@ -79,6 +81,7 @@ def _started_client() -> AuraClient:
     client.fact_worthiness_detector = MagicMock()
     client.embedding_model = MagicMock()
     client.gate_config = MagicMock()
+    client.plan_gate = PlanGate.unenforced()
     return client
 
 
@@ -107,6 +110,8 @@ class TestOnMessage:
         # registry, not a fresh one per message, so cancellation state
         # actually carries across messages.
         assert kwargs["grace_registry"] is client.grace_registry
+        # Phase 4c: the one plan gate every Pro trigger asks.
+        assert kwargs["plan_gate"] is client.plan_gate
 
     async def test_the_same_message_also_reaches_the_extraction_path_independently(
         self,
@@ -131,6 +136,7 @@ class TestOnMessage:
         assert kwargs["detector"] is client.fact_worthiness_detector
         assert kwargs["detector"] is not client.question_detector
         assert kwargs["settings"] is client.settings
+        assert kwargs["plan_gate"] is client.plan_gate
 
     @pytest.mark.parametrize("missing", _STARTUP_ATTRIBUTES)
     async def test_a_message_arriving_before_startup_finishes_is_skipped_not_crashed(
@@ -175,7 +181,7 @@ def _make_member() -> MagicMock:
     return member
 
 
-_ONBOARDING_STARTUP_ATTRIBUTES = ("db", "onboarding_gateway")
+_ONBOARDING_STARTUP_ATTRIBUTES = ("db", "onboarding_gateway", "plan_gate")
 
 
 class TestOnMemberJoin:
@@ -185,6 +191,7 @@ class TestOnMemberJoin:
         client = _client()
         client.db = MagicMock()
         client.onboarding_gateway = MagicMock()
+        client.plan_gate = PlanGate.unenforced()
         member = _make_member()
 
         with patch("aura.main.handle_member_join", AsyncMock()) as handler:
@@ -196,6 +203,7 @@ class TestOnMemberJoin:
         assert kwargs["db"] is client.db
         assert kwargs["gateway"] is client.onboarding_gateway
         assert kwargs["settings"] is client.settings
+        assert kwargs["plan_gate"] is client.plan_gate
 
     @pytest.mark.parametrize("missing", _ONBOARDING_STARTUP_ATTRIBUTES)
     async def test_a_join_before_startup_finishes_is_skipped_not_crashed(
@@ -204,6 +212,7 @@ class TestOnMemberJoin:
         client = _client()
         client.db = MagicMock()
         client.onboarding_gateway = MagicMock()
+        client.plan_gate = PlanGate.unenforced()
         setattr(client, missing, None)
 
         with patch("aura.main.handle_member_join", AsyncMock()) as handler:
@@ -341,12 +350,19 @@ class TestBackgroundTasks:
         # close()'s own sequencing.
         await asyncio.gather(*(event.wait() for event in running.values()))
         client.db.close = AsyncMock(side_effect=lambda: order.append("db"))
+        # Phase 4c: the internal billing API is the only writer of subscription
+        # state, so it must stop before anything else -- no write may start
+        # against a connection that is about to close.
+        internal_api = MagicMock()
+        internal_api.stop = AsyncMock(side_effect=lambda: order.append("internal_api"))
+        client.internal_api = internal_api
 
         with patch.object(discord.Client, "close", AsyncMock()):
             await client.close()
 
-        assert order == [*self._BACKGROUND_TASKS, "db"]
+        assert order == ["internal_api", *self._BACKGROUND_TASKS, "db"]
         assert all(getattr(client, name) is None for name in self._BACKGROUND_TASKS)
+        assert client.internal_api is None
 
     async def test_close_works_before_startup_ever_created_the_tasks(self) -> None:
         # A process that fails during setup_hook still gets closed.
@@ -375,14 +391,20 @@ class TestBackfillWiring:
 
         started: dict[str, object] = {}
 
-        async def fake_worker(db, model, gateway, detector, *, settings) -> None:
+        async def fake_worker(db, model, gateway, detector, *, settings, plan_gate) -> None:
             started.update(
-                db=db, model=model, gateway=gateway, detector=detector, settings=settings
+                db=db,
+                model=model,
+                gateway=gateway,
+                detector=detector,
+                settings=settings,
+                plan_gate=plan_gate,
             )
             await asyncio.Event().wait()
 
         with (
             patch("aura.main.aiosqlite.connect", AsyncMock(return_value=client.db)),
+            patch("aura.main.load_subscription_records", AsyncMock(return_value=[])),
             patch("aura.main.init_schema", AsyncMock()),
             patch("aura.main.verify_signal_schema", AsyncMock()),
             patch("aura.main.verify_pending_facts_schema", AsyncMock()),
@@ -409,6 +431,7 @@ class TestBackfillWiring:
             assert started["db"] is client.db
             assert started["model"] is client.embedding_model
             assert started["settings"] is client.settings
+            assert started["plan_gate"] is client.plan_gate
             assert isinstance(started["gateway"], ClientBackfillGateway)
 
             client.backfill_worker.cancel()
@@ -422,6 +445,7 @@ class TestBackfillWiring:
 
         with (
             patch("aura.main.aiosqlite.connect", AsyncMock(return_value=client.db)),
+            patch("aura.main.load_subscription_records", AsyncMock(return_value=[])),
             patch("aura.main.init_schema", AsyncMock()),
             patch("aura.main.verify_signal_schema", AsyncMock()),
             patch("aura.main.verify_pending_facts_schema", AsyncMock()),
@@ -437,6 +461,86 @@ class TestBackfillWiring:
 
         names = {command.name for command in client.tree.get_commands()}
         assert "aura-backfill" in names
+
+
+def _setup_hook_patches(client: AuraClient, *, records: list[object] | None = None):
+    """Everything setup_hook touches outside billing, replaced; billing left real unless patched."""
+    return (
+        patch("aura.main.aiosqlite.connect", AsyncMock(return_value=client.db)),
+        patch("aura.main.load_subscription_records", AsyncMock(return_value=records or [])),
+        patch("aura.main.init_schema", AsyncMock()),
+        patch("aura.main.verify_signal_schema", AsyncMock()),
+        patch("aura.main.verify_pending_facts_schema", AsyncMock()),
+        patch("aura.main.asyncio.to_thread", AsyncMock(return_value=MagicMock())),
+        patch("aura.main.QuestionDetector.create", AsyncMock()),
+        patch("aura.main.create_fact_worthiness_detector", AsyncMock()),
+        patch("aura.main.run_extraction_sweeper", AsyncMock()),
+        patch("aura.main.run_digest_scheduler", AsyncMock()),
+        patch("aura.main.run_backfill_worker", AsyncMock()),
+        patch.object(client.tree, "sync", AsyncMock()),
+    )
+
+
+class TestBillingWiring:
+    """Phase 4c: the plan gate exists before any trigger can ask it, and the API only when configured."""
+
+    async def test_setup_hook_builds_the_plan_gate_from_the_stored_subscriptions(self) -> None:
+        client = _client()
+        client.db = MagicMock()
+        patches = _setup_hook_patches(client)
+        with patches[0], patches[1] as loader, patches[2], patches[3], patches[4], patches[5], \
+                patches[6], patches[7], patches[8], patches[9], patches[10], patches[11]:
+            await client.setup_hook()
+
+        loader.assert_awaited_once_with(client.db)
+        assert isinstance(client.plan_gate, PlanGate)
+        # The shipped default: billing is not enforced until an operator says so.
+        assert client.plan_gate.enforced is False
+
+    async def test_the_internal_api_is_not_started_without_a_secret(self) -> None:
+        client = _client()
+        client.db = MagicMock()
+        patches = _setup_hook_patches(client)
+        with patch("aura.main.start_internal_api", AsyncMock()) as starter, patches[0], patches[1], \
+                patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], \
+                patches[9], patches[10], patches[11]:
+            await client.setup_hook()
+
+        starter.assert_not_awaited()
+        assert client.internal_api is None
+
+    async def test_the_internal_api_is_started_with_the_configured_address_and_the_gate(self) -> None:
+        settings = Settings(
+            _env_file=None,  # type: ignore[call-arg]
+            discord_token="fake-token",
+            internal_api_secret="s" * 48,
+            internal_api_host="0.0.0.0",
+            internal_api_port=9191,
+        )
+        client = AuraClient(intents=build_intents(), settings=settings)
+        client.db = MagicMock()
+        server = MagicMock()
+        patches = _setup_hook_patches(client)
+        with patch("aura.main.start_internal_api", AsyncMock(return_value=server)) as starter, \
+                patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], \
+                patches[7], patches[8], patches[9], patches[10], patches[11]:
+            await client.setup_hook()
+
+        starter.assert_awaited_once()
+        args, kwargs = starter.call_args
+        assert args == (client.db, client.plan_gate)
+        assert kwargs == {"secret": "s" * 48, "host": "0.0.0.0", "port": 9191}
+        assert client.internal_api is server
+
+    async def test_the_plan_command_is_registered(self) -> None:
+        client = _client()
+        client.db = MagicMock()
+        patches = _setup_hook_patches(client)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], \
+                patches[7], patches[8], patches[9], patches[10], patches[11]:
+            await client.setup_hook()
+
+        assert "aura-plan" in {command.name for command in client.tree.get_commands()}
 
         for task_name in ("extraction_sweeper", "digest_scheduler", "backfill_worker"):
             task = getattr(client, task_name)

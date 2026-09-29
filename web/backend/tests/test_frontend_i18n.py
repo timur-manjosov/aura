@@ -225,7 +225,14 @@ class TestTranslateBehaviour:
             const broken = [];
             for (const locale of Object.keys(catalogues)) {
               for (const key of keys) {
-                const value = translate(catalogues, key, locale, { name: 'X' });
+                // Every placeholder the reference template declares is
+                // supplied, as a real caller would -- so a leftover {...} can
+                // only mean a translation renamed or invented one.
+                const params = {};
+                for (const [, name] of catalogues['en-US'][key].matchAll(/\\{(\\w+)\\}/g)) {
+                  params[name] = 'X';
+                }
+                const value = translate(catalogues, key, locale, params);
                 if (!value || value === `[${key}]` || /\\{\\w+\\}/.test(value)) {
                   broken.push(`${locale}:${key}`);
                 }

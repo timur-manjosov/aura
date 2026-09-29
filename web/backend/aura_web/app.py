@@ -16,10 +16,11 @@ third-party page from riding the session.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import httpx
 from fastapi import FastAPI
@@ -27,12 +28,15 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
+from aura_web.billing_sync import run_reconciler
+from aura_web.bot_billing import BotBillingClient
 from aura_web.bot_guilds import BotGuildCache
 from aura_web.config import WebConfigurationError, WebSettings, load_web_settings
 from aura_web.context import ServiceContext
 from aura_web.discord_api import DiscordClient
-from aura_web.routes import auth_router, dashboard_router
+from aura_web.routes import auth_router, billing_router, dashboard_router, stripe_webhook_router
 from aura_web.sessions import OAuthStateStore, SessionStore
+from aura_web.stripe_api import StripeClient
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,9 @@ def create_app(
     settings: WebSettings,
     *,
     discord_client_factory: Callable[[httpx.AsyncClient, WebSettings], DiscordClient] | None = None,
+    stripe_client_factory: Callable[[httpx.AsyncClient, WebSettings], StripeClient] | None = None,
+    bot_billing_client_factory: Callable[[httpx.AsyncClient, WebSettings], BotBillingClient]
+    | None = None,
 ) -> FastAPI:
     """Build the application, deferring every network-owning object to startup.
 
@@ -95,6 +102,28 @@ def create_app(
                     bot_token=settings.discord_bot_token,
                 )
             )
+            stripe_client = (
+                stripe_client_factory(http, settings)
+                if stripe_client_factory is not None
+                else StripeClient(
+                    http,
+                    api_base=settings.stripe_api_base,
+                    secret_key=settings.stripe_secret_key,
+                    price_id=settings.stripe_price_id,
+                    checkout_success_url=settings.checkout_success_url,
+                    checkout_cancel_url=settings.checkout_cancel_url,
+                    portal_return_url=settings.billing_portal_return_url,
+                )
+            )
+            bot_billing = (
+                bot_billing_client_factory(http, settings)
+                if bot_billing_client_factory is not None
+                else BotBillingClient(
+                    http,
+                    base_url=settings.bot_internal_api_url,
+                    secret=settings.bot_internal_api_secret,
+                )
+            )
             app.state.context = ServiceContext(
                 settings=settings,
                 discord=discord,
@@ -111,6 +140,8 @@ def create_app(
                     ttl_seconds=settings.bot_guilds_cache_ttl_seconds,
                     stale_tolerance_seconds=settings.bot_guilds_stale_tolerance_seconds,
                 ),
+                stripe=stripe_client,
+                bot_billing=bot_billing,
             )
             logger.info(
                 "Aura web backend ready: redirect_uri=%s, cookie=%s (secure=%s, samesite=%s), "
@@ -122,7 +153,28 @@ def create_app(
                 settings.session_ttl_seconds,
                 settings.bot_guilds_cache_ttl_seconds,
             )
-            yield
+            # Never the key itself: its mode and the Price are all an operator
+            # needs to confirm the right configuration is live.
+            logger.info(
+                "Stripe billing ready: %s mode, price %s, reconciliation every %.0fs",
+                "LIVE" if settings.stripe_live_mode else "test",
+                settings.stripe_price_id,
+                settings.stripe_reconcile_interval_seconds,
+            )
+            reconciler = asyncio.create_task(
+                run_reconciler(
+                    stripe=stripe_client,
+                    bot=bot_billing,
+                    live_mode=settings.stripe_live_mode,
+                    interval_seconds=settings.stripe_reconcile_interval_seconds,
+                )
+            )
+            try:
+                yield
+            finally:
+                reconciler.cancel()
+                with suppress(asyncio.CancelledError):
+                    await reconciler
 
     app = FastAPI(
         title="Aura Web Backend",
@@ -138,6 +190,8 @@ def create_app(
     app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(auth_router)
     app.include_router(dashboard_router)
+    app.include_router(billing_router)
+    app.include_router(stripe_webhook_router)
     return app
 
 

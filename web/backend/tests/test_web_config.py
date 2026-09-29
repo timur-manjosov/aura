@@ -16,6 +16,11 @@ VALID = {
     "discord_client_id": "123456789012345678",
     "discord_client_secret": "a-secret",
     "discord_bot_token": "a-bot-token",
+    "stripe_secret_key": "sk_test_aValidLookingTestKey",
+    "stripe_webhook_secret": "whsec_aValidLookingSecret",
+    "stripe_price_id": "price_aValidLookingPrice",
+    "bot_internal_api_url": "http://aura:8081",
+    "bot_internal_api_secret": "an-internal-api-secret-that-is-long-enough-000",
 }
 
 
@@ -147,6 +152,86 @@ class TestLoadWebSettings:
         settings = load_web_settings()
 
         assert settings.discord_client_id == VALID["discord_client_id"]
+
+
+class TestStripeSettings:
+    @pytest.mark.parametrize("key", ["sk_test_abc", "rk_test_abc"])
+    def test_a_test_mode_key_is_accepted(self, key: str) -> None:
+        settings = WebSettings(_env_file=None, **(dict(VALID) | {"stripe_secret_key": key}))
+
+        assert settings.stripe_live_mode is False
+
+    @pytest.mark.parametrize("key", ["sk_live_realMoney123", "rk_live_realMoney123"])
+    def test_a_live_key_is_refused_unless_live_mode_is_switched_on_deliberately(self, key: str) -> None:
+        with pytest.raises(ValidationError) as raised:
+            WebSettings(_env_file=None, **(dict(VALID) | {"stripe_secret_key": key}))
+
+        # The model-level refusal must not carry any input with it -- neither
+        # the key nor the other secrets validated alongside it.
+        # `.errors()` returns the raw input by design; what must be clean is
+        # the rendered error and the input-free error list the loader uses.
+        for secret in (key, VALID["discord_client_secret"], VALID["bot_internal_api_secret"]):
+            assert secret not in str(raised.value)
+            assert secret not in repr(raised.value)
+            assert secret not in repr(raised.value.errors(include_input=False))
+
+    def test_the_startup_path_refuses_a_live_key_without_logging_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name, value in (VALID | {"stripe_secret_key": "sk_live_neverLogThis"}).items():
+            monkeypatch.setenv(f"AURA_WEB_{name.upper()}", value)
+        monkeypatch.chdir("/")
+
+        with pytest.raises(WebConfigurationError) as raised:
+            load_web_settings()
+
+        assert "LIVE" in str(raised.value)
+        assert "sk_live_neverLogThis" not in str(raised.value)
+        assert "sk_live_neverLogThis" not in str(raised.value.__cause__)
+
+    def test_a_live_key_with_the_explicit_flag_is_live_mode(self) -> None:
+        settings = WebSettings(
+            _env_file=None, **(dict(VALID) | {"stripe_secret_key": "sk_live_x", "stripe_allow_live_mode": True})
+        )
+
+        assert settings.stripe_live_mode is True
+
+    @pytest.mark.parametrize(
+        "key", ["pk_test_publishable", "sk_abc", "whsec_abc", "sk_test_has space", 'sk_test_"quoted"', "sk_test_new\nline", "sk_test_" + "a" * 300]
+    )
+    def test_anything_that_is_not_a_secret_or_restricted_key_is_refused(self, key: str) -> None:
+        with pytest.raises(ValidationError) as raised:
+            WebSettings(_env_file=None, **(dict(VALID) | {"stripe_secret_key": key}))
+
+        assert key.strip() not in str(raised.value)
+
+    @pytest.mark.parametrize("secret", ["sk_test_abc", "whsec", "whsec_", "whsec_a b"])
+    def test_the_webhook_secret_must_be_a_signing_secret(self, secret: str) -> None:
+        with pytest.raises(ValidationError):
+            WebSettings(_env_file=None, **(dict(VALID) | {"stripe_webhook_secret": secret}))
+
+    @pytest.mark.parametrize("price", ["prod_abc", "price_", "price_abc&mode=payment", "12", "price"])
+    def test_the_price_must_be_a_price_id(self, price: str) -> None:
+        with pytest.raises(ValidationError):
+            WebSettings(_env_file=None, **(dict(VALID) | {"stripe_price_id": price}))
+
+    @pytest.mark.parametrize("field", ["checkout_success_url", "checkout_cancel_url", "billing_portal_return_url", "stripe_api_base", "bot_internal_api_url"])
+    @pytest.mark.parametrize("url", ["/relative", "javascript:alert(1)", "ftp://x/y"])
+    def test_every_billing_url_must_be_absolute(self, field: str, url: str) -> None:
+        with pytest.raises(ValidationError):
+            WebSettings(_env_file=None, **(dict(VALID) | {field: url}))
+
+    @pytest.mark.parametrize("secret", ["short", "x" * 31, "has a space in it and is long enough 0000", "unicodé-secret-that-is-long-enough-0000000"])
+    def test_the_internal_api_secret_must_be_long_and_header_safe(self, secret: str) -> None:
+        with pytest.raises(ValidationError):
+            WebSettings(_env_file=None, **(dict(VALID) | {"bot_internal_api_secret": secret}))
+
+    def test_the_frontend_origin_is_derived_from_the_post_login_url(self) -> None:
+        settings = WebSettings(_env_file=None, **(dict(VALID) | {"post_login_redirect_url": "https://Aura.Example:8443/app/"}))
+
+        assert settings.frontend_origin == "https://aura.example:8443"
+
+    def test_reconciliation_cannot_be_set_to_hammer_stripe(self) -> None:
+        with pytest.raises(ValidationError):
+            WebSettings(_env_file=None, **(dict(VALID) | {"stripe_reconcile_interval_seconds": 1}))
 
 
 class TestNoBleedFromTheBotsEnvironment:

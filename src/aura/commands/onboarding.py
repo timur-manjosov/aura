@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
+from aura.commands.plan import pro_feature_refusal
 from aura.db.onboarding_config import get_onboarding_config, set_onboarding_config
 from aura.i18n import t
 
@@ -122,6 +123,14 @@ async def onboarding_command(
 
     target_enabled = enabled if enabled is not None else True
     was_enabled = existing is not None and existing.onboarding_enabled
+
+    # Phase 4c: the same rule /aura-digest applies -- leaving onboarding ON
+    # needs Pro, switching it off never does.
+    if target_enabled:
+        refusal = pro_feature_refusal(interaction)
+        if refusal is not None:
+            await interaction.response.send_message(refusal, ephemeral=True)
+            return
 
     await set_onboarding_config(
         db,

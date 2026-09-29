@@ -67,6 +67,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 
+from aura.billing import PlanGate
 from aura.backfill.worker import advance_due_backfills  # noqa: E402
 from aura.config import Settings  # noqa: E402
 from aura.db.backfill_runs import (  # noqa: E402
@@ -341,7 +342,7 @@ async def _run(
                     0
                 ].cursor_message_id
                 advanced = await advance_due_backfills(
-                    conn, model, gateway, detector, settings=settings, now=NOW
+                    conn, model, gateway, detector, settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
                 )
                 if advanced:
                     stats.ticks += 1

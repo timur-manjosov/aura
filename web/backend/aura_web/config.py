@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_EXAMPLE_HINT = "Copy web/.env.example to web/.env and fill in the required values."
@@ -28,6 +28,25 @@ ENV_EXAMPLE_HINT = "Copy web/.env.example to web/.env and fill in the required v
 # reaches set_cookie without a cast and a fourth spelling cannot be introduced
 # without the type system noticing.
 SameSitePolicy = Literal["lax", "strict", "none"]
+
+# The Stripe key prefixes this service recognises. Only the test-mode pair is
+# accepted unless AURA_WEB_STRIPE_ALLOW_LIVE_MODE is set: Phase 4c is built and
+# verified against Stripe's test mode exclusively, and going live is the
+# operator's own separate, deliberate step -- a flag they set, never a key
+# pasted into the wrong line.
+STRIPE_TEST_KEY_PREFIXES = ("sk_test_", "rk_test_")
+STRIPE_LIVE_KEY_PREFIXES = ("sk_live_", "rk_live_")
+
+# The shortest shared secret accepted for the bot's internal billing API --
+# the same floor the bot itself enforces (aura.config).
+MIN_BOT_INTERNAL_API_SECRET_LENGTH = 32
+
+# Stripe object IDs and secrets are ASCII letters, digits and underscores. A
+# value carrying anything else is a copy-paste accident (a quote, a space, a
+# newline), and one that would travel into a header or a form body.
+_STRIPE_TOKEN_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+)
 
 # Discord's own documented ceiling for GET /users/@me/guilds. Used as the page
 # size for every guild listing so the common case (a bot in fewer than 200
@@ -64,6 +83,26 @@ def _require_absolute_http_url(value: str, field_name: str) -> str:
     return value
 
 
+def _require_stripe_token(value: str, *, field_name: str, prefixes: tuple[str, ...]) -> str:
+    """Reject a Stripe credential or ID with the wrong prefix or a stray character.
+
+    The value itself is never echoed into the error: a secret key pasted into
+    the wrong variable must not end up in a startup log line.
+    """
+    matched = next((prefix for prefix in prefixes if value.startswith(prefix)), None)
+    if matched is None or len(value) == len(matched) or len(value) > 255:
+        raise ValueError(
+            f"{field_name} must be one of {', '.join(prefixes)} followed by the rest of the value. "
+            + ENV_EXAMPLE_HINT
+        )
+    if not set(value) <= _STRIPE_TOKEN_CHARACTERS:
+        raise ValueError(
+            f"{field_name} contains characters a Stripe value never has (check for quotes, "
+            "spaces or a trailing newline). " + ENV_EXAMPLE_HINT
+        )
+    return value
+
+
 class WebSettings(BaseSettings):
     """Typed, validated configuration for the OAuth2 web backend."""
 
@@ -72,6 +111,12 @@ class WebSettings(BaseSettings):
         env_file="web/.env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # A refused value is never echoed into the error. Pydantic's default is
+        # to include `input_value` -- and for a model-level validator, every
+        # input at once -- so without this a single `logger.exception` around
+        # settings loading would write the Stripe key, the webhook secret and
+        # the bot token into a log line.
+        hide_input_in_errors=True,
     )
 
     # No defaults on the three credentials: a blank value and a missing one
@@ -132,9 +177,54 @@ class WebSettings(BaseSettings):
     # answering from something stale enough to be wrong.
     bot_guilds_stale_tolerance_seconds: float = Field(default=300.0, ge=0)
 
+    # --- Stripe (Phase 4c) ---------------------------------------------------
+    # The API key this service calls Stripe with. A restricted key (rk_) with
+    # only the permissions listed in web/.env.example is recommended over a
+    # full secret key (sk_). Never sent to the browser, never logged.
+    stripe_secret_key: str = Field(default="", validate_default=True)
+    # The signing secret of the webhook endpoint (whsec_...). Every webhook
+    # request is verified against it before its body is read as an event.
+    stripe_webhook_secret: str = Field(default="", validate_default=True)
+    # The recurring Price a Pro subscription is created for. Config-only: the
+    # browser chooses a guild, never what it is charged.
+    stripe_price_id: str = Field(default="", validate_default=True)
+    # Off by default, and refused at startup when a live key is configured
+    # without it. See STRIPE_LIVE_KEY_PREFIXES above for why.
+    stripe_allow_live_mode: bool = False
+    stripe_api_base: str = "https://api.stripe.com"
+
+    # Where Stripe sends the browser back to. Config-only for the same reason
+    # post_login_redirect_url is: a caller-chosen return target is an open
+    # redirect with a payment page in the middle of it.
+    checkout_success_url: str = "http://localhost:3000/?checkout=success"
+    checkout_cancel_url: str = "http://localhost:3000/?checkout=cancelled"
+    billing_portal_return_url: str = "http://localhost:3000/"
+
+    # How often every subscription is re-fetched from Stripe and pushed to the
+    # bot, independent of webhooks. Stripe retries an undelivered webhook for
+    # three days in live mode and a few hours in a sandbox; an event lost past
+    # that would otherwise leave a paying guild on Free until its next
+    # renewal. Six hours bounds that to well inside one renewal grace period.
+    stripe_reconcile_interval_seconds: float = Field(default=6 * 3600.0, ge=60.0, le=7 * 24 * 3600.0)
+
+    # --- The bot's internal billing API (Phase 4c) --------------------------
+    # This service never opens Aura's database (see web/README.md); it hands
+    # subscription snapshots to the bot process, which stays the only writer.
+    bot_internal_api_url: str = Field(default="", validate_default=True)
+    bot_internal_api_secret: str = Field(default="", validate_default=True)
+
     log_level: str = "INFO"
 
-    @field_validator("discord_client_id", "discord_client_secret", "discord_bot_token")
+    @field_validator(
+        "discord_client_id",
+        "discord_client_secret",
+        "discord_bot_token",
+        "stripe_secret_key",
+        "stripe_webhook_secret",
+        "stripe_price_id",
+        "bot_internal_api_url",
+        "bot_internal_api_secret",
+    )
     @classmethod
     def _reject_blank_credentials(cls, value: str, info: object) -> str:
         field_name = getattr(info, "field_name", "credential")
@@ -197,6 +287,92 @@ class WebSettings(BaseSettings):
         """
         return value.strip().lower() if isinstance(value, str) else value
 
+    @field_validator("stripe_secret_key")
+    @classmethod
+    def _stripe_secret_key_shape(cls, value: str) -> str:
+        return _require_stripe_token(
+            value,
+            field_name="STRIPE_SECRET_KEY",
+            prefixes=STRIPE_TEST_KEY_PREFIXES + STRIPE_LIVE_KEY_PREFIXES,
+        )
+
+    @field_validator("stripe_webhook_secret")
+    @classmethod
+    def _stripe_webhook_secret_shape(cls, value: str) -> str:
+        return _require_stripe_token(value, field_name="STRIPE_WEBHOOK_SECRET", prefixes=("whsec_",))
+
+    @field_validator("stripe_price_id")
+    @classmethod
+    def _stripe_price_id_shape(cls, value: str) -> str:
+        return _require_stripe_token(value, field_name="STRIPE_PRICE_ID", prefixes=("price_",))
+
+    @field_validator("checkout_success_url")
+    @classmethod
+    def _checkout_success_url_is_absolute(cls, value: str) -> str:
+        return _require_absolute_http_url(value, "CHECKOUT_SUCCESS_URL")
+
+    @field_validator("checkout_cancel_url")
+    @classmethod
+    def _checkout_cancel_url_is_absolute(cls, value: str) -> str:
+        return _require_absolute_http_url(value, "CHECKOUT_CANCEL_URL")
+
+    @field_validator("billing_portal_return_url")
+    @classmethod
+    def _portal_return_url_is_absolute(cls, value: str) -> str:
+        return _require_absolute_http_url(value, "BILLING_PORTAL_RETURN_URL")
+
+    @field_validator("stripe_api_base")
+    @classmethod
+    def _stripe_api_base_is_absolute(cls, value: str) -> str:
+        _require_absolute_http_url(value, "STRIPE_API_BASE")
+        return value.rstrip("/")
+
+    @field_validator("bot_internal_api_url")
+    @classmethod
+    def _bot_internal_api_url_is_absolute(cls, value: str) -> str:
+        _require_absolute_http_url(value, "BOT_INTERNAL_API_URL")
+        return value.rstrip("/")
+
+    @field_validator("bot_internal_api_secret")
+    @classmethod
+    def _bot_internal_api_secret_is_strong(cls, value: str) -> str:
+        if len(value) < MIN_BOT_INTERNAL_API_SECRET_LENGTH:
+            raise ValueError(
+                f"BOT_INTERNAL_API_SECRET must be at least {MIN_BOT_INTERNAL_API_SECRET_LENGTH} "
+                "characters and equal to INTERNAL_API_SECRET in the bot's .env. " + ENV_EXAMPLE_HINT
+            )
+        if not all(character.isascii() and character.isprintable() and not character.isspace() for character in value):
+            raise ValueError(
+                "BOT_INTERNAL_API_SECRET may contain only printable ASCII characters without spaces."
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _live_mode_is_a_deliberate_decision(self) -> WebSettings:
+        """Refuse a live Stripe key unless live mode was switched on explicitly."""
+        if self.stripe_secret_key.startswith(STRIPE_LIVE_KEY_PREFIXES) and not self.stripe_allow_live_mode:
+            raise ValueError(
+                "STRIPE_SECRET_KEY is a LIVE key, and STRIPE_ALLOW_LIVE_MODE is not set. Live "
+                "payments are a separate, deliberate step: use a test key (sk_test_/rk_test_) "
+                "or set AURA_WEB_STRIPE_ALLOW_LIVE_MODE=true on purpose."
+            )
+        return self
+
+    @property
+    def stripe_live_mode(self) -> bool:
+        """Whether the configured key is a live-mode key (events must then be live too)."""
+        return self.stripe_secret_key.startswith(STRIPE_LIVE_KEY_PREFIXES)
+
+    @property
+    def frontend_origin(self) -> str:
+        """The single browser origin this service serves, derived from the post-login URL.
+
+        Mutating billing requests must come from here. Derived rather than
+        configured separately so the two can never disagree.
+        """
+        parsed = urlparse(self.post_login_redirect_url)
+        return f"{parsed.scheme}://{parsed.netloc}".lower()
+
     @field_validator("session_cookie_name", "oauth_state_cookie_name")
     @classmethod
     def _cookie_name_is_a_token(cls, value: str) -> str:
@@ -227,7 +403,11 @@ def load_web_settings() -> WebSettings:
     try:
         return WebSettings()
     except ValidationError as exc:
+        # include_input=False: the flattened message is built from the
+        # validators' own text, and the raw values -- secrets among them --
+        # are not even handed to this loop.
         messages = [
-            str(error.get("ctx", {}).get("error", error["msg"])) for error in exc.errors()
+            str(error.get("ctx", {}).get("error", error["msg"]))
+            for error in exc.errors(include_input=False)
         ]
         raise WebConfigurationError(" ".join(messages)) from exc

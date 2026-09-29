@@ -3,6 +3,8 @@
 # which shipping one is right.
 tests/
 fake_discord.py
+fake_stripe.py
+fake_bot_billing.py
 
 __pycache__/
 *.py[cod]

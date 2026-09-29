@@ -47,6 +47,7 @@ from fastembed import TextEmbedding
 import aura.embeddings
 import aura.facts_service
 import aura.synthesis
+from aura.billing import PlanGate
 from aura.config import CrossGuildBudgetMode, Settings
 from aura.db.proactive_channel_config import set_channel_enabled
 from aura.db.proactive_signals import get_recent_signals
@@ -239,6 +240,7 @@ async def _run_pipeline(
         config=CONFIG,
         settings=settings if settings is not None else _unconfigured_settings(),
         grace_registry=GraceRegistry(),
+        plan_gate=PlanGate.unenforced(),
     )
 
 

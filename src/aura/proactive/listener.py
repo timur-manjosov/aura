@@ -38,6 +38,7 @@ import aiosqlite
 import discord
 from fastembed import TextEmbedding
 
+from aura.billing import PlanGate
 from aura.config import Settings
 from aura.db.connection import utc_now
 from aura.db.proactive_channel_config import is_channel_enabled
@@ -155,6 +156,7 @@ async def handle_message(
     config: ProactiveGateConfig,
     settings: Settings,
     grace_registry: GraceRegistry,
+    plan_gate: PlanGate,
 ) -> None:
     """Run message through the full proactive pipeline, recording and (if confident) answering.
 
@@ -204,6 +206,15 @@ async def handle_message(
         if not await is_channel_enabled(db, channel_id=message.channel.id):
             return
 
+        # Phase 4c: proactive relief is a Pro trigger. Checked after the
+        # channel switch and before any embedding inference, diagnostic write
+        # or budget claim, so a Free guild's opted-in channel costs one
+        # in-memory lookup and nothing else. The grace-period notice above
+        # deliberately still runs: a human answer must stand down a pending
+        # answer whatever this guild's plan is.
+        if not plan_gate.allows_pro(message.guild.id):
+            return
+
         decision = await evaluate_message(
             db,
             model,
@@ -240,7 +251,12 @@ async def handle_message(
             # decided onto the same trail row so the full decision -- gate,
             # grace period AND synthesis -- is visible to a moderator.
             outcome = await _wait_then_respond(
-                message, db=db, model=model, settings=settings, grace_registry=grace_registry
+                message,
+                db=db,
+                model=model,
+                settings=settings,
+                grace_registry=grace_registry,
+                plan_gate=plan_gate,
             )
             await update_synthesis_outcome(
                 db,
@@ -264,6 +280,7 @@ async def _wait_then_respond(
     model: TextEmbedding,
     settings: Settings,
     grace_registry: GraceRegistry,
+    plan_gate: PlanGate,
 ) -> ProactiveResponseOutcome:
     """Phase 2b-1's policy: wait for a human first, recheck freshness, then respond.
 
@@ -308,7 +325,11 @@ async def _wait_then_respond(
     # mid-wait, or a channel a newer grant has since superseded, never even
     # reaches synthesis.
     if not await _still_fresh_enough_for_synthesis(
-        db, channel_id=channel_id, message_id=message.id
+        db,
+        guild_id=message.guild.id,
+        channel_id=channel_id,
+        message_id=message.id,
+        plan_gate=plan_gate,
     ):
         await update_grace_outcome(
             db,
@@ -328,7 +349,12 @@ async def _wait_then_respond(
 
 
 async def _still_fresh_enough_for_synthesis(
-    conn: aiosqlite.Connection, *, channel_id: int, message_id: int
+    conn: aiosqlite.Connection,
+    *,
+    guild_id: int,
+    channel_id: int,
+    message_id: int,
+    plan_gate: PlanGate,
 ) -> bool:
     """The wake-time freshness recheck, run once the grace period expires normally.
 
@@ -349,7 +375,13 @@ async def _still_fresh_enough_for_synthesis(
     and, only under a misconfigured PROACTIVE_GRACE_PERIOD_SECONDS that isn't
     comfortably below PROACTIVE_COOLDOWN_SECONDS, whether a second message in
     the same channel has since earned a newer grant; both are checked here.
+
+    Phase 4c adds the guild's plan to what can go stale during the wait: a
+    subscription that ended during the grace period must not still buy the
+    paid call it was granted a moment before.
     """
+    if not plan_gate.allows_pro(guild_id):
+        return False
     if not await is_channel_enabled(conn, channel_id=channel_id):
         return False
     return await is_still_freshest_escalation(conn, channel_id=channel_id, message_id=message_id)

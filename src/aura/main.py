@@ -21,14 +21,18 @@ from aura.commands import (
     register_onboarding_command,
     register_operator_commands,
     register_pending_command,
+    register_plan_command,
     register_proactive_commands,
     register_supersede_command,
 )
 from aura.backfill import ClientBackfillGateway, run_backfill_worker
+from aura.billing import PlanGate
+from aura.billing.internal_api import InternalApiServer, start_internal_api
 from aura.config import ConfigurationError, ModelComponent, Settings, load_settings
 from aura.db import init_schema
 from aura.db.pending_facts import verify_pending_facts_schema
 from aura.db.proactive_signals import OutdatedDiagnosticTableError, verify_signal_schema
+from aura.db.subscriptions import load_subscription_records
 from aura.digest import ClientDigestGateway, run_digest_scheduler
 from aura.extraction import (
     create_fact_worthiness_detector,
@@ -89,6 +93,12 @@ class AuraClient(discord.Client):
         # why a restart simply dropping whatever was pending is correct, not
         # a gap.
         self.grace_registry: GraceRegistry = GraceRegistry()
+        # Phase 4c: the one Free/Pro decision every Pro trigger asks, and the
+        # internal listener through which the web backend changes what it
+        # knows. Both are built in setup_hook straight after the database and
+        # before anything that could ask either question has started.
+        self.plan_gate: PlanGate | None = None
+        self.internal_api: InternalApiServer | None = None
 
     async def setup_hook(self) -> None:
         """Open the database, load the embedding model, and sync commands -- once.
@@ -113,6 +123,40 @@ class AuraClient(discord.Client):
         # decide anything.
         await verify_pending_facts_schema(self.db)
         logger.info("Database ready at %s", self.settings.database_path)
+
+        # Phase 4c: the plan gate is built from every stored subscription
+        # before any background task starts or any event arrives, so no Pro
+        # trigger can ever run against a gate that has not seen the table.
+        subscription_records = await load_subscription_records(self.db)
+        plan_gate = PlanGate.from_settings(self.settings, records=subscription_records)
+        self.plan_gate = plan_gate
+        logger.info(
+            "Plans ready: billing %s, %d stored subscription(s), %d complimentary guild(s), "
+            "renewal grace %.0fh, payment grace %.1fd",
+            self.settings.billing_mode.value,
+            len(subscription_records),
+            len(self.settings.complimentary_guild_ids),
+            self.settings.billing_renewal_grace_hours,
+            self.settings.billing_payment_grace_days,
+        )
+        if self.settings.internal_api_secret is not None:
+            self.internal_api = await start_internal_api(
+                self.db,
+                plan_gate,
+                secret=self.settings.internal_api_secret,
+                host=self.settings.internal_api_host,
+                port=self.settings.internal_api_port,
+            )
+            logger.info(
+                "Internal billing API listening on %s:%d",
+                self.settings.internal_api_host,
+                self.settings.internal_api_port,
+            )
+        else:
+            logger.info(
+                "Internal billing API not started (INTERNAL_API_SECRET is unset): stored "
+                "subscription state cannot change while this process runs"
+            )
 
         # TextEmbedding's constructor does blocking file I/O (reading cached
         # model weights) and builds an ONNX Runtime session -- the same
@@ -189,7 +233,9 @@ class AuraClient(discord.Client):
             supersession_llm,
         )
         self.extraction_sweeper = asyncio.create_task(
-            run_extraction_sweeper(self.db, self.embedding_model, settings=self.settings)
+            run_extraction_sweeper(
+                self.db, self.embedding_model, settings=self.settings, plan_gate=plan_gate
+            )
         )
 
         # Phase 3e's periodic digest, the project's second background task and
@@ -201,7 +247,7 @@ class AuraClient(discord.Client):
         # inferring it from another line.
         self.digest_scheduler = asyncio.create_task(
             run_digest_scheduler(
-                self.db, ClientDigestGateway(self), settings=self.settings
+                self.db, ClientDigestGateway(self), settings=self.settings, plan_gate=plan_gate
             )
         )
         logger.info(
@@ -243,6 +289,7 @@ class AuraClient(discord.Client):
                 ClientBackfillGateway(self),
                 self.fact_worthiness_detector,
                 settings=self.settings,
+                plan_gate=plan_gate,
             )
         )
         logger.info(
@@ -267,6 +314,7 @@ class AuraClient(discord.Client):
         register_onboarding_command(self.tree)
         register_backfill_command(self.tree)
         register_operator_commands(self.tree)
+        register_plan_command(self.tree)
 
         # Global sync; Discord can take up to an hour to propagate new or
         # changed commands globally. Sync to a specific guild instead
@@ -286,7 +334,14 @@ class AuraClient(discord.Client):
         only ever advanced after the work it covers is committed, so the next
         process re-reads one page rather than skipping it (see
         aura.db.backfill_runs).
+
+        The internal billing API stops first of all: it is the only thing that
+        writes subscription state, and no write may start against a connection
+        that is about to close.
         """
+        if self.internal_api is not None:
+            await self.internal_api.stop()
+            self.internal_api = None
         for task_name in ("extraction_sweeper", "digest_scheduler", "backfill_worker"):
             task: asyncio.Task[None] | None = getattr(self, task_name)
             if task is None:
@@ -339,6 +394,7 @@ class AuraClient(discord.Client):
             or self.fact_worthiness_detector is None
             or self.embedding_model is None
             or self.gate_config is None
+            or self.plan_gate is None
         ):
             # Unreachable in practice -- setup_hook completes before the
             # gateway starts delivering events -- but a None here would
@@ -354,6 +410,7 @@ class AuraClient(discord.Client):
             config=self.gate_config,
             settings=self.settings,
             grace_registry=self.grace_registry,
+            plan_gate=self.plan_gate,
         )
 
         await handle_extraction_message(
@@ -361,6 +418,7 @@ class AuraClient(discord.Client):
             db=self.db,
             detector=self.fact_worthiness_detector,
             settings=self.settings,
+            plan_gate=self.plan_gate,
         )
 
     async def _notice_message_withdrawn(self, *, channel_id: int, message_id: int) -> None:
@@ -435,7 +493,7 @@ class AuraClient(discord.Client):
         is testable without a gateway connection. Requires the privileged
         Members intent (see build_intents) or this event never fires at all.
         """
-        if self.db is None or self.onboarding_gateway is None:
+        if self.db is None or self.onboarding_gateway is None or self.plan_gate is None:
             # Unreachable in practice -- setup_hook completes before the
             # gateway starts delivering events -- but a None here would
             # otherwise become an AttributeError on every single join.
@@ -443,7 +501,11 @@ class AuraClient(discord.Client):
             return
 
         await handle_member_join(
-            member, db=self.db, gateway=self.onboarding_gateway, settings=self.settings
+            member,
+            db=self.db,
+            gateway=self.onboarding_gateway,
+            settings=self.settings,
+            plan_gate=self.plan_gate,
         )
 
     async def on_ready(self) -> None:

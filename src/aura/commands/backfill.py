@@ -46,6 +46,7 @@ from aura.db.backfill_runs import (
     set_run_state,
     start_backfill_run,
 )
+from aura.commands.plan import pro_feature_refusal
 from aura.db.backfill_state import count_backfill_calls_on
 from aura.db.connection import utc_day, utc_now
 from aura.db.extraction_channel_config import is_extraction_enabled
@@ -260,6 +261,14 @@ async def backfill_start(
         await interaction.response.send_message(
             t("backfill_wrong_guild_error", locale), ephemeral=True
         )
+        return
+
+    # Phase 4c: starting or resuming a backfill needs Pro. status, pause and
+    # cancel deliberately do not -- a moderator on Free must still be able to
+    # see and stop a run started while the server was on Pro.
+    refusal = pro_feature_refusal(interaction)
+    if refusal is not None:
+        await interaction.response.send_message(refusal, ephemeral=True)
         return
 
     if not await is_extraction_enabled(db, channel_id=channel.id):

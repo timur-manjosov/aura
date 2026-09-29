@@ -3,3 +3,6 @@ uvicorn[standard]>=0.32.0
 httpx>=0.28.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
+# Webhook signature verification only (aura_web.routes.stripe_webhook); the
+# API calls themselves go through httpx in aura_web.stripe_api.
+stripe>=15.6.0,<16

@@ -97,5 +97,14 @@ def build_backend():
             # Left at the production default (True) on purpose: the point of
             # this run is to see the real flags on the real wire.
             session_cookie_secure=True,
+            # Required since Phase 4c, and never exercised by the OAuth run:
+            # obviously-fake values that could not reach a real Stripe account
+            # or a real bot even if something did call them.
+            stripe_secret_key="sk_test_oauthVerificationNotARealKey",
+            stripe_webhook_secret="whsec_oauthVerificationNotARealSecret",
+            stripe_price_id="price_oauthVerificationNotARealPrice",
+            stripe_api_base="http://127.0.0.1:9",
+            bot_internal_api_url="http://127.0.0.1:9",
+            bot_internal_api_secret="oauth-verification-not-a-real-internal-secret",
         )
     )

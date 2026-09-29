@@ -26,6 +26,20 @@ class ErrorCode(StrEnum):
     OAUTH_DENIED = "oauth_denied"
     OAUTH_FAILED = "oauth_failed"
     DISCORD_UNAVAILABLE = "discord_unavailable"
+    # Phase 4c: billing.
+    INVALID_REQUEST = "invalid_request"
+    UNSUPPORTED_MEDIA_TYPE = "unsupported_media_type"
+    FORBIDDEN_ORIGIN = "forbidden_origin"
+    PAYLOAD_TOO_LARGE = "payload_too_large"
+    GUILD_NOT_MANAGEABLE = "guild_not_manageable"
+    ALREADY_SUBSCRIBED = "already_subscribed"
+    NOT_BILLING_OWNER = "not_billing_owner"
+    BILLING_UNAVAILABLE = "billing_unavailable"
+    PAYMENT_PROVIDER_UNAVAILABLE = "payment_provider_unavailable"
+    PAYMENT_PROVIDER_ERROR = "payment_provider_error"
+    INVALID_SIGNATURE = "invalid_signature"
+    INVALID_EVENT = "invalid_event"
+    LIVEMODE_MISMATCH = "livemode_mismatch"
 
 
 def error_response(code: ErrorCode, status_code: int) -> JSONResponse:

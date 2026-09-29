@@ -177,5 +177,19 @@
     "backfill_state_completed": "完了 — 履歴の最後まで到達しました。",
     "backfill_state_cancelled": "モデレーターによって終了されました。",
     "backfill_state_failed": "停止しました: チャンネルを読み取れませんでした（削除されたか、Aura がそこでメッセージ履歴を読む権限を失いました）。",
-    "operator_budget_permission_error": "このコマンドはAuraの運営者専用です。"
+    "operator_budget_permission_error": "このコマンドはAuraの運営者専用です。",
+    "plan_permission_error": "この操作には「サーバー管理」権限が必要です。",
+    "plan_pro_required": "これは Aura Pro の機能で、このサーバーは Free プランのため、何も変更されていません。/aura-ask と手動でのファクト管理はこれまでどおり使えます。",
+    "plan_upgrade_link": "サーバー管理者はこちらから Pro にアップグレードできます: {url}",
+    "plan_state_not_enforced": "このサーバーでは Aura のすべての機能を利用できます。この導入環境ではプランを使用していません。",
+    "plan_state_complimentary": "このサーバーは Aura の運営者から提供された **Pro** です。サブスクリプションは不要です。",
+    "plan_state_no_subscription": "このサーバーは **Free** プランです。",
+    "plan_state_ended": "このサーバーは **Free** プランです。Pro のサブスクリプションは終了しました。Pro 期間中の設定は保持され、Pro を更新すると再び有効になります。",
+    "plan_state_active": "このサーバーは **Pro** です。現在の期間は {date} まで支払い済みで、自動的に更新されます。",
+    "plan_state_renewal_pending": "このサーバーは **Pro** です。更新がまだ確認されていないため、それまでの間 {date} まで Pro が有効です。",
+    "plan_state_canceling": "このサーバーは {date} まで **Pro** です。サブスクリプションはその時点で終了し、更新されません。",
+    "plan_state_payment_grace": "⚠️ このサーバーの Pro サブスクリプションの最新の支払いに失敗しました。Pro は {date} まで有効です。それまでにサブスクリプションを申し込んだ人が請求ポータルで支払い方法を更新しないと、このサーバーは Free に移行します。",
+    "plan_free_includes": "Free には /aura-ask と手動でのファクト管理が含まれます。プロアクティブ返信、自動ファクト抽出、定期ダイジェスト、オンボーディングメッセージ、履歴の読み取りには Pro が必要です。",
+    "plan_multiple_subscriptions": "⚠️ このサーバーには有効なサブスクリプションが {count} 件あります。1 件で十分です。余分に支払った人は請求ポータルで解約できます。",
+    "plan_manage_link": "プランを管理: {url}"
 }

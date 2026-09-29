@@ -48,9 +48,18 @@ The web interface (Phase 4b, `web/`) is a **separate service** with its own
 stack, its own container and its own configuration. It imports nothing from
 `src/aura` and opens no database — see `web/README.md` for why:
 
-- `fastapi`, `uvicorn` — the OAuth2 backend
-- `httpx` — the only outbound calls it makes, all to Discord
+- `fastapi`, `uvicorn` — the OAuth2 and billing backend
+- `httpx` — every outbound call it makes: Discord, Stripe's API, and the bot's
+  internal billing API
+- `stripe` — Stripe's official library, used for webhook signature
+  verification only (Phase 4c); API calls go through `httpx`
 - `Next.js` / `React` — the frontend shell
+
+Phase 4c adds one thing to the bot's side: a small internal billing API
+(`aura.billing.internal_api`, on `aiohttp`, already a dependency of
+`discord.py`) through which the web backend hands the bot Stripe subscription
+snapshots. The bot stays the only writer of its database; see `web/README.md`,
+"Where subscription state lives, and why".
 
 Its tests live in `web/backend/tests` and run in the repository's single
 `pytest` invocation alongside the bot's.
@@ -199,6 +208,34 @@ Therefore, for every implementation, without exception:
   touching the flow. No request-rate limiting exists either — the stores bound
   memory, not request rate; a reverse proxy is the right place for that and
   there is none in local development.
+
+- **Billing is built, verified in test mode, and switched off (Phase 4c).**
+  `BILLING_MODE` defaults to `disabled` and the web backend refuses live Stripe
+  keys unless `AURA_WEB_STRIPE_ALLOW_LIVE_MODE=true`. Enforcing plans on real
+  guilds and taking real money are two separate, deliberate operator steps;
+  DEPLOYMENT.md has the order. Before live payments: Stripe Tax and a tax
+  registration, which this code does not configure.
+
+- **Two admins paying for the same guild within minutes (Phase 4c).** The
+  "already subscribed" check only sees a subscription once its webhook has
+  arrived, so two different people completing checkout for one guild close
+  together can both be charged. Detected and surfaced (a bot warning, the count
+  in `/aura-plan` and on the dashboard), not prevented; closing it fully would
+  need a per-guild checkout reservation whose own failure mode — a stuck
+  reservation blocking the admin who actually wants to pay — was judged worse.
+  Revisit if it ever happens for real.
+
+- **Whoever holds `INTERNAL_API_SECRET` decides plans (Phase 4c).** The bot's
+  internal billing API trusts the web backend's snapshots; it cannot re-verify
+  them against Stripe because it deliberately holds no Stripe credential. The
+  secret lives only in the bot's and the web backend's environment, and the API
+  is reachable only on the internal `aura-billing` network. The web container
+  now holds, besides the bot token, the Stripe key and this secret.
+
+- **The billing portal must not allow switching plans (Phase 4c).** The
+  entitlement rules do not check which Price a subscription is on — there is
+  exactly one. Enabling product switching in Stripe's customer portal settings
+  would let a customer move to another price while keeping Aura's metadata.
 
 # GitHub-Workflow
 - Arbeite bei GitHub-Aufgaben eigenständig über gh-CLI/GitHub-MCP-Tools, wie ein Senior Developer.

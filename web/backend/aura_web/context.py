@@ -16,6 +16,7 @@ from datetime import timedelta
 
 from fastapi import Request
 
+from aura_web.bot_billing import BotBillingClient
 from aura_web.bot_guilds import BotGuildCache
 from aura_web.config import WebSettings
 from aura_web.discord_api import DiscordAPIError, DiscordAuthError, DiscordClient
@@ -25,6 +26,7 @@ from aura_web.sessions import (
     SessionStore,
     utc_now,
 )
+from aura_web.stripe_api import StripeClient
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,8 @@ class ServiceContext:
     sessions: SessionStore
     oauth_states: OAuthStateStore
     bot_guilds: BotGuildCache
+    stripe: StripeClient
+    bot_billing: BotBillingClient
 
 
 def get_context(request: Request) -> ServiceContext:

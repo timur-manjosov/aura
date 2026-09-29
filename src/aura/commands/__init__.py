@@ -8,6 +8,7 @@ from aura.commands.links import register_link_commands
 from aura.commands.onboarding import register_onboarding_command
 from aura.commands.operator import register_operator_commands
 from aura.commands.pending import register_pending_command
+from aura.commands.plan import register_plan_command
 from aura.commands.proactive import register_proactive_commands
 from aura.commands.supersede import register_supersede_command
 
@@ -21,6 +22,7 @@ __all__ = [
     "register_onboarding_command",
     "register_operator_commands",
     "register_pending_command",
+    "register_plan_command",
     "register_proactive_commands",
     "register_supersede_command",
 ]

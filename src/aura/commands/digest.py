@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
+from aura.commands.plan import pro_feature_refusal
 from aura.db.digest_config import get_digest_config, set_digest_config
 from aura.digest.intervals import DigestInterval, describe_interval
 from aura.i18n import t
@@ -187,6 +188,15 @@ async def digest_command(
     )
     target_enabled = enabled if enabled is not None else True
     was_enabled = existing is not None and existing.digest_enabled
+
+    # Phase 4c: any call that would leave the digest ON needs Pro -- including
+    # a channel or interval change to an already-enabled digest, since saving
+    # it would keep a Pro trigger configured to run. Turning it off never does.
+    if target_enabled:
+        refusal = pro_feature_refusal(interaction)
+        if refusal is not None:
+            await interaction.response.send_message(refusal, ephemeral=True)
+            return
 
     await set_digest_config(
         db,

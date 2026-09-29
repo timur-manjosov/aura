@@ -776,3 +776,88 @@ CREATE TABLE IF NOT EXISTS backfill_calls (
 
 CREATE INDEX IF NOT EXISTS idx_backfill_calls_guild_day
     ON backfill_calls(guild_id, call_day);
+
+-- ---------------------------------------------------------------------------
+-- Phase 4c: subscription state. Like everything else below the knowledge
+-- model's divider, this is NOT part of the knowledge model -- a plan is a
+-- fact about the business relationship with a guild, not about the guild.
+-- ---------------------------------------------------------------------------
+
+-- One row per Stripe subscription Aura has been told about.
+--
+-- WRITTEN BY EXACTLY ONE CODE PATH: aura.db.subscriptions.apply_subscription_
+-- snapshot, reached only through the bot's internal billing API, which the web
+-- backend calls with a subscription it has just fetched from Stripe. The web
+-- backend never opens this file (see web/README.md): this process stays the
+-- single writer of its own database, which is the property Phase 4b's audit
+-- found this design depends on.
+--
+-- A SNAPSHOT, NOT AN EVENT LOG. Stripe delivers webhooks at least once and in
+-- no guaranteed order, so a row is never built by applying an event's delta.
+-- Every event instead triggers a fresh fetch of the subscription, and the row
+-- is replaced by what Stripe says NOW. `version` is what keeps a slow, stale
+-- fetch from overwriting a newer one: a write must name the version it read
+-- before fetching (compare-and-swap), so writes land in fetch order however
+-- the network delivers them.
+--
+-- Times from Stripe stay Unix seconds, exactly as Stripe sends them, rather
+-- than being re-encoded as text: they are compared against each other and
+-- against the clock, never displayed raw, and an integer cannot be mis-sorted
+-- the way a timestamp string with a stray offset can.
+--
+-- No foreign key to anything guild-shaped, because no guild table exists --
+-- the same reasoning web/README.md gives for why guild membership is asked of
+-- Discord rather than inferred from rows.
+CREATE TABLE IF NOT EXISTS guild_subscriptions (
+    subscription_id TEXT PRIMARY KEY,
+    guild_id INTEGER NOT NULL,
+    customer_id TEXT NOT NULL,
+    -- The Discord user who paid, from the metadata the web backend attached
+    -- server-side at checkout. Nullable only because a subscription an
+    -- operator creates by hand in Stripe need not carry it. Used to decide who
+    -- may open Stripe's billing portal for this subscription -- another admin
+    -- of the same guild must not see the payer's billing details.
+    purchaser_user_id INTEGER,
+    status TEXT NOT NULL CHECK (status IN (
+        'active', 'trialing', 'past_due', 'unpaid', 'canceled',
+        'incomplete', 'incomplete_expired', 'paused'
+    )),
+    cancel_at_period_end INTEGER NOT NULL CHECK (cancel_at_period_end IN (0, 1)),
+    cancel_at INTEGER,
+    -- Stripe's pause_collection: invoices are voided or held rather than
+    -- charged while the subscription still reports `active`.
+    collection_paused INTEGER NOT NULL CHECK (collection_paused IN (0, 1)),
+    -- The subscription's latest invoice status. Needed because a delayed
+    -- payment method (a bank debit) that fails AFTER a subscription became
+    -- active leaves the subscription `active` and voids the invoice instead --
+    -- the status column alone would read as paid.
+    latest_invoice_status TEXT CHECK (latest_invoice_status IS NULL OR latest_invoice_status IN (
+        'draft', 'open', 'paid', 'uncollectible', 'void'
+    )),
+    current_period_start INTEGER NOT NULL,
+    current_period_end INTEGER NOT NULL,
+    livemode INTEGER NOT NULL CHECK (livemode IN (0, 1)),
+    version INTEGER NOT NULL CHECK (version >= 1),
+    first_seen_at TEXT NOT NULL,
+    confirmed_at TEXT NOT NULL,
+    CHECK (current_period_end >= current_period_start)
+);
+
+CREATE INDEX IF NOT EXISTS idx_guild_subscriptions_guild ON guild_subscriptions(guild_id);
+
+-- Every Stripe event ID whose snapshot has been applied, written in the SAME
+-- transaction as the snapshot itself. That shared transaction is the whole
+-- idempotency guarantee: an event is either applied and recorded, or neither,
+-- so a redelivery can never find a half state -- and it is the reason the
+-- record lives in the database that holds the state it protects, rather than
+-- in the web backend's memory.
+--
+-- Kept rather than pruned: one short row per subscription event is a few
+-- kilobytes a year per guild, and it is the audit trail for "why is this
+-- guild on the plan it is on".
+CREATE TABLE IF NOT EXISTS stripe_processed_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    subscription_id TEXT NOT NULL,
+    processed_at TEXT NOT NULL
+);

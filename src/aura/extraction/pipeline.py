@@ -53,6 +53,7 @@ import discord
 import numpy as np
 from fastembed import TextEmbedding
 
+from aura.billing import PlanGate
 from aura.config import ModelComponent, Settings
 from aura.db.connection import utc_day, utc_now
 from aura.db.cross_guild_budget import enforce_cross_guild_budget
@@ -201,6 +202,7 @@ async def handle_extraction_message(
     db: aiosqlite.Connection,
     detector: QuestionDetector,
     settings: Settings,
+    plan_gate: PlanGate,
 ) -> None:
     """Run one message through the free gates and enqueue it if it survives them.
 
@@ -234,6 +236,12 @@ async def handle_extraction_message(
         # opted in stops here, before any embedding inference -- and this is a
         # DIFFERENT switch from the one proactive relief reads.
         if not await is_extraction_enabled(db, channel_id=message.channel.id):
+            return
+
+        # Phase 4c: automatic extraction is a Pro trigger. After the channel
+        # switch, before any embedding inference and before any raw message
+        # text is written to the queue.
+        if not plan_gate.allows_pro(message.guild.id):
             return
 
         score = await detector.question_likeness(message.content)
@@ -294,7 +302,12 @@ async def withdraw_message(
 
 
 async def flush_due_batches(
-    db: aiosqlite.Connection, model: TextEmbedding, *, settings: Settings, now: datetime
+    db: aiosqlite.Connection,
+    model: TextEmbedding,
+    *,
+    settings: Settings,
+    now: datetime,
+    plan_gate: PlanGate,
 ) -> int:
     """Distill and stage every batch whose window has closed. Returns how many ran.
 
@@ -325,7 +338,7 @@ async def flush_due_batches(
     for channel_id in channels:
         try:
             if await _flush_channel(
-                db, model, channel_id=channel_id, settings=settings, now=now
+                db, model, channel_id=channel_id, settings=settings, now=now, plan_gate=plan_gate
             ):
                 flushed += 1
         except Exception:
@@ -340,6 +353,7 @@ async def _flush_channel(
     channel_id: int,
     settings: Settings,
     now: datetime,
+    plan_gate: PlanGate,
 ) -> bool:
     """Distill one channel's due batch and stage what it produced. Returns whether it ran.
 
@@ -370,6 +384,22 @@ async def _flush_channel(
 
     guild_id = batch[0].guild_id
     message_ids = [message.message_id for message in batch]
+
+    # Phase 4c: a batch queued while this guild was on Pro, whose plan ended
+    # before the window closed, is dropped exactly like one the daily cap
+    # refuses below -- and for the same reason that function's docstring
+    # gives: holding raw message text for a pipeline that may not run is not
+    # what "no spend" should mean. Checked before either budget, so a Free
+    # guild never claims a slot.
+    if not plan_gate.allows_pro(guild_id):
+        logger.info(
+            "Dropping a %d-message extraction batch in channel %s: guild %s is not on Pro",
+            len(batch),
+            channel_id,
+            guild_id,
+        )
+        await clear_batch(db, channel_id=channel_id, message_ids=message_ids)
+        return False
 
     # Phase 4a-2's operator-wide brake, checked ahead of this guild's own
     # daily cap below -- see aura.db.cross_guild_budget. A HARD-mode refusal
@@ -749,7 +779,7 @@ def _best_matching_fact(
 
 
 async def run_extraction_sweeper(
-    db: aiosqlite.Connection, model: TextEmbedding, *, settings: Settings
+    db: aiosqlite.Connection, model: TextEmbedding, *, settings: Settings, plan_gate: PlanGate
 ) -> None:
     """Wake periodically and flush whatever batches are due. Runs for the process's life.
 
@@ -774,7 +804,9 @@ async def run_extraction_sweeper(
     )
     while True:
         try:
-            await flush_due_batches(db, model, settings=settings, now=utc_now())
+            await flush_due_batches(
+                db, model, settings=settings, now=utc_now(), plan_gate=plan_gate
+            )
         except Exception:
             logger.exception("Extraction sweep failed; continuing")
         await asyncio.sleep(interval)

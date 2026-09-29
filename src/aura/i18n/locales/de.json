@@ -177,5 +177,19 @@
     "backfill_state_completed": "Fertig — das Ende der Historie ist erreicht.",
     "backfill_state_cancelled": "Von einem Moderator beendet.",
     "backfill_state_failed": "Gestoppt: Der Kanal konnte nicht gelesen werden (gelöscht, oder Aura hat dort das Recht „Nachrichtenverlauf lesen“ verloren).",
-    "operator_budget_permission_error": "Dieser Befehl ist Auras Betreiber vorbehalten."
+    "operator_budget_permission_error": "Dieser Befehl ist Auras Betreiber vorbehalten.",
+    "plan_permission_error": "Dafür brauchst du die Berechtigung „Server verwalten“.",
+    "plan_pro_required": "Das ist eine Funktion von Aura Pro, und dieser Server nutzt den Free-Plan – deshalb wurde nichts geändert. /aura-ask und das Verwalten von Fakten von Hand funktionieren weiterhin wie gewohnt.",
+    "plan_upgrade_link": "Ein Server-Admin kann hier auf Pro upgraden: {url}",
+    "plan_state_not_enforced": "Auf diesem Server sind alle Funktionen von Aura verfügbar: Diese Installation verwendet keine Pläne.",
+    "plan_state_complimentary": "Dieser Server nutzt **Pro**, bereitgestellt vom Betreiber von Aura. Ein Abo ist nicht nötig.",
+    "plan_state_no_subscription": "Dieser Server nutzt den **Free**-Plan.",
+    "plan_state_ended": "Dieser Server nutzt den **Free**-Plan: Sein Pro-Abo ist beendet. Einstellungen aus der Pro-Zeit bleiben erhalten und greifen wieder, sobald Pro verlängert wird.",
+    "plan_state_active": "Dieser Server nutzt **Pro**. Der aktuelle Zeitraum ist bis {date} bezahlt und verlängert sich automatisch.",
+    "plan_state_renewal_pending": "Dieser Server nutzt **Pro**. Die Verlängerung ist noch nicht bestätigt, deshalb bleibt Pro so lange bis {date} aktiv.",
+    "plan_state_canceling": "Dieser Server nutzt **Pro** bis {date}. Das Abo endet dann und verlängert sich nicht.",
+    "plan_state_payment_grace": "⚠️ Die letzte Zahlung für das Pro-Abo dieses Servers ist fehlgeschlagen. Pro bleibt bis {date} aktiv. Die Person, die das Abo abgeschlossen hat, kann die Zahlungsmethode vorher im Abrechnungsportal aktualisieren – sonst wechselt dieser Server zu Free.",
+    "plan_free_includes": "Free umfasst /aura-ask und das Verwalten von Fakten von Hand. Proaktive Antworten, automatische Fakten-Erkennung, regelmäßige Zusammenfassungen, Onboarding-Nachrichten und der Historien-Nachlauf brauchen Pro.",
+    "plan_multiple_subscriptions": "⚠️ Dieser Server hat {count} aktive Abos, und eins genügt. Wer ein zusätzliches bezahlt hat, kann es im Abrechnungsportal kündigen.",
+    "plan_manage_link": "Plan verwalten: {url}"
 }

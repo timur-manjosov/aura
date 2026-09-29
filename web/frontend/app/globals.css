@@ -13,6 +13,7 @@
   --accent: #5865f2;
   --accent-text: #ffffff;
   --danger: #b3261e;
+  --warning: #8a5300;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -25,6 +26,7 @@
     --accent: #5865f2;
     --accent-text: #ffffff;
     --danger: #f2b8b5;
+    --warning: #f4c77a;
   }
 }
 
@@ -171,4 +173,60 @@ body {
   gap: 0.6rem;
   color: var(--text-muted);
   font-size: 0.9rem;
+}
+
+/* Phase 4c: plans and billing actions on each server row. */
+.notice.success {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.guild-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 0.15rem;
+}
+
+.plan-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.plan-badge.pro {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.plan-line {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.plan-line.warning {
+  color: var(--warning);
+}
+
+.plan-line.error {
+  color: var(--danger);
+}
+
+.guild-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.button:disabled {
+  cursor: progress;
+  opacity: 0.6;
 }

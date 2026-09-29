@@ -103,6 +103,7 @@ from fastembed import TextEmbedding
 
 from aura.backfill.gateway import BackfillGateway
 from aura.backfill.history import ChannelUnreadable, fetch_history_page
+from aura.billing import PlanGate
 from aura.config import ModelComponent, Settings
 from aura.db.backfill_runs import (
     BackfillRun,
@@ -156,6 +157,7 @@ async def advance_due_backfills(
     *,
     settings: Settings,
     now: datetime,
+    plan_gate: PlanGate,
 ) -> int:
     """Advance every running backfill by one batch. Returns how many actually moved.
 
@@ -182,7 +184,14 @@ async def advance_due_backfills(
     for run in await get_running_runs(db):
         try:
             if await _advance_one(
-                db, model, gateway, detector, run=run, settings=settings, now=now
+                db,
+                model,
+                gateway,
+                detector,
+                run=run,
+                settings=settings,
+                now=now,
+                plan_gate=plan_gate,
             ):
                 advanced += 1
         except Exception:
@@ -204,6 +213,7 @@ async def _advance_one(
     run: BackfillRun,
     settings: Settings,
     now: datetime,
+    plan_gate: PlanGate,
 ) -> bool:
     """Process one batch for one run. Returns whether the cursor moved.
 
@@ -234,6 +244,13 @@ async def _advance_one(
         # Not an error and not worth a log line per tick: a deployment with no
         # extraction model configured simply has no pipeline for a backfill to
         # feed. The run stays exactly where it is.
+        return False
+
+    if not plan_gate.allows_pro(run.guild_id):
+        # Phase 4c: backfill is a Pro trigger. The run is left exactly as it
+        # is -- still running, cursor untouched -- so nothing is read or spent
+        # while the guild is on Free and the run continues from the same place
+        # the moment it is on Pro again.
         return False
 
     spent = await count_backfill_calls_on(db, guild_id=run.guild_id, day=utc_day(now))
@@ -699,6 +716,7 @@ async def run_backfill_worker(
     detector: QuestionDetector,
     *,
     settings: Settings,
+    plan_gate: PlanGate,
 ) -> None:
     """Advance whatever backfills are running, forever. Runs for the process's life.
 
@@ -731,7 +749,7 @@ async def run_backfill_worker(
         advanced = 0
         try:
             advanced = await advance_due_backfills(
-                db, model, gateway, detector, settings=settings, now=utc_now()
+                db, model, gateway, detector, settings=settings, now=utc_now(), plan_gate=plan_gate
             )
         except Exception:
             logger.exception("Backfill sweep failed; continuing")

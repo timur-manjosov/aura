@@ -33,6 +33,7 @@ import logging
 import aiosqlite
 import discord
 
+from aura.billing import PlanGate
 from aura.config import Settings
 from aura.db.connection import utc_iso, utc_now
 from aura.db.onboarding_config import get_onboarding_config
@@ -50,6 +51,7 @@ async def handle_member_join(
     db: aiosqlite.Connection,
     gateway: OnboardingGateway,
     settings: Settings,
+    plan_gate: PlanGate,
 ) -> None:
     """Post one member's onboarding summary, if this guild wants one and has anything to say.
 
@@ -68,6 +70,12 @@ async def handle_member_join(
         return
 
     guild = member.guild
+    if not plan_gate.allows_pro(guild.id):
+        # Phase 4c: onboarding is a Pro trigger. Checked before the
+        # configuration read, since the answer does not depend on it; the
+        # configuration itself is kept, so onboarding resumes with Pro.
+        return
+
     config = await get_onboarding_config(db, guild_id=guild.id)
     if config is None or not config.onboarding_enabled:
         return

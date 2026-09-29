@@ -177,5 +177,19 @@
     "backfill_state_completed": "Terminada — llegó al final del historial.",
     "backfill_state_cancelled": "Finalizada por un moderador.",
     "backfill_state_failed": "Detenida: no se pudo leer el canal (eliminado, o Aura perdió allí el permiso Leer historial de mensajes).",
-    "operator_budget_permission_error": "Este comando está restringido al operador de Aura."
+    "operator_budget_permission_error": "Este comando está restringido al operador de Aura.",
+    "plan_permission_error": "Necesitas el permiso «Gestionar servidor» para hacer eso.",
+    "plan_pro_required": "Esta es una función de Aura Pro y este servidor está en el plan Free, así que no se ha cambiado nada. /aura-ask y la gestión manual de hechos siguen funcionando como siempre.",
+    "plan_upgrade_link": "Un administrador del servidor puede pasarse a Pro aquí: {url}",
+    "plan_state_not_enforced": "Todas las funciones de Aura están disponibles en este servidor: esta instalación no usa planes.",
+    "plan_state_complimentary": "Este servidor tiene **Pro**, cortesía del operador de Aura. No hace falta ninguna suscripción.",
+    "plan_state_no_subscription": "Este servidor está en el plan **Free**.",
+    "plan_state_ended": "Este servidor está en el plan **Free**: su suscripción Pro ha terminado. La configuración hecha con Pro se conserva y vuelve a funcionar si se renueva Pro.",
+    "plan_state_active": "Este servidor tiene **Pro**. El periodo actual está pagado hasta el {date} y se renueva automáticamente.",
+    "plan_state_renewal_pending": "Este servidor tiene **Pro**. La renovación aún no se ha confirmado, así que mientras tanto Pro sigue activo hasta el {date}.",
+    "plan_state_canceling": "Este servidor tiene **Pro** hasta el {date}. La suscripción terminará entonces y no se renovará.",
+    "plan_state_payment_grace": "⚠️ El último pago de la suscripción Pro de este servidor ha fallado. Pro sigue activo hasta el {date}. Quien contrató la suscripción puede actualizar el método de pago en el portal de facturación antes de esa fecha; si no, este servidor pasará a Free.",
+    "plan_free_includes": "Free incluye /aura-ask y la gestión manual de hechos. Las respuestas proactivas, la extracción automática de datos, los resúmenes periódicos, los mensajes de bienvenida y la lectura del historial necesitan Pro.",
+    "plan_multiple_subscriptions": "⚠️ Este servidor tiene {count} suscripciones activas y basta con una. Quien haya pagado una de más puede cancelarla en el portal de facturación.",
+    "plan_manage_link": "Gestionar el plan: {url}"
 }

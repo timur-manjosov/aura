@@ -423,6 +423,46 @@ topic to a member and two unrelated sentences to an embedding model.
   obeyed, and expansion is one hop only — a chain A–B–C–D contributes B, never
   C and D.
 
+## Plans and billing (Phase 4c)
+
+Billing ships switched off (`BILLING_MODE=disabled`): a redeploy with this code
+changes nothing for any guild until the steps below are taken on purpose.
+
+1. **Generate one shared secret** and put it in both files:
+   `python -c "import secrets; print(secrets.token_urlsafe(48))"` →
+   `INTERNAL_API_SECRET=` in `.env`, `AURA_WEB_BOT_INTERNAL_API_SECRET=` in
+   `web/.env`.
+2. **Bring the bot up first.** Its compose project creates the internal
+   `aura-billing` network the web backend joins:
+   `docker compose up -d --build`, then look for
+   `Internal billing API listening on 0.0.0.0:8081` in `docker compose logs aura`.
+   No host port is published; `ss -tlnp | grep 8081` on the host shows nothing.
+3. **Configure Stripe (test mode)** in `web/.env`: a restricted test key, the
+   Pro Price ID and the webhook signing secret. Point a webhook endpoint at
+   `https://<your-domain>/api/stripe/webhook` with the events listed in
+   `web/.env.example`, and apply the account settings in `web/README.md`
+   ("Stripe account settings this code relies on").
+4. **Bring the web interface up:** `docker compose -f web/docker-compose.yml up -d --build`.
+   The backend log shows `Stripe billing ready: test mode, price price_…`.
+5. **Subscribe a test server** from the dashboard with a Stripe test card and
+   check `/aura-plan` in that server: it should read Pro, paid through a date.
+6. **Only then, enforce.** Put your own servers into
+   `BILLING_COMPLIMENTARY_GUILD_IDS` first, then set `BILLING_MODE=enforced`
+   and restart the bot. Guilds without a subscription or a complimentary entry
+   move to Free: their Pro settings are kept and pick up again with Pro.
+
+Live keys are refused by the web backend unless
+`AURA_WEB_STRIPE_ALLOW_LIVE_MODE=true` — a separate decision from everything
+above, with its own checklist (Stripe's go-live checklist, tax registration,
+the live webhook endpoint's own signing secret).
+
+**Troubleshooting.** `The bot's billing API refused this service's shared secret`
+in the web log means the two secrets differ. Webhooks answered `503` are safe:
+Stripe redelivers them, and every redelivery is idempotent. If the web
+interface was down for longer than Stripe's retry window, the reconciliation
+that runs a minute after startup and every six hours re-syncs every
+subscription.
+
 ## Restart policy: what `unless-stopped` actually guarantees
 
 Both Aura and Epiphyte use `restart: unless-stopped`. This **does**

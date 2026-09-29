@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
 import discord
@@ -142,7 +142,10 @@ class TestCommandBody:
         )
         interaction = _make_interaction(db=conn)
 
-        await _invoke(interaction)
+        # The ledger row above is dated NOW; the command reads "today" from the
+        # clock. Without pinning the clock this test only passed on 2026-09-12.
+        with patch("aura.commands.operator.utc_now", return_value=NOW):
+            await _invoke(interaction)
 
         embed = _embed(interaction)
         proactive_field = next(f for f in embed.fields if f.name == "Proactive")
@@ -157,7 +160,8 @@ class TestCommandBody:
         )
         interaction = _make_interaction(db=conn, cross_guild_daily_budget_usd=0.001)
 
-        await _invoke(interaction)
+        with patch("aura.commands.operator.utc_now", return_value=NOW):
+            await _invoke(interaction)
 
         embed = _embed(interaction)
         combined = next(f for f in embed.fields if f.name and "Combined" in f.name)

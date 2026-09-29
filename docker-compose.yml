@@ -2,6 +2,29 @@ services:
   aura:
     build: .
     env_file: .env
+    environment:
+      # Phase 4c: the internal billing API listens on the container's own
+      # interface so the web backend can reach it over the aura-billing network
+      # below. NO host port is published -- nothing outside that network can
+      # reach it -- and the API does not start at all unless
+      # INTERNAL_API_SECRET is set in .env.
+      INTERNAL_API_HOST: "0.0.0.0"
     volumes:
       - ./data:/app/data
+    networks:
+      default: {}
+      aura-billing:
+        aliases:
+          - aura-bot
     restart: unless-stopped
+
+networks:
+  # The one link between this project and web/docker-compose.yml, and a
+  # deliberately narrow one: the web backend joins it to call the bot's
+  # internal billing API, and nothing else is shared -- no volume, no database
+  # file. `internal: true` gives it no route to the outside world; each
+  # service reaches Discord and Stripe over its own project's network.
+  # Created by this project, so bring the bot up before the web interface.
+  aura-billing:
+    name: aura-billing
+    internal: true

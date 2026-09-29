@@ -39,6 +39,7 @@ from datetime import datetime
 import aiosqlite
 import discord
 
+from aura.billing import PlanGate
 from aura.config import Settings
 from aura.db.connection import utc_iso, utc_now
 from aura.db.digest_config import DigestConfig, get_enabled_digest_configs
@@ -85,7 +86,7 @@ def window_start(config: DigestConfig, last_finished: str | None) -> str:
 
 
 async def send_due_digests(
-    db: aiosqlite.Connection, gateway: DigestGateway, *, now: datetime
+    db: aiosqlite.Connection, gateway: DigestGateway, *, now: datetime, plan_gate: PlanGate
 ) -> int:
     """Post a digest for every guild whose interval has elapsed. Returns how many posted.
 
@@ -115,6 +116,13 @@ async def send_due_digests(
 
     posted = 0
     for config in await get_enabled_digest_configs(db):
+        if not plan_gate.allows_pro(config.guild_id):
+            # Phase 4c: the digest is a Pro trigger. Skipped WITHOUT claiming
+            # the window, so the first digest after the guild is back on Pro
+            # covers everything since its last one -- exactly one catch-up, the
+            # same structural property a restart after downtime already has.
+            # The configuration is kept untouched.
+            continue
         try:
             if await _post_guild_digest(db, gateway, config=config, now=now):
                 posted += 1
@@ -348,7 +356,7 @@ async def _send(
 
 
 async def run_digest_scheduler(
-    db: aiosqlite.Connection, gateway: DigestGateway, *, settings: Settings
+    db: aiosqlite.Connection, gateway: DigestGateway, *, settings: Settings, plan_gate: PlanGate
 ) -> None:
     """Wake periodically and post whatever digests are due. Runs for the process's life.
 
@@ -370,7 +378,7 @@ async def run_digest_scheduler(
     )
     while True:
         try:
-            await send_due_digests(db, gateway, now=utc_now())
+            await send_due_digests(db, gateway, now=utc_now(), plan_gate=plan_gate)
         except Exception:
             logger.exception("Digest sweep failed; continuing")
         await asyncio.sleep(interval)

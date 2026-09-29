@@ -10,10 +10,13 @@
 # The isolation is structural rather than conventional:
 #   * a project name of its own, so `docker compose down` here can never
 #     remove the bot's container;
-#   * a network of its own, with no link to the bot's;
+#   * a network of its own, plus -- since Phase 4c -- exactly one shared
+#     network, aura-billing, created by the bot's compose project, over which
+#     the backend calls the bot's internal billing API. Nothing else is
+#     shared; the bot publishes no port on it to the host;
 #   * NO volume mount of ../data. This service never opens Aura's SQLite file
-#     -- see web/README.md for why it does not need to, and what it asks
-#     Discord instead;
+#     -- see web/README.md for why it does not need to, what it asks Discord
+#     instead, and how subscription state reaches the bot without it;
 #   * the backend publishes no host port at all. It is reachable only from the
 #     frontend container over the internal network, so the OAuth callback and
 #     every session cookie travel through exactly one origin.
@@ -31,6 +34,7 @@ services:
       - "8080"
     networks:
       - aura-web
+      - aura-billing
     restart: unless-stopped
 
   frontend:
@@ -54,3 +58,9 @@ services:
 networks:
   aura-web:
     driver: bridge
+  # Created by the repository root's docker-compose.yml. `external` rather than
+  # declared here too, so neither project can delete it out from under the
+  # other with `docker compose down`; it does mean the bot comes up first.
+  aura-billing:
+    name: aura-billing
+    external: true

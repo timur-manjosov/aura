@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 from fastembed import TextEmbedding
 
+from aura.billing import PlanGate
 from aura.config import CrossGuildBudgetMode, Settings
 from aura.db.proactive_channel_config import is_channel_enabled, set_channel_enabled
 from aura.db.proactive_signals import GateVerdict, GracePeriodOutcome, get_recent_signals
@@ -233,6 +234,7 @@ async def _handle(
         # and don't care about cross-message grace-period state. Tests that
         # DO need two messages to share a grace period pass one explicitly.
         grace_registry=registry if registry is not None else GraceRegistry(),
+        plan_gate=PlanGate.unenforced(),
     )
 
 
@@ -1287,6 +1289,7 @@ class TestBusyChannelWithTheRealModel:
                         config=CONFIG,
                         settings=settings,
                         grace_registry=registry,
+                        plan_gate=PlanGate.unenforced(),
                     )
                     for message in messages
                 )

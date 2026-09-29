@@ -177,5 +177,19 @@
     "backfill_state_completed": "Terminée — elle a atteint la fin de l'historique.",
     "backfill_state_cancelled": "Arrêtée par un modérateur.",
     "backfill_state_failed": "Arrêtée : le salon n'a pas pu être lu (supprimé, ou Aura y a perdu la permission Voir les anciens messages).",
-    "operator_budget_permission_error": "Cette commande est réservée à l'opérateur d'Aura."
+    "operator_budget_permission_error": "Cette commande est réservée à l'opérateur d'Aura.",
+    "plan_permission_error": "Il te faut la permission « Gérer le serveur » pour faire ça.",
+    "plan_pro_required": "C'est une fonctionnalité d'Aura Pro et ce serveur est sur l'offre Free, donc rien n'a été modifié. /aura-ask et la gestion manuelle des faits continuent de fonctionner comme avant.",
+    "plan_upgrade_link": "Un administrateur du serveur peut passer à Pro ici : {url}",
+    "plan_state_not_enforced": "Toutes les fonctionnalités d'Aura sont disponibles sur ce serveur : cette installation n'utilise pas d'offres.",
+    "plan_state_complimentary": "Ce serveur est sur **Pro**, offert par l'opérateur d'Aura. Aucun abonnement n'est nécessaire.",
+    "plan_state_no_subscription": "Ce serveur est sur l'offre **Free**.",
+    "plan_state_ended": "Ce serveur est sur l'offre **Free** : son abonnement Pro a pris fin. Les réglages faits avec Pro sont conservés et reprennent si Pro est renouvelé.",
+    "plan_state_active": "Ce serveur est sur **Pro**. La période en cours est payée jusqu'au {date} et se renouvelle automatiquement.",
+    "plan_state_renewal_pending": "Ce serveur est sur **Pro**. Le renouvellement n'est pas encore confirmé, donc en attendant Pro reste actif jusqu'au {date}.",
+    "plan_state_canceling": "Ce serveur est sur **Pro** jusqu'au {date}. L'abonnement prendra fin à cette date et ne sera pas renouvelé.",
+    "plan_state_payment_grace": "⚠️ Le dernier paiement de l'abonnement Pro de ce serveur a échoué. Pro reste actif jusqu'au {date}. La personne qui a souscrit peut mettre à jour le moyen de paiement dans le portail de facturation d'ici là ; sinon, ce serveur passera à Free.",
+    "plan_free_includes": "Free comprend /aura-ask et la gestion manuelle des faits. Les réponses proactives, l'extraction automatique de faits, les résumés périodiques, les messages d'accueil et la lecture de l'historique nécessitent Pro.",
+    "plan_multiple_subscriptions": "⚠️ Ce serveur a {count} abonnements actifs, et un seul suffit. La personne qui a payé un abonnement en trop peut l'annuler dans le portail de facturation.",
+    "plan_manage_link": "Gérer l'offre : {url}"
 }

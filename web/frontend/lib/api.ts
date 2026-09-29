@@ -30,6 +30,30 @@ export type ManageableGuild = {
   icon: string | null;
 };
 
+/** A guild's plan as the backend projects it: the standing, never who paid or with which account. */
+export type GuildPlan = {
+  tier: "free" | "pro";
+  basis: "billing_not_enforced" | "complimentary" | "subscription";
+  standing: "no_subscription" | "ended" | "active" | "renewal_pending" | "canceling" | "payment_grace";
+  access_until: number | null;
+  paid_through: number | null;
+  active_subscription_count: number;
+  can_subscribe: boolean;
+  is_billing_owner: boolean;
+};
+
+export type BillingGuild = { id: string; plan: GuildPlan };
+
+type RedirectTarget = { url: string };
+
+/**
+ * Hosts a billing redirect may send the browser to. The backend already
+ * validates every URL Stripe returns against the same list; checking again
+ * here means a compromised or misconfigured backend still cannot turn
+ * "Upgrade" into a redirect somewhere else.
+ */
+const BILLING_REDIRECT_HOSTS = new Set(["checkout.stripe.com", "billing.stripe.com"]);
+
 async function request<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
   let response: Response;
   try {
@@ -71,6 +95,42 @@ export function fetchCurrentUser(): Promise<ApiResult<CurrentUser>> {
 
 export function fetchManageableGuilds(): Promise<ApiResult<ManageableGuild[]>> {
   return request<ManageableGuild[]>("/api/guilds");
+}
+
+export function fetchBillingGuilds(): Promise<ApiResult<BillingGuild[]>> {
+  return request<BillingGuild[]>("/api/billing/guilds");
+}
+
+async function postForRedirect(path: string, guildId: string): Promise<ApiResult<RedirectTarget>> {
+  // application/json on purpose: the backend refuses anything a cross-site
+  // form could send, and this is the content type a form cannot.
+  const result = await request<RedirectTarget>(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ guild_id: guildId }),
+  });
+  if (result.kind === "error") {
+    return result;
+  }
+  try {
+    const target = new URL(result.value.url);
+    if (target.protocol !== "https:" || !BILLING_REDIRECT_HOSTS.has(target.hostname)) {
+      return { kind: "error", code: "error_generic" };
+    }
+  } catch {
+    return { kind: "error", code: "error_generic" };
+  }
+  return result;
+}
+
+/** Ask the backend for a Stripe-hosted checkout for one guild; the guild is re-checked server-side. */
+export function startCheckout(guildId: string): Promise<ApiResult<RedirectTarget>> {
+  return postForRedirect("/api/billing/checkout", guildId);
+}
+
+/** Ask the backend for Stripe's billing portal; only the person who paid is let through. */
+export function openBillingPortal(guildId: string): Promise<ApiResult<RedirectTarget>> {
+  return postForRedirect("/api/billing/portal", guildId);
 }
 
 export function logout(): Promise<ApiResult<void>> {

@@ -31,6 +31,7 @@ import discord
 import pytest
 from fastembed import TextEmbedding
 
+from aura.billing import PlanGate
 from aura.backfill.history import ChannelUnreadable, is_strictly_increasing
 from aura.backfill.worker import advance_due_backfills, run_backfill_worker
 from aura.config import Settings
@@ -342,7 +343,7 @@ async def _drain(
     ticks = 0
     for _ in range(max_ticks):
         advanced = await advance_due_backfills(
-            conn, model, gateway, detector, settings=settings, now=now
+            conn, model, gateway, detector, settings=settings, now=now, plan_gate=PlanGate.unenforced()
         )
         if not advanced:
             return ticks
@@ -423,7 +424,7 @@ class TestChronologicalOrder:
         with patch("aura.backfill.worker.distill_facts", RecordingDistiller()):
             for _ in range(50):
                 advanced = await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW
+                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
                 )
                 run = (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[0]
                 if run.cursor_message_id is not None:
@@ -442,7 +443,7 @@ class TestChronologicalOrder:
 
         with patch("aura.backfill.worker.distill_facts", RecordingDistiller()):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW
+                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
             )
 
         assert all(call["oldest_first"] is True for call in channel.calls)
@@ -468,7 +469,7 @@ class TestRestartMidRun:
             # Exactly three batches, then the process dies.
             for _ in range(3):
                 await advance_due_backfills(
-                    first, embedding_model, gateway_before, _detector(), settings=settings, now=NOW
+                    first, embedding_model, gateway_before, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
                 )
         seen_before = list(distiller_before.seen_message_ids)
         staged_before = {
@@ -534,7 +535,7 @@ class TestRestartMidRun:
 
         with patch("aura.backfill.worker.distill_facts", distiller):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW
+                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
             )
             # "Crash" between the staging and the cursor advance.
             await conn.execute(
@@ -545,7 +546,7 @@ class TestRestartMidRun:
             await conn.commit()
 
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW
+                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
             )
 
         assert distiller.batches == [
@@ -577,13 +578,13 @@ class TestRestartMidRun:
         with patch("aura.backfill.worker.stage_distilled_candidates", crashing):
             with patch("aura.backfill.worker.distill_facts", distiller):
                 await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW
+                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
                 )
         assert await get_pending_facts(conn, guild_id=GUILD_A, limit=10) == []
 
         with patch("aura.backfill.worker.distill_facts", distiller):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW
+                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
             )
 
         assert distiller.batches == [
@@ -622,7 +623,7 @@ class TestRestartMidRun:
 
         with patch("aura.backfill.worker.distill_facts", cancel_mid_call):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW
+                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
             )
 
         after = (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[0]
@@ -644,7 +645,7 @@ class TestRestartMidRun:
 
         with patch("aura.backfill.worker.distill_facts", distiller):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW
+                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
             )
             await set_run_state(
                 conn,
@@ -656,7 +657,7 @@ class TestRestartMidRun:
             calls_while_paused_before = distiller.calls
             for _ in range(3):
                 await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW
+                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
                 )
             assert distiller.calls == calls_while_paused_before, "a paused run advanced"
 
@@ -958,7 +959,7 @@ class TestCompletion:
             requests_when_done = channel.page_requests
             for _ in range(5):
                 await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW
+                    conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
                 )
 
         assert channel.page_requests == requests_when_done
@@ -989,7 +990,7 @@ class TestCompletion:
 
         with patch("aura.backfill.worker.distill_facts", RecordingDistiller()):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW
+                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
             )
 
         run = (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[0]
@@ -1007,14 +1008,14 @@ class TestCompletion:
 
         with patch("aura.backfill.worker.distill_facts", RecordingDistiller()):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW
+                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
             )
             mid_cursor = (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[
                 0
             ].cursor_message_id
             gateway.unreadable.add(CHANNEL_A)
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW
+                conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
             )
 
         run = (await get_recent_runs(conn, guild_id=GUILD_A, limit=1))[0]
@@ -1116,7 +1117,7 @@ class TestCapIndependence:
             requests_after_cap = channel.page_requests
             for _ in range(5):
                 await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW
+                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
                 )
 
         assert channel.page_requests == requests_after_cap
@@ -1186,6 +1187,7 @@ class TestCapIndependence:
                 embedding_model,
                 settings=_settings(extraction_batch_window_seconds=0.0),
                 now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert flushed == 1, "a live batch was refused because a backfill spent its own cap"
@@ -1307,7 +1309,7 @@ class TestSupersessionChainOverHistory:
         ):
             for _ in range(20):
                 advanced = await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW
+                    conn, embedding_model, gateway, _detector(), settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
                 )
                 # Play the moderator: confirm whatever is newly pending, and
                 # retire the predecessor the proposal named.
@@ -1557,7 +1559,7 @@ class TestLargeHistory:
         with patch("aura.backfill.worker.distill_facts", distiller):
             for _ in range(2):
                 await advance_due_backfills(
-                    first, embedding_model, gateway, detector, settings=settings, now=NOW
+                    first, embedding_model, gateway, detector, settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
                 )
         seen += distiller.seen_message_ids
         await first.close()
@@ -1615,7 +1617,7 @@ class TestFailureIsolation:
             AsyncMock(side_effect=RuntimeError("boom")),
         ):
             advanced = await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW
+                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
             )
 
         assert advanced == 0
@@ -1676,7 +1678,7 @@ class TestFailureIsolation:
             patch("aura.backfill.history.asyncio.sleep", AsyncMock()),
         ):
             advanced = await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW
+                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
             )
 
         assert advanced == 0
@@ -1704,6 +1706,7 @@ class TestFailureIsolation:
                 _detector(),
                 settings=_settings(llm_api_key=None),
                 now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert advanced == 0
@@ -1781,6 +1784,7 @@ class TestWorkerLoop:
                         FakeGateway(),
                         _detector(),
                         settings=_settings(),
+                        plan_gate=PlanGate.unenforced(),
                     )
                 )
                 for _ in range(200):
@@ -1806,6 +1810,7 @@ class TestWorkerLoop:
                     FakeGateway(),
                     _detector(),
                     settings=_settings(),
+                    plan_gate=PlanGate.unenforced(),
                 )
             )
             await asyncio.sleep(0)
@@ -1826,6 +1831,7 @@ class TestInjectedClock:
                 _detector(),
                 settings=_settings(),
                 now=datetime(2026, 8, 26, 12, 0, 0),
+                plan_gate=PlanGate.unenforced(),
             )
 
 
@@ -1854,7 +1860,7 @@ class TestCrossGuildIsolation:
 
         with patch("aura.backfill.worker.distill_facts", distiller):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW
+                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
             )
 
         assert distiller.calls == 0, "another server's history was read"
@@ -1875,7 +1881,7 @@ class TestCrossGuildIsolation:
 
         with patch("aura.backfill.worker.distill_facts", distiller):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW
+                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
             )
 
         assert distiller.calls == 0
@@ -1900,7 +1906,7 @@ class TestCrossGuildIsolation:
 
         with patch("aura.backfill.worker.distill_facts", RecordingDistiller()):
             await advance_due_backfills(
-                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW
+                conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
             )
 
         assert (
@@ -1935,6 +1941,7 @@ class TestConcurrentTicks:
                         _detector(),
                         settings=settings,
                         now=NOW,
+                        plan_gate=PlanGate.unenforced(),
                     )
                     for _ in range(4)
                 )
@@ -1965,7 +1972,7 @@ class TestConcurrentTicks:
         ):
             with pytest.raises(asyncio.CancelledError):
                 await advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW
+                    conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
                 )
 
 
@@ -2080,7 +2087,7 @@ class TestTheConnectionLockIsNotHeldAcrossThePaidCall:
         with patch("aura.backfill.worker.distill_facts", blocking_distill):
             sweep = asyncio.create_task(
                 advance_due_backfills(
-                    conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW
+                    conn, embedding_model, gateway, _detector(), settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
                 )
             )
             await asyncio.wait_for(in_flight.wait(), timeout=5.0)

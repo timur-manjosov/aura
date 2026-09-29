@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
+from fake_bot_billing import FakeBotBillingState, create_fake_bot_billing
 from fake_discord import (
     PERMISSION_MANAGE_GUILD,
     FakeDiscordState,
@@ -26,7 +27,8 @@ from fake_discord import (
     FakeUser,
     create_fake_discord,
 )
-from helpers import FAKE_DISCORD_BASE, FRONTEND_BASE, build_app
+from fake_stripe import FakeStripeState, create_fake_stripe
+from helpers import FAKE_BOT_BASE, FAKE_DISCORD_BASE, FAKE_STRIPE_BASE, FRONTEND_BASE, build_app
 
 from aura_web.config import WebSettings
 
@@ -75,9 +77,26 @@ def discord_state() -> FakeDiscordState:
 
 
 @pytest.fixture
-def web_settings(discord_state: FakeDiscordState) -> WebSettings:
-    """Production settings, pointed at the fake Discord instead of the real one."""
+def stripe_state() -> FakeStripeState:
+    """A Stripe stand-in in test mode with no subscriptions yet."""
+    return FakeStripeState()
+
+
+@pytest.fixture
+def bot_billing_state() -> FakeBotBillingState:
+    """The bot's billing API stand-in, every guild on Free until a test says otherwise."""
+    return FakeBotBillingState()
+
+
+@pytest.fixture
+def web_settings(
+    discord_state: FakeDiscordState,
+    stripe_state: FakeStripeState,
+    bot_billing_state: FakeBotBillingState,
+) -> WebSettings:
+    """Production settings, pointed at the stand-ins instead of the real services."""
     return WebSettings(
+        _env_file=None,  # type: ignore[call-arg]
         discord_client_id=discord_state.client_id,
         discord_client_secret=discord_state.client_secret,
         discord_bot_token=discord_state.bot_token,
@@ -88,20 +107,41 @@ def web_settings(discord_state: FakeDiscordState) -> WebSettings:
         # the production minute.
         bot_guilds_cache_ttl_seconds=1.0,
         bot_guilds_stale_tolerance_seconds=0.0,
+        stripe_secret_key=stripe_state.secret_key,
+        stripe_webhook_secret=stripe_state.webhook_secret,
+        stripe_price_id=stripe_state.price_id,
+        stripe_api_base=FAKE_STRIPE_BASE,
+        checkout_success_url=f"{FRONTEND_BASE}/?checkout=success",
+        checkout_cancel_url=f"{FRONTEND_BASE}/?checkout=cancelled",
+        billing_portal_return_url=f"{FRONTEND_BASE}/",
+        bot_internal_api_url=FAKE_BOT_BASE,
+        bot_internal_api_secret=bot_billing_state.secret,
     )
 
 
 @pytest_asyncio.fixture
 async def app_client(
-    web_settings: WebSettings, discord_state: FakeDiscordState
+    web_settings: WebSettings,
+    discord_state: FakeDiscordState,
+    stripe_state: FakeStripeState,
+    bot_billing_state: FakeBotBillingState,
 ) -> AsyncIterator[httpx.AsyncClient]:
-    """The real application, with a real cookie jar, talking to the fake Discord."""
-    fake_discord = create_fake_discord(discord_state)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=fake_discord), base_url="https://discord.test"
-    ) as discord_http:
-        app = build_app(web_settings, discord_http)
+    """The real application, with a real cookie jar, talking to the three stand-ins."""
+    async with (
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_fake_discord(discord_state)),
+            base_url="https://discord.test",
+        ) as discord_http,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_fake_stripe(stripe_state)),
+            base_url=FAKE_STRIPE_BASE,
+        ) as stripe_http,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_fake_bot_billing(bot_billing_state)),
+            base_url=FAKE_BOT_BASE,
+        ) as bot_http,
+    ):
+        app = build_app(web_settings, discord_http, stripe_http, bot_http)
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="https://testserver"
