@@ -23,10 +23,11 @@ which is what makes "read the version, then write" one indivisible step with
 respect to every other coroutine in this process -- and this process is the
 only writer of this database, by design.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 
 import aiosqlite
@@ -50,7 +51,7 @@ def _to_unix(moment: datetime) -> int:
 
 
 def _from_unix(seconds: int) -> datetime:
-    return datetime.fromtimestamp(seconds, tz=timezone.utc)
+    return datetime.fromtimestamp(seconds, tz=UTC)
 
 
 class SubscriptionSnapshot(BaseModel):
@@ -144,12 +145,12 @@ def _record_from_row(row: aiosqlite.Row | tuple[object, ...]) -> SubscriptionRec
         guild_id=int(guild_id),  # type: ignore[arg-type]
         customer_id=str(customer_id),
         purchaser_user_id=None if purchaser_user_id is None else int(purchaser_user_id),  # type: ignore[arg-type]
-        status=SubscriptionStatus(status),
+        status=SubscriptionStatus(status),  # type: ignore[arg-type]
         cancel_at_period_end=bool(cancel_at_period_end),
         cancel_at=None if cancel_at is None else _from_unix(int(cancel_at)),  # type: ignore[arg-type]
         collection_paused=bool(collection_paused),
         latest_invoice_status=(
-            None if latest_invoice_status is None else InvoiceStatus(latest_invoice_status)
+            None if latest_invoice_status is None else InvoiceStatus(latest_invoice_status)  # type: ignore[arg-type]
         ),
         current_period_start=_from_unix(int(current_period_start)),  # type: ignore[arg-type]
         current_period_end=_from_unix(int(current_period_end)),  # type: ignore[arg-type]
@@ -162,8 +163,27 @@ def _record_from_row(row: aiosqlite.Row | tuple[object, ...]) -> SubscriptionRec
 async def get_sync_state(
     conn: aiosqlite.Connection, *, subscription_id: str, event_id: str | None
 ) -> SyncState:
-    """Whether an event was already applied, and the subscription's current version.
+    """Report whether an event was already applied, and the current version.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    subscription_id
+        Stripe's subscription identifier.
+    event_id
+        The Stripe event about to be processed, or None for a reconciliation
+        read that is not driven by an event.
+
+    Returns
+    -------
+    SyncState
+        `event_processed` is True when this exact event has already been
+        applied; `version` is the subscription's stored version, 0 for one this
+        database has never seen.
+
+    Notes
+    -----
     Version 0 means "no row yet", which is also exactly the version a first
     write must name -- so the very first snapshot for a subscription goes
     through the same compare-and-swap as every later one.
@@ -191,8 +211,38 @@ async def apply_subscription_snapshot(
     expected_version: int,
     now: datetime,
 ) -> ApplyResult:
-    """Store a snapshot if its event is new and the version is still the one the caller read.
+    """Store a snapshot if its event is new and the version is unchanged.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    snapshot
+        What Stripe says about the subscription.
+    event_id
+        The Stripe event driving this write, or None for a reconciliation write
+        that records no event.
+    event_type
+        The event's type, stored alongside it. Must be None exactly when
+        `event_id` is.
+    expected_version
+        The version the caller read before fetching from Stripe. The write
+        applies only if the stored version still matches.
+    now
+        When the write is made.
+
+    Returns
+    -------
+    ApplyResult
+        APPLIED with the new version and record; DUPLICATE_EVENT when this event
+        was already processed; VERSION_CONFLICT when the stored version has
+        moved on. The last two write nothing.
+
+    Notes
+    -----
+    Both guards and the write share one transaction, so a redelivered event and
+    a concurrent writer are each resolved exactly once. A losing event is NOT
+    marked processed, so its retry re-fetches rather than being swallowed.
     `event_id` and `event_type` are both given for a webhook-driven write and
     both None for a reconciliation write, which has no event to deduplicate.
 
@@ -242,7 +292,9 @@ async def apply_subscription_snapshot(
                 int(snapshot.cancel_at_period_end),
                 None if snapshot.cancel_at is None else _to_unix(snapshot.cancel_at),
                 int(snapshot.collection_paused),
-                None if snapshot.latest_invoice_status is None else snapshot.latest_invoice_status.value,
+                None
+                if snapshot.latest_invoice_status is None
+                else snapshot.latest_invoice_status.value,
                 _to_unix(snapshot.current_period_start),
                 _to_unix(snapshot.current_period_end),
                 int(snapshot.livemode),
@@ -323,7 +375,19 @@ async def _stored_version(conn: aiosqlite.Connection, subscription_id: str) -> i
 
 
 async def load_subscription_records(conn: aiosqlite.Connection) -> list[SubscriptionRecord]:
-    """Every stored subscription, for building the runtime plan gate at startup."""
+    """Return every stored subscription, for building the plan gate at startup.
+
+    Parameters
+    ----------
+    conn
+        Open database connection.
+
+    Returns
+    -------
+    list[SubscriptionRecord]
+        Every row. Deliberately not guild-scoped: the caller is the process-wide
+        plan gate, which needs all of them at once.
+    """
     async with connection_lock(conn):
         async with conn.execute(
             f"SELECT {_RECORD_COLUMNS} FROM guild_subscriptions ORDER BY subscription_id"
@@ -333,7 +397,19 @@ async def load_subscription_records(conn: aiosqlite.Connection) -> list[Subscrip
 
 
 async def count_processed_events(conn: aiosqlite.Connection) -> int:
-    """How many Stripe events have been applied -- a diagnostic, and the idempotency tests' witness."""
+    """Return how many Stripe events have been applied.
+
+    Parameters
+    ----------
+    conn
+        Open database connection.
+
+    Returns
+    -------
+    int
+        Rows in the event ledger. A diagnostic, and the idempotency tests'
+        witness that a redelivered event adds nothing.
+    """
     async with connection_lock(conn):
         async with conn.execute("SELECT COUNT(*) FROM stripe_processed_events") as cursor:
             row = await cursor.fetchone()

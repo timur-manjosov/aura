@@ -10,6 +10,7 @@ same" from "never translated at all." TestTranslationContentDiffersFromEnglish
 and TestPlaceholderParity close that gap: they check every locale/key pair
 directly, not a sample.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -20,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from aura.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES, get_translator, t
-from aura.i18n.translator import Translator, TranslationLoadError
+from aura.i18n.translator import TranslationLoadError, Translator
 
 _LOCALES_DIR = Path(__file__).resolve().parent.parent / "src" / "aura" / "i18n" / "locales"
 _PLACEHOLDER_RE = re.compile(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}")
@@ -45,9 +46,11 @@ NEVER_TRANSLATED_KEYS = frozenset({"ping_response", "ping_command_name"})
 # identically to English — a genuine cognate, not a missed translation.
 # Verified individually: French "Sources" is the standard French word for
 # this UI context (same spelling as English), not a copy-paste leftover.
-KNOWN_COGNATE_EXCEPTIONS = frozenset({
-    ("fr", "ask_sources_label"),
-})
+KNOWN_COGNATE_EXCEPTIONS = frozenset(
+    {
+        ("fr", "ask_sources_label"),
+    }
+)
 
 
 def _load_locale_json(locale: str) -> dict[str, str]:

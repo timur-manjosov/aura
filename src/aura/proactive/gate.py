@@ -60,6 +60,7 @@ are local CPU work with no per-call price, and evaluating them even for
 messages the budget would refuse is what makes the debug trail show *why* a
 message was held back rather than just *that* it was.
 """
+
 from __future__ import annotations
 
 import logging
@@ -160,8 +161,17 @@ class ProactiveGateConfig(BaseModel):
     def from_settings(cls, settings: Settings) -> ProactiveGateConfig:
         """Build the gate's configuration from application settings.
 
-        The single mapping from environment variables to gate behaviour, so
-        no call site has to know which setting drives which stage.
+        Parameters
+        ----------
+        settings
+            Loaded configuration.
+
+        Returns
+        -------
+        ProactiveGateConfig
+            Validated thresholds. The single mapping from environment variables to
+            gate behaviour, so no call site has to know which setting drives which
+            stage.
         """
         return cls(
             question_threshold=settings.proactive_question_threshold,
@@ -185,16 +195,40 @@ async def evaluate_message(
     config: ProactiveGateConfig,
     now: datetime,
 ) -> DecisionTrail:
-    """Decide whether content is eligible to proceed to paid synthesis, and why.
+    """Decide whether a message is eligible to proceed to paid synthesis, and why.
 
-    Claims an escalation slot as a side effect when, and only when, the
-    returned verdict is ELIGIBLE -- see this module's docstring for why that
-    happens here and not later. Every other verdict leaves the database
-    untouched apart from the caller's own diagnostic row.
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    model
+        The loaded embedding model.
+    detector
+        The question detector, built once at startup.
+    guild_id, channel_id, message_id
+        Where the message came from.
+    content
+        The message text to score.
+    config
+        The thresholds to decide against.
+    now
+        Timezone-aware moment, passed in rather than read here so the cooldown
+        and the daily boundary are testable at the exact moments they matter.
 
-    Never calls an LLM and never writes a fact. Requires a timezone-aware
-    `now`, passed in rather than read here, so the cooldown and the daily
-    boundary are testable at the exact moments they matter.
+    Returns
+    -------
+    DecisionTrail
+        The verdict and every number behind it, whether or not the message
+        proceeds.
+
+    Notes
+    -----
+    Claims an escalation slot AS A SIDE EFFECT when, and only when, the returned
+    verdict is ELIGIBLE -- see this module's docstring for why that happens here
+    and not later. Every other verdict leaves the database untouched apart from
+    the caller's own diagnostic row.
+
+    Never calls an LLM and never writes a fact.
     """
     stage1_score = await detector.question_likeness(content)
     stage1_passed = stage1_score >= config.question_threshold

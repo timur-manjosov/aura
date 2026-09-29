@@ -15,10 +15,12 @@ audits without having just generated. A single slot per fact therefore bounds
 both calls' cost at once; a second, separate ledger for the audit call would
 only add bookkeeping with nothing left for it to protect against on its own.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Final
 
 import aiosqlite
 from pydantic import BaseModel
@@ -40,7 +42,7 @@ WHERE (
 # value is bound into SQL, and sqlite3 refuses a Python int that does not fit a
 # signed 64-bit integer, so a value past this would raise on every fact instead
 # of being refused once where an operator can see it.
-MAX_DAILY_CAP = 1_000_000
+MAX_DAILY_CAP: Final = 1_000_000
 
 
 class VariantCallOutcome(StrEnum):
@@ -67,17 +69,38 @@ class VariantCallAttempt(BaseModel):
 
     @property
     def granted(self) -> bool:
-        """Whether this attempt actually took a slot from the budget."""
+        """Report whether this attempt actually took a slot from the budget.
+
+        Returns
+        -------
+        bool
+            True only for a GRANTED outcome -- that is, only when a slot was
+            actually taken from the budget.
+        """
         return self.outcome is VariantCallOutcome.GRANTED
 
 
-async def count_variant_calls_on(
-    conn: aiosqlite.Connection, *, guild_id: int, day: str
-) -> int:
-    """Return how many variant-generation episodes guild_id has already spent on a UTC day.
+async def count_variant_calls_on(conn: aiosqlite.Connection, *, guild_id: int, day: str) -> int:
+    """Return how many variant-generation calls a guild has spent on a UTC day.
 
-    Read-only. Takes the day as a string produced by utc_day so the caller's
-    clock, not this function's, defines "today".
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild whose ledger to count.
+    day
+        A UTC day key as produced by `utc_day`, so the caller's clock -- not
+        this function's -- defines "today".
+
+    Returns
+    -------
+    int
+        Rows in `variant_calls` for that guild and day; 0 if there are none.
+
+    Notes
+    -----
+    Read-only; takes no slot and changes nothing.
     """
     async with connection_lock(conn):
         async with conn.execute(
@@ -97,6 +120,37 @@ async def try_acquire_variant_call_slot(
     now: datetime,
 ) -> VariantCallAttempt:
     """Atomically take one slot from the guild's daily variant-generation budget.
+
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild whose budget to spend from.
+    fact_id
+        The fact whose variants are being generated, recorded on the row.
+    daily_cap
+        Today's ceiling. 0 is valid and means "never spend".
+    now
+        Timezone-aware moment; supplies both the timestamp and the UTC day
+        key, so the two can never straddle midnight in opposite directions.
+
+    Returns
+    -------
+    VariantCallAttempt
+        GRANTED with the post-write count when a slot was taken;
+        DAILY_CAP_REACHED with the current count when it was not.
+
+    Raises
+    ------
+    ValueError
+        If `daily_cap` is outside [0, MAX_DAILY_CAP] or `now` is naive.
+
+    Notes
+    -----
+    Atomic against concurrent callers, including a second process sharing
+    the database file: the cap is re-checked inside the INSERT's own WHERE
+    clause, so there is no window between deciding and writing.
 
     Call this once a fact is known to exist and *before* the generation call it
     authorizes -- the same ordering, for the same reason, as every other

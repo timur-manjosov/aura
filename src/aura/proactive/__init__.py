@@ -10,6 +10,7 @@ including that self-assessment, agrees. This is the first point in Aura's
 existence where money is spent and a message is posted unprompted, so the
 posting policy is deliberately far more conservative than /aura-ask.
 """
+
 from aura.proactive.gate import ProactiveGateConfig, evaluate_message
 from aura.proactive.grace import GraceRegistry, GraceWaitOutcome
 from aura.proactive.listener import handle_message, should_classify

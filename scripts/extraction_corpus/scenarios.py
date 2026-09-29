@@ -11,6 +11,7 @@ it is deliberately re-picked at random per call from a small set of themes
 rather than fixed per locale -- so a locale's separation score cannot be
 confounded with "this locale happened to get the easiest theme."
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

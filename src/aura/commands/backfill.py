@@ -28,15 +28,17 @@ answer across the bot. Every reply is ephemeral: starting a backfill is an
 operational decision for the moderator who made it, not an announcement to the
 channel being read.
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import discord
 from discord import app_commands
 
+from aura.commands.plan import pro_feature_refusal
 from aura.db.backfill_runs import (
     BackfillAlreadyActiveError,
     BackfillRun,
@@ -46,7 +48,6 @@ from aura.db.backfill_runs import (
     set_run_state,
     start_backfill_run,
 )
-from aura.commands.plan import pro_feature_refusal
 from aura.db.backfill_state import count_backfill_calls_on
 from aura.db.connection import utc_day, utc_now
 from aura.db.extraction_channel_config import is_extraction_enabled
@@ -94,10 +95,13 @@ def _parse_since(raw: str, *, now: datetime) -> datetime | None:
     consistently a few hours off from what someone expected.
     """
     try:
-        parsed = datetime.strptime(raw.strip(), _SINCE_FORMAT)
+        # The format is deliberately date-only, so there is no zone for strptime
+        # to read; the line below supplies the UTC this docstring commits to.
+        # That is what the suppression on the next line records.
+        parsed = datetime.strptime(raw.strip(), _SINCE_FORMAT)  # noqa: DTZ007
     except ValueError:
         return None
-    since = parsed.replace(tzinfo=timezone.utc)
+    since = parsed.replace(tzinfo=UTC)
     return since if since < now else None
 
 
@@ -236,6 +240,23 @@ async def backfill_start(
 ) -> None:
     """Open a run over channel's history, or resume the paused one it already has.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    channel
+        The channel whose history to walk.
+    since
+        An optional `YYYY-MM-DD` lower bound, interpreted as UTC midnight. None
+        means "from the beginning of the channel".
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Four refusals, each answering a different question a moderator would
     otherwise have to ask afterwards:
 
@@ -397,6 +418,20 @@ async def backfill_status(
 ) -> None:
     """Show the live run (if any) and the last few finished ones.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    channel
+        Restrict the report to one channel, or None for the guild's recent runs.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Always reports today's budget alongside, because "nothing is happening" and
     "the daily cap is spent and it resumes after midnight UTC" look identical
     from the outside and mean completely different things. A run that is waiting
@@ -410,9 +445,7 @@ async def backfill_status(
     assert db is not None  # setup_hook always finishes before commands go live
 
     settings = interaction.client.settings
-    spent = await count_backfill_calls_on(
-        db, guild_id=interaction.guild_id, day=utc_day(utc_now())
-    )
+    spent = await count_backfill_calls_on(db, guild_id=interaction.guild_id, day=utc_day(utc_now()))
 
     if channel is not None:
         active = await get_active_run(db, channel_id=channel.id)
@@ -425,9 +458,7 @@ async def backfill_status(
             if run.channel_id == channel.id and (active is None or run.id != active.id)
         ]
     else:
-        runs = await get_recent_runs(
-            db, guild_id=interaction.guild_id, limit=_RECENT_RUN_LIMIT
-        )
+        runs = await get_recent_runs(db, guild_id=interaction.guild_id, limit=_RECENT_RUN_LIMIT)
 
     embed = discord.Embed(title=t("backfill_status_title", locale))
     embed.description = t(
@@ -463,9 +494,7 @@ async def backfill_status(
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@backfill_group.command(
-    name="pause", description="Pause a channel's backfill, keeping its place."
-)
+@backfill_group.command(name="pause", description="Pause a channel's backfill, keeping its place.")
 @app_commands.describe(channel="The channel whose backfill should pause.")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def backfill_pause(
@@ -473,6 +502,20 @@ async def backfill_pause(
 ) -> None:
     """Stop advancing a run without losing where it got to.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    channel
+        The channel to act on.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     The worker may be mid-batch when this lands, and that is handled where it
     matters rather than here: the cursor advance is guarded on the run still
     being 'running', so a batch that finishes after this command does not move
@@ -491,9 +534,7 @@ async def backfill_pause(
     )
 
 
-@backfill_group.command(
-    name="cancel", description="End a channel's backfill for good."
-)
+@backfill_group.command(name="cancel", description="End a channel's backfill for good.")
 @app_commands.describe(channel="The channel whose backfill should end.")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def backfill_cancel(
@@ -501,6 +542,20 @@ async def backfill_cancel(
 ) -> None:
     """End a run permanently. Its cursor is kept as a record, never resumed.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    channel
+        The channel to act on.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Cancel does NOT touch anything the run already produced. Candidates it
     staged remain in the review queue exactly as they are, because they are
     proposals a moderator asked for and a later change of mind about reading
@@ -568,9 +623,7 @@ async def _transition(
         interaction.user.id,
     )
     await interaction.response.send_message(
-        t(success_key, locale, channel=channel.mention)
-        + "\n"
-        + _describe_progress(run, locale),
+        t(success_key, locale, channel=channel.mention) + "\n" + _describe_progress(run, locale),
         ephemeral=True,
     )
 
@@ -579,5 +632,15 @@ backfill_group.error(_handle_backfill_error)
 
 
 def register_backfill_command(tree: app_commands.CommandTree) -> None:
-    """Register the /aura-backfill group onto tree."""
+    """Register the /aura-backfill group onto tree.
+
+    Parameters
+    ----------
+    tree
+        The command tree to register into.
+
+    Returns
+    -------
+    None
+    """
     tree.add_command(backfill_group)

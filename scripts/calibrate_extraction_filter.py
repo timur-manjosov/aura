@@ -15,6 +15,7 @@ aggregate can still be hiding a category or a locale where it fails, and the
 Phase 3a-1 design brief explicitly asks for that to be reported honestly
 rather than averaged away.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,21 +23,24 @@ import asyncio
 import sys
 from pathlib import Path
 
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fastembed import TextEmbedding  # noqa: E402
+from fastembed import TextEmbedding
 
-from aura.extraction.fact_worthiness import create_fact_worthiness_detector  # noqa: E402
-from extraction_corpus.corpus_model import (  # noqa: E402
+from aura.extraction.fact_worthiness import create_fact_worthiness_detector
+from extraction_corpus.corpus_model import (
     HARD_NEGATIVE_CATEGORIES,
-    LabelAudit,
     ORDINARY_NOT_FACT_WORTHY_CATEGORIES,
+    LabelAudit,
     SyntheticMessage,
 )
-from extraction_corpus.corpus_store import CorpusLoadError, read_corpus  # noqa: E402
-from extraction_corpus.scenarios import LOCALES  # noqa: E402
-from synthetic_corpus.metrics import (  # noqa: E402
+from extraction_corpus.corpus_store import CorpusLoadError, read_corpus
+from extraction_corpus.scenarios import LOCALES
+from synthetic_corpus.metrics import (
     ConfusionCounts,
     confusion_at,
     describe_distribution,
@@ -81,7 +85,9 @@ def _print_sweep(
     positive_scores = [score for score, truth in pairs if truth]
     negative_scores = [score for score, truth in pairs if not truth]
 
-    print(f"\n{label} (n={len(pairs)}, positive={len(positive_scores)}, negative={len(negative_scores)})")
+    print(
+        f"\n{label} (n={len(pairs)}, positive={len(positive_scores)}, negative={len(negative_scores)})"
+    )
     print(f"  positive score distribution: {describe_distribution(positive_scores)}")
     print(f"  negative score distribution: {describe_distribution(negative_scores)}")
     for threshold in thresholds:
@@ -92,7 +98,9 @@ def _print_per_locale(scored: list[tuple[SyntheticMessage, float]], threshold: f
     print(f"\nPER-LOCALE at threshold {threshold:+.2f}")
     print("-" * 78)
     for locale in LOCALES:
-        pairs = [(score, message.is_fact_worthy) for message, score in scored if message.locale == locale]
+        pairs = [
+            (score, message.is_fact_worthy) for message, score in scored if message.locale == locale
+        ]
         if not pairs:
             print(f"  {locale:<8} no data")
             continue
@@ -135,11 +143,15 @@ async def main() -> int:
     if args.exclude_disputed:
         messages = [m for m in messages if m.label_audit is not LabelAudit.DISPUTE]
 
-    print(f"corpus: {args.corpus} ({len(corpus.messages)} messages, generated {corpus.generated_at})")
+    print(
+        f"corpus: {args.corpus} ({len(corpus.messages)} messages, generated {corpus.generated_at})"
+    )
     audited = [m for m in corpus.messages if m.label_audit is not LabelAudit.NOT_AUDITED]
     disputes = [m for m in corpus.messages if m.label_audit is LabelAudit.DISPUTE]
     if audited:
-        print(f"label audit: {len(disputes)}/{len(audited)} disputed ({len(disputes) / len(audited):.1%})")
+        print(
+            f"label audit: {len(disputes)}/{len(audited)} disputed ({len(disputes) / len(audited):.1%})"
+        )
 
     model = TextEmbedding("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     detector = await create_fact_worthiness_detector(model)
@@ -150,11 +162,17 @@ async def main() -> int:
 
     _print_sweep("OVERALL", scored, coarse)
 
-    ordinary = [(m, s) for m, s in scored if m.category in ORDINARY_NOT_FACT_WORTHY_CATEGORIES or m.is_fact_worthy]
+    ordinary = [
+        (m, s)
+        for m, s in scored
+        if m.category in ORDINARY_NOT_FACT_WORTHY_CATEGORIES or m.is_fact_worthy
+    ]
     _print_sweep("FACT-WORTHY vs. ORDINARY NEGATIVES ONLY", ordinary, coarse)
 
     hard = [(m, s) for m, s in scored if m.category in HARD_NEGATIVE_CATEGORIES or m.is_fact_worthy]
-    _print_sweep("FACT-WORTHY vs. HARD NEGATIVES ONLY (hedged speculation + adversarial noise)", hard, coarse)
+    _print_sweep(
+        "FACT-WORTHY vs. HARD NEGATIVES ONLY (hedged speculation + adversarial noise)", hard, coarse
+    )
 
     for category in HARD_NEGATIVE_CATEGORIES:
         subset = [(m, s) for m, s in scored if m.category is category]

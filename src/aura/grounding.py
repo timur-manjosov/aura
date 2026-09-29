@@ -63,6 +63,7 @@ Trigger 1, where a user is watching a deferred interaction, and matters less on
 Trigger 2; both bounds are stated below. Cost is not an axis: this call is
 smaller than the synthesis call it follows and runs at exactly the same volume.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -427,8 +428,7 @@ def _apply_evidence_rule(raw: _RawGroundingVerdict) -> bool:
         logger.warning(
             "Grounding check reported %s while answering grounded=true; overruling it to false",
             ", ".join(
-                f"{field}={named[field][:_MAX_LOGGED_DESCRIPTION_CHARS]!r}"
-                for field in flagged
+                f"{field}={named[field][:_MAX_LOGGED_DESCRIPTION_CHARS]!r}" for field in flagged
             ),
         )
         return False
@@ -536,21 +536,47 @@ async def verify_answer_grounded(
     settings: Settings,
     timeout_seconds: float,
 ) -> GroundingOutcome:
-    """Decide whether one finished answer may be sent. Yes or no; never rewrites.
+    """Decide whether one finished answer may be sent.
+
+    Parameters
+    ----------
+    answer
+        The synthesized answer, exactly as it would be posted.
+    cited_facts
+        The facts the answer claims to have used -- the only other input. No
+        question, no guild, no channel, no uncited facts (see the module
+        docstring for why).
+    settings
+        Loaded configuration; supplies the independent checker model.
+    timeout_seconds
+        The caller's time limit. /aura-ask and proactive relief differ only in
+        this and in what they tell the user afterwards.
+
+    Returns
+    -------
+    GroundingOutcome
+        GROUNDED when every claim follows from the cited facts; UNGROUNDED
+        when one does not; CHECK_FAILED when the check itself could not be
+        completed; NOT_CONFIGURED when no independent checker model is set.
+        Only GROUNDED and NOT_CONFIGURED let an answer through, and the
+        second is logged at WARNING every time.
+
+    Notes
+    -----
+    Fail-closed. A timeout, a network error, malformed JSON and a verdict of
+    "not supported" all resolve to an outcome both call sites treat as "do not
+    send"; the one thing this will never do is let an answer through because
+    the check itself broke. Never raises.
+
+    `answer` is read, never returned and never modified, and the return value
+    is an enum -- so there is no path by which this function can influence the
+    text that reaches Discord. `cited_facts` must be the facts the answer
+    actually claimed to use (`SynthesisResult.used_fact_ids`), not everything
+    retrieved.
 
     The single entry point both send paths use, so the policy exists once
-    instead of twice -- the same reason aura.synthesis is one shared function
-    behind two triggers. Callers differ only in the time limit they pass (see
-    ASK_GROUNDING_TIMEOUT_SECONDS and PROACTIVE_GROUNDING_TIMEOUT_SECONDS) and
-    in what they tell the user afterwards.
-
-    `answer` is read, never returned and never modified; the return value is an
-    enum, so there is no path by which this function can influence the text that
-    reaches Discord. `cited_facts` must be the facts the answer actually claimed
-    to use (SynthesisResult.used_fact_ids), not everything retrieved.
-
-    Never raises. Every failure mode resolves to CHECK_FAILED, which both call
-    sites treat as "do not send".
+    instead of twice -- the same reason `aura.synthesis` is one shared function
+    behind two triggers.
     """
     model = settings.resolve_model(ModelComponent.GROUNDING_CHECK)
     if not settings.is_llm_configured(ModelComponent.GROUNDING_CHECK) or model is None:

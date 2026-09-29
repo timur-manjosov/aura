@@ -31,6 +31,7 @@ and retrieval reads through `get_active_facts`, which reads the production
 tables. A hand-written stand-in schema here would mean measuring something
 subtly different from what ships.
 """
+
 from __future__ import annotations
 
 import os

@@ -10,9 +10,11 @@ short-circuited stage is visibly absent rather than shown as a zero, and that a
 full page cannot exceed Discord's limits -- the three ways a debug view can
 mislead rather than merely look different.
 """
+
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
@@ -161,7 +163,9 @@ class TestErrorHandler:
     async def test_missing_permissions_replies_ephemerally_and_localized(self) -> None:
         interaction = _make_interaction(db=None)
 
-        await _handle_debug_signals_error(interaction, app_commands.MissingPermissions(["manage_guild"]))
+        await _handle_debug_signals_error(
+            interaction, app_commands.MissingPermissions(["manage_guild"])
+        )
 
         interaction.response.send_message.assert_awaited_once()
         args, kwargs = interaction.response.send_message.call_args
@@ -172,7 +176,9 @@ class TestErrorHandler:
         interaction = _make_interaction(db=None)
         interaction.response.is_done = MagicMock(return_value=True)
 
-        await _handle_debug_signals_error(interaction, app_commands.MissingPermissions(["manage_guild"]))
+        await _handle_debug_signals_error(
+            interaction, app_commands.MissingPermissions(["manage_guild"])
+        )
 
         interaction.followup.send.assert_awaited_once()
         interaction.response.send_message.assert_not_awaited()
@@ -241,9 +247,7 @@ class TestDecisionTrailRendering:
         assert "-0.456" in (field.value or "")
         assert "✗" in (field.value or "")
 
-    async def test_a_passing_stage_shows_a_pass_marker(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_passing_stage_shows_a_pass_marker(self, conn: aiosqlite.Connection) -> None:
         await _seed(conn, 1, decision=ELIGIBLE_TRAIL)
         interaction = _make_interaction(db=conn)
 
@@ -400,7 +404,12 @@ class TestDecisionTrailRendering:
         for locale in SUPPORTED_LOCALES:
             template = t("debug_signals_trail", locale)
             for placeholder in (
-                "{stage1}", "{stage2}", "{cooldown}", "{cap}", "{grace}", "{synthesis}"
+                "{stage1}",
+                "{stage2}",
+                "{cooldown}",
+                "{cap}",
+                "{grace}",
+                "{synthesis}",
             ):
                 assert placeholder in template, f"{placeholder} missing for {locale}"
 
@@ -525,9 +534,7 @@ class TestGraceOutcomeRendering:
     async def test_cancelled_by_human_is_visible_and_distinct_from_expiry(
         self, conn: aiosqlite.Connection
     ) -> None:
-        await self._seed_eligible_with_grace_outcome(
-            conn, GracePeriodOutcome.CANCELLED_BY_HUMAN
-        )
+        await self._seed_eligible_with_grace_outcome(conn, GracePeriodOutcome.CANCELLED_BY_HUMAN)
         interaction = _make_interaction(db=conn)
 
         await _invoke(interaction)
@@ -537,9 +544,7 @@ class TestGraceOutcomeRendering:
         assert t("debug_signals_grace_expired_and_proceeded", "en-US") not in value
 
     async def test_expired_and_proceeded_is_visible(self, conn: aiosqlite.Connection) -> None:
-        await self._seed_eligible_with_grace_outcome(
-            conn, GracePeriodOutcome.EXPIRED_AND_PROCEEDED
-        )
+        await self._seed_eligible_with_grace_outcome(conn, GracePeriodOutcome.EXPIRED_AND_PROCEEDED)
         interaction = _make_interaction(db=conn)
 
         await _invoke(interaction)
@@ -548,9 +553,7 @@ class TestGraceOutcomeRendering:
         assert t("debug_signals_grace_expired_and_proceeded", "en-US") in value
 
     async def test_stood_down_on_recheck_is_visible(self, conn: aiosqlite.Connection) -> None:
-        await self._seed_eligible_with_grace_outcome(
-            conn, GracePeriodOutcome.STOOD_DOWN_ON_RECHECK
-        )
+        await self._seed_eligible_with_grace_outcome(conn, GracePeriodOutcome.STOOD_DOWN_ON_RECHECK)
         interaction = _make_interaction(db=conn)
 
         await _invoke(interaction)
@@ -588,9 +591,9 @@ class TestLiveCapUsage:
     ) -> None:
         # The per-message figures are historical by design; a moderator asking
         # "are we capped out right now?" needs the current answer too.
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for index in range(3):
             await try_acquire_escalation_slot(
                 conn,
@@ -612,7 +615,7 @@ class TestLiveCapUsage:
     async def test_another_guilds_escalations_are_not_counted(
         self, conn: aiosqlite.Connection
     ) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         await try_acquire_escalation_slot(
             conn,
@@ -621,7 +624,7 @@ class TestLiveCapUsage:
             message_id=1,
             cooldown_seconds=0.0,
             daily_cap=20,
-            now=datetime.now(timezone.utc),
+            now=datetime.now(UTC),
         )
         await _seed(conn, 1, guild_id=GUILD_A)
         interaction = _make_interaction(db=conn, guild_id=GUILD_A)

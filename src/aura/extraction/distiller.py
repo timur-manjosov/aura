@@ -51,6 +51,7 @@ in the same one. EXTRACTION_MODEL carries Phase 2's bake-off winner on the
 argument that this is the same trait in the same shape; see aura.config for
 what that transferred assumption is and where it is weakest.
 """
+
 from __future__ import annotations
 
 import logging
@@ -142,9 +143,7 @@ class _RawDistillationResponse(BaseModel):
     facts: list[_RawDistilledFact]
 
 
-def _build_messages(
-    candidates: list[QueuedMessage], channel_name: str
-) -> list[dict[str, str]]:
+def _build_messages(candidates: list[QueuedMessage], channel_name: str) -> list[dict[str, str]]:
     """Build the system/user messages: the rules, the channel context, the numbered batch."""
     numbered_messages = "\n".join(
         f"[{index}] ({message.message_created_at.isoformat()}) "
@@ -174,7 +173,7 @@ def _build_messages(
         "reached. Only count this when the message carries a CONCRETE, "
         "CHECKABLE component of its own: a number, a named person or team, or "
         "a specific identified event. A pure reaction to someone else's "
-        "achievement -- \"congrats!\", \"nice!\", \"let's goooo\", \"so proud "
+        'achievement -- "congrats!", "nice!", "let\'s goooo", "so proud '
         'of you all" -- is NOT a milestone and NOT a fact, no matter how '
         "clearly it is about one, and no matter that a nearby message in this "
         "batch may describe the achievement itself. Celebrating a fact is not "
@@ -182,7 +181,7 @@ def _build_messages(
         "What to REJECT, even though the pre-filter let it through -- these "
         "are the cases it is known to be bad at, and the reason you are being "
         "asked at all:\n"
-        "- HEDGED or UNCERTAIN statements. \"I think the event might be "
+        '- HEDGED or UNCERTAIN statements. "I think the event might be '
         'Saturday?", "pretty sure maintenance is today, not certain" -- if '
         "the writer is not asserting it, it is not a fact. Do not strip the "
         "hedge off and record the confident version.\n"
@@ -211,7 +210,7 @@ def _build_messages(
         "it English.\n"
         "- DISTILL, never copy. The output is one clear, self-contained, "
         "third-person sentence, not the original message with its typos and "
-        "chat register left in. Resolve \"tomorrow\", \"in 2 hours\" and "
+        'chat register left in. Resolve "tomorrow", "in 2 hours" and '
         '"tonight" against the message\'s own timestamp so the sentence still '
         "means the same thing when read next month.\n"
         "- Include only what the message itself says. Never add background, "
@@ -275,23 +274,36 @@ def _build_messages(
 async def distill_facts(
     candidates: list[QueuedMessage], *, channel_name: str, model: str
 ) -> list[DistilledFact] | None:
-    """Distill a batch of candidate messages into fact candidates, or None on any failure.
+    """Distill a batch of candidate messages into fact candidates.
 
-    Returns a list -- possibly empty, which is the expected outcome for most
-    batches and is NOT a failure -- or None if the call could not be completed
-    or its result could not be trusted. The distinction matters to the caller:
-    an empty list means "asked, answered, nothing here" and clears the batch; a
-    None means "no usable answer", which the caller must not mistake for the
-    model having judged the batch empty.
+    Parameters
+    ----------
+    candidates
+        The queued messages to consider. An empty batch returns an empty list
+        without calling the model.
+    channel_name
+        The channel's name at enqueue time, shown to the model as context.
+    model
+        The already-resolved model string (see `Settings.resolve_model`), passed
+        in rather than read here so there is exactly one model-resolution seam
+        in the codebase.
 
+    Returns
+    -------
+    list[DistilledFact] or None
+        A list -- possibly EMPTY, which is the expected outcome for most batches
+        and is NOT a failure -- or None if the call could not be completed or
+        its result could not be trusted. The distinction matters: an empty list
+        means "asked, answered, nothing here" and clears the batch; None means
+        "no usable answer", which the caller must not mistake for the model
+        having judged the batch empty.
+
+    Notes
+    -----
     Never raises. Malformed JSON, a hallucinated message number, an
-    out-of-vocabulary category, an empty or oversized sentence, a network
-    error, an auth failure, and a timeout are all real, expected failure modes
-    at this call site, and every one becomes a clean None.
-
-    `model` is the already-resolved model string (see Settings.resolve_model),
-    passed in rather than read here so there is exactly one model-resolution
-    seam in the codebase.
+    out-of-vocabulary category, an empty or oversized sentence, a network error,
+    an auth failure, and a timeout are all real, expected failure modes at this
+    call site, and every one becomes a clean None.
     """
     if not candidates:
         # Not a failure and not worth a call: an empty batch has nothing to

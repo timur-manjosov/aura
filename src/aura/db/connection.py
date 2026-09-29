@@ -31,10 +31,11 @@ break the second test that exercises real contention. Keying the lock by
 connection identity means each connection (and, in tests, each fresh
 in-memory database) gets its own lock tied to whichever loop actually uses it.
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from weakref import WeakKeyDictionary
 
 import aiosqlite
@@ -45,12 +46,30 @@ _connection_locks: WeakKeyDictionary[aiosqlite.Connection, asyncio.Lock] = WeakK
 def connection_lock(conn: aiosqlite.Connection) -> asyncio.Lock:
     """Return this connection's operation-serialization lock, creating it on first use.
 
+    Parameters
+    ----------
+    conn
+        The connection whose lock to return. Identity, not equality, keys the
+        table.
+
+    Returns
+    -------
+    asyncio.Lock
+        The same lock for the same connection, for the connection's lifetime.
+        Entries are held weakly, so a closed connection's lock is collected
+        with it.
+
+    Notes
+    -----
     Every coroutine that issues statements against a shared connection must
     hold this lock for the whole of its logical operation -- not just its
     writes, and not just its multi-statement operations. A single unguarded
     ``INSERT`` + ``commit()`` is enough to end another coroutine's in-flight
     transaction early, because SQLite has no notion of which caller a
     ``COMMIT`` belongs to. See this module's docstring for the full reasoning.
+
+    Not itself thread-safe, and does not need to be: it is only ever called
+    from the single event loop that owns the connection.
     """
     lock = _connection_locks.get(conn)
     if lock is None:
@@ -60,8 +79,27 @@ def connection_lock(conn: aiosqlite.Connection) -> asyncio.Lock:
 
 
 def utc_iso(moment: datetime) -> str:
-    """Format a moment as a fixed-width UTC ISO-8601 string (always 6 fractional digits).
+    """Format a moment as a fixed-width UTC ISO-8601 string.
 
+    Parameters
+    ----------
+    moment
+        A timezone-aware instant, in any offset.
+
+    Returns
+    -------
+    str
+        `YYYY-MM-DDTHH:MM:SS.ffffff+00:00`, always exactly 6 fractional
+        digits, so that lexicographic ordering of these strings matches
+        chronological order.
+
+    Raises
+    ------
+    ValueError
+        If `moment` is naive.
+
+    Notes
+    -----
     datetime.isoformat() omits the microsecond field entirely when it's
     zero, which makes plain lexicographic string comparison of timestamps
     unreliable. strftime's %f is always zero-padded to 6 digits, so these
@@ -81,12 +119,30 @@ def utc_iso(moment: datetime) -> str:
     """
     if moment.tzinfo is None:
         raise ValueError(f"utc_iso requires a timezone-aware datetime, got {moment!r}")
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
 
 
 def utc_day(moment: datetime) -> str:
-    """Return the UTC calendar day (YYYY-MM-DD) a timezone-aware moment falls in.
+    """Return the UTC calendar day a timezone-aware moment falls in.
 
+    Parameters
+    ----------
+    moment
+        A timezone-aware instant, in any offset.
+
+    Returns
+    -------
+    str
+        `YYYY-MM-DD`, the UTC day. This is the key every daily spend ledger
+        groups by, so two moments share a budget exactly when this matches.
+
+    Raises
+    ------
+    ValueError
+        If `moment` is naive.
+
+    Notes
+    -----
     Converts to UTC first rather than reading the date off whatever offset it
     arrived with: a moment written as 01:30+05:30 is still the previous UTC
     day, and taking .date() without converting would file it under the wrong
@@ -107,20 +163,41 @@ def utc_day(moment: datetime) -> str:
     """
     if moment.tzinfo is None:
         raise ValueError(f"utc_day requires a timezone-aware datetime, got {moment!r}")
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d")
+    return moment.astimezone(UTC).strftime("%Y-%m-%d")
 
 
 def utc_now() -> datetime:
-    """Current time as a timezone-aware UTC datetime.
+    """Return the current time as a timezone-aware UTC datetime.
 
-    The one clock read for the whole application, so a caller that needs
-    both a timestamp and something derived from it (the proactive cap's day
-    key, for instance) can take one reading and pass it down rather than
-    reading the clock twice and straddling a boundary between the two.
+    Returns
+    -------
+    datetime
+        Now, in UTC, always timezone-aware -- so it satisfies `utc_iso` and
+        `utc_day` by construction.
+
+    Notes
+    -----
+    The one clock read for the whole application, so a caller that needs both
+    a timestamp and something derived from it (the proactive cap's day key,
+    for instance) can take one reading and pass it down rather than reading
+    the clock twice and straddling a boundary between the two.
     """
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def utc_now_iso() -> str:
-    """Current UTC time as a fixed-width ISO-8601 string; see utc_iso."""
+    """Return the current UTC time as a fixed-width ISO-8601 string.
+
+    Returns
+    -------
+    str
+        `utc_iso(utc_now())`; see `utc_iso` for the format and why it is
+        fixed-width.
+
+    Notes
+    -----
+    For a caller that needs only the string. Anything that also needs the
+    moment itself should call `utc_now` once and format it, rather than
+    reading the clock twice.
+    """
     return utc_iso(utc_now())

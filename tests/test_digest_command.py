@@ -10,6 +10,7 @@ than "reset to a default" -- a command that silently moved a server's digest
 channel because a moderator changed the cadence would be a quiet, hard-to-notice
 kind of wrong.
 """
+
 from __future__ import annotations
 
 import logging
@@ -148,9 +149,7 @@ class TestEnabling:
         config = await get_digest_config(conn, guild_id=GUILD_A)
         assert config is not None and config.interval_seconds == int(interval)
 
-    async def test_an_explicit_enabled_true_also_works(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_an_explicit_enabled_true_also_works(self, conn: aiosqlite.Connection) -> None:
         interaction = _make_interaction(db=conn)
 
         await _invoke(interaction, _make_channel(), None, True)
@@ -185,7 +184,9 @@ class TestKeepingWhatIsNotGiven:
         assert config.interval_seconds == int(DigestInterval.BIWEEKLY)
 
     async def test_re_enabling_keeps_both(self, conn: aiosqlite.Connection) -> None:
-        await _invoke(_make_interaction(db=conn), _make_channel(CHANNEL_B), _choice(DigestInterval.DAILY))
+        await _invoke(
+            _make_interaction(db=conn), _make_channel(CHANNEL_B), _choice(DigestInterval.DAILY)
+        )
         await _invoke(_make_interaction(db=conn), None, None, False)
 
         await _invoke(_make_interaction(db=conn), None, None, True)
@@ -251,9 +252,7 @@ class TestDisabling:
 
 
 class TestRefusals:
-    async def test_a_call_with_no_options_changes_nothing(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_call_with_no_options_changes_nothing(self, conn: aiosqlite.Connection) -> None:
         interaction = _make_interaction(db=conn)
 
         await _invoke(interaction)
@@ -298,9 +297,7 @@ class TestPermissionWarning:
         config = await get_digest_config(conn, guild_id=GUILD_A)
         assert config is not None and config.digest_enabled is True
 
-    async def test_a_usable_channel_produces_no_warning(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_usable_channel_produces_no_warning(self, conn: aiosqlite.Connection) -> None:
         interaction = _make_interaction(db=conn)
 
         await _invoke(interaction, _make_channel(can_post=True))

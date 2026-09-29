@@ -32,6 +32,7 @@ Discord connection to verify:
                  channel, the atomic claim against duplicate/mass joins
                  (aura.db.onboarding_state), and the send.
 """
+
 from aura.onboarding.builder import OnboardingContent, build_onboarding_content
 from aura.onboarding.formatter import build_onboarding_embed, onboarding_locale
 from aura.onboarding.gateway import ClientOnboardingGateway, OnboardingGateway

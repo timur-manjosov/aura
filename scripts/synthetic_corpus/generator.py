@@ -15,6 +15,7 @@ Everything generated passes through the deterministic safety layer, and the
 adversarial categories additionally through an independent model review, before
 it can enter the corpus. Rejections are recorded, never dropped quietly.
 """
+
 from __future__ import annotations
 
 import logging
@@ -873,8 +874,8 @@ _LABEL_AUDIT_SYSTEM_PROMPT = (
     "message, decide exactly ONE thing: is the author asking for information -- "
     "is there an answer somebody could give that would satisfy them?\n\n"
     "TRUE for: any question seeking information; a request phrased without a "
-    "question mark (\"not sure where the guide is\", \"looking for the rules\", "
-    "\"anyone got the link\"); a request for help with something.\n"
+    'question mark ("not sure where the guide is", "looking for the rules", '
+    '"anyone got the link"); a request for help with something.\n'
     "FALSE for: statements, announcements, opinions, jokes, greetings, plans, "
     "reports of what someone did; rhetorical questions that are venting rather "
     "than asking; sarcasm; complaints with no answerable request; instructions "
@@ -894,9 +895,7 @@ _LABEL_AUDIT_SYSTEM_PROMPT = (
 LABEL_AUDIT_BATCH_SIZE = 8
 
 
-async def audit_labels(
-    ctx: GenerationContext, messages: list[SyntheticMessage]
-) -> tuple[int, int]:
+async def audit_labels(ctx: GenerationContext, messages: list[SyntheticMessage]) -> tuple[int, int]:
     """Check each message's Stage 1 label against an independent model's reading.
 
     Mutates `label_audit` on every message passed in, and returns

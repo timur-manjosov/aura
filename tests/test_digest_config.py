@@ -10,6 +10,7 @@ measured from -- which has its own rules about when it may and may not move.
 A real in-memory database throughout, never a live gateway connection, per
 CLAUDE.md's testing philosophy.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -264,7 +265,9 @@ class TestGuildIsolation:
     async def test_two_guilds_keep_entirely_separate_settings(
         self, conn: aiosqlite.Connection
     ) -> None:
-        await _enable(conn, guild_id=GUILD_A, channel_id=CHANNEL_A, interval=int(DigestInterval.DAILY))
+        await _enable(
+            conn, guild_id=GUILD_A, channel_id=CHANNEL_A, interval=int(DigestInterval.DAILY)
+        )
         await _enable(
             conn, guild_id=GUILD_B, channel_id=CHANNEL_B, interval=int(DigestInterval.MONTHLY)
         )

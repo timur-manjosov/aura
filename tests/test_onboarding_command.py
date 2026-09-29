@@ -4,6 +4,7 @@ Mirrors tests/test_digest_command.py's structure exactly, for the sibling
 command with the same "channel + on/off, compose, nothing named keeps its
 current value" option handling and no interval to worry about.
 """
+
 from __future__ import annotations
 
 import logging
@@ -98,9 +99,7 @@ class TestPermissionCheck:
 
 
 class TestEnabling:
-    async def test_naming_a_channel_turns_onboarding_on(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_naming_a_channel_turns_onboarding_on(self, conn: aiosqlite.Connection) -> None:
         interaction = _make_interaction(db=conn)
 
         await _invoke(interaction, _make_channel())
@@ -120,9 +119,7 @@ class TestEnabling:
         assert f"<#{CHANNEL_A}>" in message
         assert interaction.response.send_message.await_args.kwargs["ephemeral"] is True
 
-    async def test_an_explicit_enabled_true_also_works(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_an_explicit_enabled_true_also_works(self, conn: aiosqlite.Connection) -> None:
         interaction = _make_interaction(db=conn)
 
         await _invoke(interaction, _make_channel(), True)
@@ -156,9 +153,7 @@ class TestKeepingWhatIsNotGiven:
         assert config.channel_id == CHANNEL_B
         assert config.onboarding_enabled is True
 
-    async def test_re_enabling_keeps_the_previous_channel(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_re_enabling_keeps_the_previous_channel(self, conn: aiosqlite.Connection) -> None:
         await _invoke(_make_interaction(db=conn), _make_channel(CHANNEL_B))
         await _invoke(_make_interaction(db=conn), None, False)
 
@@ -220,9 +215,7 @@ class TestDisabling:
 
 
 class TestRefusals:
-    async def test_a_call_with_no_options_changes_nothing(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_call_with_no_options_changes_nothing(self, conn: aiosqlite.Connection) -> None:
         interaction = _make_interaction(db=conn)
 
         await _invoke(interaction)
@@ -254,9 +247,7 @@ class TestPermissionWarning:
         config = await get_onboarding_config(conn, guild_id=GUILD_A)
         assert config is not None and config.onboarding_enabled is True
 
-    async def test_a_usable_channel_produces_no_warning(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_usable_channel_produces_no_warning(self, conn: aiosqlite.Connection) -> None:
         interaction = _make_interaction(db=conn)
 
         await _invoke(interaction, _make_channel(can_post=True))

@@ -11,10 +11,12 @@ Every test here is a pure data-layer test against a real in-memory SQLite
 database: no Discord connection, no LLM, no embedding model, per CLAUDE.md's
 testing philosophy.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
+from itertools import pairwise
 
 import aiosqlite
 import pytest
@@ -104,9 +106,7 @@ class TestLinkingRequiresActiveFacts:
             await link_facts(conn, guild_id=GUILD_A, fact_id_1=other.id, fact_id_2=old.id)
         assert await _link_row_count(conn) == 0
 
-    async def test_both_ends_superseded_is_also_rejected(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_both_ends_superseded_is_also_rejected(self, conn: aiosqlite.Connection) -> None:
         old_1 = await _make_fact(conn, content="old 1")
         old_2 = await _make_fact(conn, content="old 2")
         new_1 = await _make_fact(conn, content="new 1")
@@ -149,9 +149,7 @@ class TestLinkingRequiresActiveFacts:
 
 
 class TestUnlinkFacts:
-    async def test_unlink_removes_the_row_and_reports_it(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_unlink_removes_the_row_and_reports_it(self, conn: aiosqlite.Connection) -> None:
         a = await _make_fact(conn, content="a")
         b = await _make_fact(conn, content="b")
         await link_facts(conn, guild_id=GUILD_A, fact_id_1=a.id, fact_id_2=b.id)
@@ -276,9 +274,7 @@ class TestGetLinkedFactIds:
             b.id: [a.id],
         }
 
-    async def test_neighbours_are_sorted_and_deduplicated(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_neighbours_are_sorted_and_deduplicated(self, conn: aiosqlite.Connection) -> None:
         hub = await _make_fact(conn, content="hub")
         leaves = [await _make_fact(conn, content=f"leaf {i}") for i in range(3)]
         for leaf in reversed(leaves):  # inserted out of order on purpose
@@ -316,9 +312,7 @@ class TestGetLinkedFactIds:
         await link_facts(conn, guild_id=GUILD_A, fact_id_1=a.id, fact_id_2=b.id)
         await _supersede(conn, b, successor)
 
-        assert await get_linked_fact_ids(conn, guild_id=GUILD_A, fact_ids=[a.id]) == {
-            a.id: [b.id]
-        }
+        assert await get_linked_fact_ids(conn, guild_id=GUILD_A, fact_ids=[a.id]) == {a.id: [b.id]}
 
     async def test_another_guilds_links_are_never_returned(
         self, conn: aiosqlite.Connection
@@ -388,7 +382,7 @@ class TestResolveActiveSuccessors:
         # to v2 or v3 would cite something that has itself already been
         # retired, which is exactly the "never state something outdated" rule.
         versions = [await _make_fact(conn, content=f"v{i}") for i in range(1, 5)]
-        for older, newer in zip(versions, versions[1:]):
+        for older, newer in pairwise(versions):
             await _supersede(conn, older, newer)
 
         resolved = await resolve_active_successors(
@@ -401,7 +395,7 @@ class TestResolveActiveSuccessors:
         self, conn: aiosqlite.Connection
     ) -> None:
         versions = [await _make_fact(conn, content=f"v{i}") for i in range(1, 5)]
-        for older, newer in zip(versions, versions[1:]):
+        for older, newer in pairwise(versions):
             await _supersede(conn, older, newer)
 
         resolved = await resolve_active_successors(
@@ -533,7 +527,7 @@ class TestResolveActiveSuccessors:
         versions = [
             await _make_fact(conn, content=f"v{i}") for i in range(_MAX_SUPERSESSION_HOPS + 2)
         ]
-        for older, newer in zip(versions, versions[1:]):
+        for older, newer in pairwise(versions):
             await _supersede(conn, older, newer)
 
         with caplog.at_level(logging.WARNING, logger="aura.db.repository"):

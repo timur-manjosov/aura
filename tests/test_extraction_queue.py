@@ -10,10 +10,11 @@ whether the design was durable.
 
 A real database throughout, never a live gateway connection.
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
@@ -35,7 +36,7 @@ GUILD_A = 100000000000000001
 CHANNEL_A = 500000000000000005
 CHANNEL_B = 600000000000000006
 
-NOW = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 30, 12, 0, 0, tzinfo=UTC)
 WINDOW = 300.0
 
 
@@ -127,8 +128,8 @@ class TestEnqueue:
         # Discord's own upper end. The queue stores text verbatim; truncation
         # is the distiller's prompt-building concern, not this layer's.
         hostile = (
-            "\U0001F1F0\U0001F1F7 \uacf5\uc9c0\u200d mixed \u200f\u0639\u0631\u0628\u064a\u200f "
-            "\x00 embedded NUL \U0001F600 " + "\u00fc" * 5000
+            "\U0001f1f0\U0001f1f7 \uacf5\uc9c0\u200d mixed \u200f\u0639\u0631\u0628\u064a\u200f "
+            "\x00 embedded NUL \U0001f600 " + "\u00fc" * 5000
         )
         await _enqueue(conn, content=hostile)
         batch = await read_batch(conn, channel_id=CHANNEL_A, limit=10)
@@ -195,21 +196,13 @@ class TestDueChannels:
         await _enqueue(conn, message_id=2, now=NOW + timedelta(seconds=240))
         await _enqueue(conn, message_id=3, now=NOW + timedelta(seconds=290))
 
-        due = await due_channels(
-            conn, window_seconds=WINDOW, now=NOW + timedelta(seconds=WINDOW)
-        )
+        due = await due_channels(conn, window_seconds=WINDOW, now=NOW + timedelta(seconds=WINDOW))
         assert due == [CHANNEL_A]
 
-    async def test_channels_become_due_independently(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_channels_become_due_independently(self, conn: aiosqlite.Connection) -> None:
         await _enqueue(conn, channel_id=CHANNEL_A, message_id=1, now=NOW)
-        await _enqueue(
-            conn, channel_id=CHANNEL_B, message_id=2, now=NOW + timedelta(seconds=200)
-        )
-        due = await due_channels(
-            conn, window_seconds=WINDOW, now=NOW + timedelta(seconds=WINDOW)
-        )
+        await _enqueue(conn, channel_id=CHANNEL_B, message_id=2, now=NOW + timedelta(seconds=200))
+        due = await due_channels(conn, window_seconds=WINDOW, now=NOW + timedelta(seconds=WINDOW))
         assert due == [CHANNEL_A]
 
     async def test_an_empty_queue_has_nothing_due(self, conn: aiosqlite.Connection) -> None:
@@ -229,9 +222,7 @@ class TestDueChannels:
         # The cutoff is `now - timedelta(seconds=...)`, which raises rather
         # than saturating, so an unbounded value would throw on every sweep.
         with pytest.raises(ValueError):
-            await due_channels(
-                conn, window_seconds=MAX_BATCH_WINDOW_SECONDS + 1, now=NOW
-            )
+            await due_channels(conn, window_seconds=MAX_BATCH_WINDOW_SECONDS + 1, now=NOW)
         with pytest.raises(ValueError):
             await due_channels(conn, window_seconds=-1.0, now=NOW)
 
@@ -239,9 +230,7 @@ class TestDueChannels:
 class TestBatchReadAndClear:
     async def test_a_batch_reads_oldest_first(self, conn: aiosqlite.Connection) -> None:
         for offset, message_id in enumerate((3, 1, 2)):
-            await _enqueue(
-                conn, message_id=message_id, now=NOW + timedelta(seconds=offset)
-            )
+            await _enqueue(conn, message_id=message_id, now=NOW + timedelta(seconds=offset))
         batch = await read_batch(conn, channel_id=CHANNEL_A, limit=10)
         assert [message.message_id for message in batch] == [3, 1, 2]
 
@@ -257,9 +246,7 @@ class TestBatchReadAndClear:
         self, conn: aiosqlite.Connection
     ) -> None:
         for message_id in range(1, 26):
-            await _enqueue(
-                conn, message_id=message_id, now=NOW + timedelta(seconds=message_id)
-            )
+            await _enqueue(conn, message_id=message_id, now=NOW + timedelta(seconds=message_id))
         batch = await read_batch(conn, channel_id=CHANNEL_A, limit=20)
         assert len(batch) == 20
         assert await count_queued(conn, channel_id=CHANNEL_A) == 25
@@ -291,9 +278,7 @@ class TestBatchReadAndClear:
         assert await clear_batch(conn, channel_id=CHANNEL_A, message_ids=[]) == 0
         assert await count_queued(conn, channel_id=CHANNEL_A) == 1
 
-    async def test_clearing_is_scoped_to_its_channel(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_clearing_is_scoped_to_its_channel(self, conn: aiosqlite.Connection) -> None:
         await _enqueue(conn, channel_id=CHANNEL_A, message_id=1)
         await _enqueue(conn, channel_id=CHANNEL_B, message_id=1)
         await clear_batch(conn, channel_id=CHANNEL_A, message_ids=[1])
@@ -370,9 +355,7 @@ class TestRestartDurability:
         finally:
             await second.close()
 
-    async def test_a_withdrawal_before_the_restart_stays_withdrawn(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_a_withdrawal_before_the_restart_stays_withdrawn(self, tmp_path: Path) -> None:
         # The opposite direction: durability must not resurrect a message the
         # author deleted.
         database = tmp_path / "aura.db"
@@ -406,9 +389,10 @@ class TestQueuedMessageIds:
         for message_id in (1, 2, 3):
             await _enqueue(conn, message_id=message_id)
 
-        assert await queued_message_ids(
-            conn, channel_id=CHANNEL_A, message_ids=[1, 3, 99]
-        ) == {1, 3}
+        assert await queued_message_ids(conn, channel_id=CHANNEL_A, message_ids=[1, 3, 99]) == {
+            1,
+            3,
+        }
 
     async def test_an_empty_request_makes_no_query_and_returns_nothing(self, conn) -> None:
         await _enqueue(conn, message_id=1)
@@ -419,21 +403,15 @@ class TestQueuedMessageIds:
         await _enqueue(conn, message_id=1, channel_id=CHANNEL_A)
         await _enqueue(conn, message_id=2, channel_id=CHANNEL_B)
 
-        assert await queued_message_ids(
-            conn, channel_id=CHANNEL_A, message_ids=[1, 2]
-        ) == {1}
+        assert await queued_message_ids(conn, channel_id=CHANNEL_A, message_ids=[1, 2]) == {1}
 
-    async def test_a_message_removed_from_the_queue_is_no_longer_reported(
-        self, conn
-    ) -> None:
+    async def test_a_message_removed_from_the_queue_is_no_longer_reported(self, conn) -> None:
         await _enqueue(conn, message_id=1)
         await remove_queued_message(conn, channel_id=CHANNEL_A, message_id=1)
 
         assert await queued_message_ids(conn, channel_id=CHANNEL_A, message_ids=[1]) == set()
 
-    async def test_a_large_request_is_one_query_rather_than_one_per_message(
-        self, conn
-    ) -> None:
+    async def test_a_large_request_is_one_query_rather_than_one_per_message(self, conn) -> None:
         for message_id in range(1, 201):
             await _enqueue(conn, message_id=message_id)
 

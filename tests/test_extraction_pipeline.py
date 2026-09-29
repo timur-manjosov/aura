@@ -9,10 +9,11 @@ is entangled with Trigger 2.
 The embedding model is real, because the dedup step's whole job is a semantic
 comparison a mock cannot meaningfully stand in for.
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -22,10 +23,10 @@ from fastembed import TextEmbedding
 
 from aura.billing import PlanGate
 from aura.config import CrossGuildBudgetMode, ModelComponent, Settings
+from aura.db.connection import utc_day, utc_now
 from aura.db.extraction_channel_config import set_extraction_enabled
 from aura.db.extraction_queue import count_queued, enqueue_message
 from aura.db.extraction_state import count_extraction_calls_on
-from aura.db.connection import utc_day, utc_now
 from aura.db.fact_variants import store_fact_variants
 from aura.db.models import FactStatus
 from aura.db.pending_facts import (
@@ -39,7 +40,6 @@ from aura.db.repository import get_active_facts, init_schema, supersede_fact
 from aura.db.supersession_state import count_supersession_calls_on
 from aura.embeddings import EMBEDDING_DTYPE, embed_text, embed_texts
 from aura.extraction.distiller import DistilledFact
-from aura.extraction.supersession import RelationshipJudgement
 from aura.extraction.pipeline import (
     flush_due_batches,
     handle_extraction_message,
@@ -47,11 +47,12 @@ from aura.extraction.pipeline import (
     sweep_interval_seconds,
     withdraw_message,
 )
+from aura.extraction.supersession import RelationshipJudgement
 from aura.facts_service import add_fact
 
 GUILD_A = 100000000000000001
 CHANNEL_A = 500000000000000005
-NOW = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 30, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -147,9 +148,7 @@ class TestShouldExtract:
             discord.MessageType.thread_created,
         ],
     )
-    def test_system_message_types_are_rejected(
-        self, message_type: discord.MessageType
-    ) -> None:
+    def test_system_message_types_are_rejected(self, message_type: discord.MessageType) -> None:
         assert should_extract(_message(message_type=message_type)) is False
 
     def test_a_reply_qualifies(self) -> None:
@@ -182,7 +181,7 @@ class TestShouldExtract:
         "content",
         [
             pytest.param("​The event is Saturday.​", id="wrapped-in-zero-width"),
-            pytest.param("\U0001F1F0\U0001F1F7 공지", id="emoji-and-hangul"),
+            pytest.param("\U0001f1f0\U0001f1f7 공지", id="emoji-and-hangul"),
             pytest.param("‏عربي‏", id="rtl-marked-arabic"),
         ],
     )
@@ -201,7 +200,11 @@ class TestIntakeGates:
             conn, guild_id=GUILD_A, channel_id=CHANNEL_A, enabled=True, updated_by_id=1
         )
         await handle_extraction_message(
-            _message(), db=conn, detector=_detector(0.5), settings=_settings(), plan_gate=PlanGate.unenforced()
+            _message(),
+            db=conn,
+            detector=_detector(0.5),
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         assert await count_queued(conn, channel_id=CHANNEL_A) == 1
 
@@ -211,7 +214,11 @@ class TestIntakeGates:
         # Opt-in per channel, exactly like proactive relief -- and the default
         # for a channel with no row is OFF.
         await handle_extraction_message(
-            _message(), db=conn, detector=_detector(0.5), settings=_settings(), plan_gate=PlanGate.unenforced()
+            _message(),
+            db=conn,
+            detector=_detector(0.5),
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         assert await count_queued(conn) == 0
 
@@ -223,7 +230,11 @@ class TestIntakeGates:
         # and nothing else.
         detector = _detector(0.5)
         await handle_extraction_message(
-            _message(), db=conn, detector=detector, settings=_settings(), plan_gate=PlanGate.unenforced()
+            _message(),
+            db=conn,
+            detector=detector,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         detector.question_likeness.assert_not_awaited()
 
@@ -234,7 +245,11 @@ class TestIntakeGates:
             conn, guild_id=GUILD_A, channel_id=CHANNEL_A, enabled=True, updated_by_id=1
         )
         await handle_extraction_message(
-            _message(), db=conn, detector=_detector(-0.9), settings=_settings(), plan_gate=PlanGate.unenforced()
+            _message(),
+            db=conn,
+            detector=_detector(-0.9),
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         assert await count_queued(conn) == 0
 
@@ -246,7 +261,11 @@ class TestIntakeGates:
             conn, guild_id=GUILD_A, channel_id=CHANNEL_A, enabled=True, updated_by_id=1
         )
         await handle_extraction_message(
-            _message(), db=conn, detector=_detector(-0.02), settings=_settings(), plan_gate=PlanGate.unenforced()
+            _message(),
+            db=conn,
+            detector=_detector(-0.02),
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         assert await count_queued(conn) == 1
 
@@ -262,7 +281,11 @@ class TestIntakeGates:
         settings = _settings(llm_api_key=None, extraction_model=None, synthesis_model=None)
         detector = _detector(0.9)
         await handle_extraction_message(
-            _message(), db=conn, detector=detector, settings=settings, plan_gate=PlanGate.unenforced()
+            _message(),
+            db=conn,
+            detector=detector,
+            settings=settings,
+            plan_gate=PlanGate.unenforced(),
         )
         assert await count_queued(conn) == 0
         detector.question_likeness.assert_not_awaited()
@@ -281,19 +304,25 @@ class TestIntakeGates:
 
         with caplog.at_level("ERROR"):
             await handle_extraction_message(
-                _message(), db=conn, detector=detector, settings=_settings(), plan_gate=PlanGate.unenforced()
+                _message(),
+                db=conn,
+                detector=detector,
+                settings=_settings(),
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert any(record.levelname == "ERROR" for record in caplog.records)
         assert await count_queued(conn) == 0  # failed closed
 
-    async def test_a_broken_message_object_does_not_raise(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_broken_message_object_does_not_raise(self, conn: aiosqlite.Connection) -> None:
         broken = MagicMock(spec=discord.Message)
         type(broken).guild = property(lambda _self: (_ for _ in ()).throw(AttributeError()))
         await handle_extraction_message(
-            broken, db=conn, detector=_detector(), settings=_settings(), plan_gate=PlanGate.unenforced()
+            broken,
+            db=conn,
+            detector=_detector(),
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
 
 
@@ -313,7 +342,11 @@ class TestIndependenceFromTriggerTwo:
         )
         # proactive_channel_config deliberately left empty -> Trigger 2 is off.
         await handle_extraction_message(
-            _message(), db=conn, detector=_detector(0.5), settings=_settings(), plan_gate=PlanGate.unenforced()
+            _message(),
+            db=conn,
+            detector=_detector(0.5),
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         assert await count_queued(conn, channel_id=CHANNEL_A) == 1
 
@@ -324,7 +357,11 @@ class TestIndependenceFromTriggerTwo:
             conn, guild_id=GUILD_A, channel_id=CHANNEL_A, enabled=True, updated_by_id=1
         )
         await handle_extraction_message(
-            _message(), db=conn, detector=_detector(0.5), settings=_settings(), plan_gate=PlanGate.unenforced()
+            _message(),
+            db=conn,
+            detector=_detector(0.5),
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         assert await count_queued(conn) == 0
 
@@ -338,13 +375,21 @@ class TestIndependenceFromTriggerTwo:
             conn, guild_id=GUILD_A, channel_id=CHANNEL_A, enabled=True, updated_by_id=1
         )
         await handle_extraction_message(
-            _message(), db=conn, detector=_detector(0.5), settings=_settings(), plan_gate=PlanGate.unenforced()
+            _message(),
+            db=conn,
+            detector=_detector(0.5),
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         with patch(
             "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=[])
         ) as distiller:
             await flush_due_batches(
-                conn, embedding_model, settings=_settings(), now=utc_now(), plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=utc_now(),
+                plan_gate=PlanGate.unenforced(),
             )
 
         # The flush genuinely ran -- otherwise the assertions below would pass
@@ -365,7 +410,11 @@ class TestWithdrawal:
             conn, guild_id=GUILD_A, channel_id=CHANNEL_A, enabled=True, updated_by_id=1
         )
         await handle_extraction_message(
-            _message(), db=conn, detector=_detector(0.5), settings=_settings(), plan_gate=PlanGate.unenforced()
+            _message(),
+            db=conn,
+            detector=_detector(0.5),
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         assert await count_queued(conn, channel_id=CHANNEL_A) == 1
 
@@ -381,7 +430,11 @@ class TestWithdrawal:
             conn, guild_id=GUILD_A, channel_id=CHANNEL_A, enabled=True, updated_by_id=1
         )
         await handle_extraction_message(
-            _message(message_id=1), db=conn, detector=_detector(0.5), settings=_settings(), plan_gate=PlanGate.unenforced()
+            _message(message_id=1),
+            db=conn,
+            detector=_detector(0.5),
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         await handle_extraction_message(
             _message(message_id=2, content="The tournament starts Saturday at 18:00."),
@@ -394,7 +447,13 @@ class TestWithdrawal:
 
         distiller = AsyncMock(return_value=[])
         with patch("aura.extraction.pipeline.distill_facts", distiller):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=utc_now(), plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=utc_now(),
+                plan_gate=PlanGate.unenforced(),
+            )
 
         sent_batch = distiller.call_args.args[0]
         assert [message.message_id for message in sent_batch] == [2]
@@ -406,21 +465,27 @@ class TestWithdrawal:
             conn, guild_id=GUILD_A, channel_id=CHANNEL_A, enabled=True, updated_by_id=1
         )
         await handle_extraction_message(
-            _message(), db=conn, detector=_detector(0.5), settings=_settings(), plan_gate=PlanGate.unenforced()
+            _message(),
+            db=conn,
+            detector=_detector(0.5),
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         await withdraw_message(conn, channel_id=CHANNEL_A, message_id=1)
 
         with patch("aura.extraction.pipeline.distill_facts", AsyncMock()) as distiller:
             assert (
                 await flush_due_batches(
-                    conn, embedding_model, settings=_settings(), now=utc_now(), plan_gate=PlanGate.unenforced()
+                    conn,
+                    embedding_model,
+                    settings=_settings(),
+                    now=utc_now(),
+                    plan_gate=PlanGate.unenforced(),
                 )
                 == 0
             )
         distiller.assert_not_awaited()
-        assert (
-            await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 0
-        )
+        assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 0
 
     async def test_withdrawal_never_raises_on_a_database_failure(
         self, conn: aiosqlite.Connection, caplog: pytest.LogCaptureFixture
@@ -460,10 +525,17 @@ class TestFlush:
                 category=FactCategory.STATUS_CHANGE,
             )
         ]
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
-        ):
-            assert await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()) == 1
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)):
+            assert (
+                await flush_due_batches(
+                    conn,
+                    embedding_model,
+                    settings=_settings(),
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
+                )
+                == 1
+            )
 
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         assert len(staged) == 1
@@ -483,10 +555,14 @@ class TestFlush:
                 message_id=1, content="Maintenance is today.", category=FactCategory.EVENT
             )
         ]
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
-        ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         assert await get_active_facts(conn, GUILD_A) == []
 
@@ -496,10 +572,14 @@ class TestFlush:
         # The common case: the pre-filter let a few things through and the
         # model correctly judged none of them fact-worthy.
         await _queue(conn, message_id=1, content="lol nice")
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=[])
-        ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=[])):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         assert await get_pending_facts(conn, guild_id=GUILD_A, limit=10) == []
         assert await count_queued(conn) == 0
@@ -512,16 +592,18 @@ class TestFlush:
         # forever (which would spend a slot per sweep on a batch the model
         # cannot handle).
         await _queue(conn, message_id=1, content="something")
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=None)
-        ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=None)):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         assert await count_queued(conn) == 0
         assert await get_pending_facts(conn, guild_id=GUILD_A, limit=10) == []
-        assert (
-            await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 1
-        )
+        assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 1
 
     async def test_the_batch_size_limit_caps_one_call_and_leaves_the_rest(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
@@ -532,7 +614,11 @@ class TestFlush:
         distiller = AsyncMock(return_value=[])
         with patch("aura.extraction.pipeline.distill_facts", distiller):
             await flush_due_batches(
-                conn, embedding_model, settings=_settings(extraction_batch_max_messages=3), now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                settings=_settings(extraction_batch_max_messages=3),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert len(distiller.call_args.args[0]) == 3
@@ -545,7 +631,13 @@ class TestFlush:
         await _queue(conn, message_id=1, content="x")
         distiller = AsyncMock(return_value=[])
         with patch("aura.extraction.pipeline.distill_facts", distiller):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
         assert distiller.call_args.kwargs["channel_name"] == "announcements"
 
     async def test_a_batch_still_inside_its_window_is_not_touched(
@@ -558,7 +650,11 @@ class TestFlush:
 
         with patch("aura.extraction.pipeline.distill_facts", AsyncMock()) as distiller:
             flushed = await flush_due_batches(
-                conn, embedding_model, settings=settings, now=NOW + timedelta(seconds=299), plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                settings=settings,
+                now=NOW + timedelta(seconds=299),
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert flushed == 0
@@ -575,7 +671,11 @@ class TestFlush:
             "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=[])
         ) as distiller:
             flushed = await flush_due_batches(
-                conn, embedding_model, settings=settings, now=NOW + timedelta(seconds=300), plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                settings=settings,
+                now=NOW + timedelta(seconds=300),
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert flushed == 1
@@ -606,7 +706,13 @@ class TestFlush:
             "aura.extraction.pipeline.distill_facts",
             AsyncMock(side_effect=_explode_for_the_first_channel),
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         # The exploding channel keeps its batch; the healthy one is cleared.
         assert await count_queued(conn, channel_id=CHANNEL_A) == 1
@@ -623,7 +729,11 @@ class TestDailyCapBehaviour:
         await _queue(conn, message_id=1, content="something")
         with patch("aura.extraction.pipeline.distill_facts", AsyncMock()) as distiller:
             await flush_due_batches(
-                conn, embedding_model, settings=_settings(extraction_daily_cap=0), now=NOW, plan_gate=PlanGate.unenforced()
+                conn,
+                embedding_model,
+                settings=_settings(extraction_daily_cap=0),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
             )
 
         distiller.assert_not_awaited()
@@ -648,12 +758,12 @@ class TestDailyCapBehaviour:
                     message_created_at=NOW,
                     now=NOW,
                 )
-            await flush_due_batches(conn, embedding_model, settings=settings, now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn, embedding_model, settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+            )
 
         assert distiller.await_count == 2
-        assert (
-            await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 2
-        )
+        assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 2
 
 
 class TestExtractionCrossGuildBudget:
@@ -668,7 +778,13 @@ class TestExtractionCrossGuildBudget:
         # because the combined cross-guild total was $0 *before* it.
         await _queue(conn, message_id=1, content="first batch")
         with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=[])):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
         assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 1
 
         # Second batch: the combined total is now $0.011, already over a
@@ -735,10 +851,14 @@ class TestDedupHint:
                 category=FactCategory.STATUS_CHANGE,
             )
         ]
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
-        ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         assert len(staged) == 1
@@ -766,10 +886,14 @@ class TestDedupHint:
                 category=FactCategory.EVENT,
             )
         ]
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
-        ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         assert staged[0].similar_fact_id is None
@@ -796,10 +920,14 @@ class TestDedupHint:
                 category=FactCategory.STATUS_CHANGE,
             )
         ]
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
-        ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         active = await get_active_facts(conn, GUILD_A)
         assert [fact.id for fact in active] == [existing.id]
@@ -814,10 +942,14 @@ class TestDedupHint:
                 message_id=1, content="A brand new fact.", category=FactCategory.ANNOUNCEMENT
             )
         ]
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
-        ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         assert staged[0].similar_fact_id is None
@@ -856,7 +988,11 @@ class TestDedupHintWithVariants:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         existing = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=CHANNEL_A, message_id=900,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=CHANNEL_A,
+            message_id=900,
             content=self._CANONICAL,
         )
 
@@ -867,14 +1003,16 @@ class TestDedupHintWithVariants:
         # hint stays unset.
         await _queue(conn, message_id=1, content="trigger")
         distilled = [
-            DistilledFact(
-                message_id=1, content=self._CANDIDATE_CONTENT, category=FactCategory.RULE
-            )
+            DistilledFact(message_id=1, content=self._CANDIDATE_CONTENT, category=FactCategory.RULE)
         ]
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
-        ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         before = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         assert before[0].similar_fact_id is None
@@ -885,20 +1023,26 @@ class TestDedupHintWithVariants:
         # same candidate content a second time.
         [variant_embedding] = await embed_texts(embedding_model, [self._VARIANT])
         await store_fact_variants(
-            conn, fact_id=existing.id, contents=[self._VARIANT],
+            conn,
+            fact_id=existing.id,
+            contents=[self._VARIANT],
             embeddings=[variant_embedding.astype(EMBEDDING_DTYPE, copy=False).tobytes()],
         )
 
         await _queue(conn, message_id=2, content="trigger again")
         distilled_again = [
-            DistilledFact(
-                message_id=2, content=self._CANDIDATE_CONTENT, category=FactCategory.RULE
-            )
+            DistilledFact(message_id=2, content=self._CANDIDATE_CONTENT, category=FactCategory.RULE)
         ]
         with patch(
             "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled_again)
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         after = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         flagged = next(p for p in after if p.channel_id == CHANNEL_A and p.message_id == 2)
@@ -910,12 +1054,18 @@ class TestDedupHintWithVariants:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         old = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=CHANNEL_A, message_id=900,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=CHANNEL_A,
+            message_id=900,
             content=self._CANONICAL,
         )
         [variant_embedding] = await embed_texts(embedding_model, [self._VARIANT])
         await store_fact_variants(
-            conn, fact_id=old.id, contents=[self._VARIANT],
+            conn,
+            fact_id=old.id,
+            contents=[self._VARIANT],
             embeddings=[variant_embedding.astype(EMBEDDING_DTYPE, copy=False).tobytes()],
         )
 
@@ -923,7 +1073,11 @@ class TestDedupHintWithVariants:
             embedding_model, "The #trading channel now has no upload limit on any day."
         )
         await supersede_fact(
-            conn, old_fact_id=old.id, guild_id=GUILD_A, channel_id=CHANNEL_A, message_id=901,
+            conn,
+            old_fact_id=old.id,
+            guild_id=GUILD_A,
+            channel_id=CHANNEL_A,
+            message_id=901,
             content="The #trading channel now has no upload limit on any day.",
             embedding=replacement_embedding.astype(EMBEDDING_DTYPE, copy=False).tobytes(),
         )
@@ -933,14 +1087,16 @@ class TestDedupHintWithVariants:
         # facts.status='active' must exclude it now that old.id is retired.
         await _queue(conn, message_id=1, content="trigger")
         distilled = [
-            DistilledFact(
-                message_id=1, content=self._CANDIDATE_CONTENT, category=FactCategory.RULE
-            )
+            DistilledFact(message_id=1, content=self._CANDIDATE_CONTENT, category=FactCategory.RULE)
         ]
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
-        ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         candidate = next(p for p in staged if p.message_id == 1)
@@ -995,7 +1151,13 @@ class TestSupersessionJudgement:
             patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)),
             patch("aura.extraction.pipeline.judge_relationship", judge),
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         judge.assert_awaited_once()
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
@@ -1003,9 +1165,7 @@ class TestSupersessionJudgement:
         assert staged[0].relationship_reasoning == (
             "Beide nennen dieselbe Wartung zur selben Uhrzeit."
         )
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOW)
-        ) == 1
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 1
 
     async def test_the_self_consistency_fields_are_never_stored(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
@@ -1036,7 +1196,13 @@ class TestSupersessionJudgement:
                 AsyncMock(return_value=judgement),
             ),
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         async with conn.execute("SELECT * FROM pending_facts") as cursor:
             row = await cursor.fetchone()
@@ -1065,7 +1231,13 @@ class TestSupersessionJudgement:
             patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)),
             patch("aura.extraction.pipeline.judge_relationship", judge),
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         kwargs = judge.call_args.kwargs
         assert kwargs["predecessor"] == predecessor.content
@@ -1091,14 +1263,18 @@ class TestSupersessionJudgement:
             patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)),
             patch("aura.extraction.pipeline.judge_relationship", judge),
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         judge.assert_not_awaited()
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         assert staged[0].relationship is None
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOW)
-        ) == 0
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 0
 
     async def test_a_guild_with_no_facts_yet_never_judges_anything(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
@@ -1114,7 +1290,13 @@ class TestSupersessionJudgement:
             patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)),
             patch("aura.extraction.pipeline.judge_relationship", judge),
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         judge.assert_not_awaited()
 
@@ -1149,12 +1331,16 @@ class TestSupersessionJudgement:
             patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)),
             patch("aura.extraction.pipeline.judge_relationship", judge),
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         assert judge.await_count == 1
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOW)
-        ) == 1
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 1
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         judged = [c for c in staged if c.relationship is not None]
         assert len(judged) == 1
@@ -1180,17 +1366,25 @@ class TestSupersessionJudgement:
             patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)),
             patch("aura.extraction.pipeline.judge_relationship", judge),
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
             await _queue(conn, message_id=1, content="wartung heute")
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         assert judge.await_count == 1
-        assert await count_extraction_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOW)
-        ) == 2
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOW)
-        ) == 1
+        assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 2
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 1
 
     async def test_the_daily_cap_stops_judging_without_stopping_extraction(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
@@ -1256,9 +1450,7 @@ class TestSupersessionJudgement:
                     )
 
         assert judge.await_count == 2
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOW)
-        ) == 2
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 2
         # All four candidates are still staged and reviewable.
         assert len(await get_pending_facts(conn, guild_id=GUILD_A, limit=10)) == 4
 
@@ -1294,15 +1486,15 @@ class TestSupersessionJudgement:
             patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)),
             patch("aura.extraction.pipeline.judge_relationship", judge),
         ):
-            await flush_due_batches(conn, embedding_model, settings=settings, now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn, embedding_model, settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+            )
 
         judge.assert_not_awaited()
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         assert len(staged) == 1
         assert staged[0].relationship is None
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOW)
-        ) == 0
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 0
 
     async def test_a_failed_judgement_leaves_the_candidate_intact(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
@@ -1318,11 +1510,15 @@ class TestSupersessionJudgement:
         ]
         with (
             patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)),
-            patch(
-                "aura.extraction.pipeline.judge_relationship", AsyncMock(return_value=None)
-            ),
+            patch("aura.extraction.pipeline.judge_relationship", AsyncMock(return_value=None)),
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         assert len(staged) == 1
@@ -1353,7 +1549,13 @@ class TestSupersessionJudgement:
             ),
             caplog.at_level("ERROR"),
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         assert len(staged) == 1
@@ -1378,15 +1580,17 @@ class TestSupersessionJudgement:
         ]
         with (
             patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)),
-            patch(
-                "aura.extraction.pipeline.judge_relationship", AsyncMock(return_value=None)
-            ),
+            patch("aura.extraction.pipeline.judge_relationship", AsyncMock(return_value=None)),
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOW)
-        ) == 1
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 1
 
     async def test_two_sweeps_racing_on_one_flagged_batch_judge_it_once(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
@@ -1410,14 +1614,24 @@ class TestSupersessionJudgement:
             patch("aura.extraction.pipeline.judge_relationship", judge),
         ):
             await asyncio.gather(
-                flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()),
-                flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()),
+                flush_due_batches(
+                    conn,
+                    embedding_model,
+                    settings=_settings(),
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
+                ),
+                flush_due_batches(
+                    conn,
+                    embedding_model,
+                    settings=_settings(),
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
+                ),
             )
 
         assert judge.await_count == 1
-        assert await count_supersession_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(NOW)
-        ) == 1
+        assert await count_supersession_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 1
         assert len(await get_pending_facts(conn, guild_id=GUILD_A, limit=10)) == 1
 
     async def test_the_database_lock_is_not_held_across_the_paid_call(
@@ -1450,7 +1664,13 @@ class TestSupersessionJudgement:
             patch("aura.extraction.pipeline.judge_relationship", _slow_judge),
         ):
             flush = asyncio.create_task(
-                flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+                flush_due_batches(
+                    conn,
+                    embedding_model,
+                    settings=_settings(),
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
+                )
             )
             await asyncio.wait_for(in_flight.wait(), timeout=5)
             # The judgement is mid-call. An ordinary read must not be queued
@@ -1484,7 +1704,11 @@ class TestSupersessionJudgement:
         ):
             with pytest.raises(asyncio.CancelledError):
                 await flush_due_batches(
-                    conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()
+                    conn,
+                    embedding_model,
+                    settings=_settings(),
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
                 )
 
     async def test_a_judgement_never_supersedes_a_fact(
@@ -1509,7 +1733,13 @@ class TestSupersessionJudgement:
                 AsyncMock(return_value=self._judgement()),
             ),
         ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         active = await get_active_facts(conn, GUILD_A)
         assert [fact.id for fact in active] == [existing.id]
@@ -1551,7 +1781,13 @@ class TestSupersessionCrossGuildBudget:
         # before it, and $0.011 alone does not yet clear a $0.015 budget.
         await _queue(conn, message_id=1, content="unrelated batch")
         with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=[])):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         # The maintenance-duplicate batch: its OWN extraction call is still
         # allowed (total-so-far is $0.011, under the $0.015 budget), but that
@@ -1641,20 +1877,28 @@ class TestRetrySafety:
             )
         ]
 
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
-        ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
             # Simulate the retry: the same messages arrive back in the queue.
             await _queue(conn, message_id=1, content="server down at 2")
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         assert len(await get_pending_facts(conn, guild_id=GUILD_A, limit=10)) == 1
         # The retry did spend a second slot -- deliberate, and the conservative
         # direction for a spend limit.
-        assert (
-            await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 2
-        )
+        assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOW)) == 2
 
     async def test_a_candidate_citing_a_message_outside_its_batch_is_skipped_not_fatal(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
@@ -1664,17 +1908,17 @@ class TestRetrySafety:
         # KeyError that loses the batch's other, good candidates.
         await _queue(conn, message_id=1, content="a")
         distilled = [
-            DistilledFact(
-                message_id=9999, content="From nowhere.", category=FactCategory.RULE
-            ),
-            DistilledFact(
-                message_id=1, content="A genuine fact.", category=FactCategory.RULE
-            ),
+            DistilledFact(message_id=9999, content="From nowhere.", category=FactCategory.RULE),
+            DistilledFact(message_id=1, content="A genuine fact.", category=FactCategory.RULE),
         ]
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
-        ):
-            await flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced())
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)):
+            await flush_due_batches(
+                conn,
+                embedding_model,
+                settings=_settings(),
+                now=NOW,
+                plan_gate=PlanGate.unenforced(),
+            )
 
         staged = await get_pending_facts(conn, guild_id=GUILD_A, limit=10)
         assert [candidate.content for candidate in staged] == ["A genuine fact."]
@@ -1685,9 +1929,7 @@ class TestSweepInterval:
         "window,expected",
         [(0.0, 1.0), (2.0, 1.0), (60.0, 30.0), (300.0, 30.0), (86400.0, 30.0)],
     )
-    def test_the_interval_stays_inside_its_bounds(
-        self, window: float, expected: float
-    ) -> None:
+    def test_the_interval_stays_inside_its_bounds(self, window: float, expected: float) -> None:
         # Bounded below so a tiny window cannot spin the loop, and above so a
         # long window does not make the sweeper effectively idle.
         assert sweep_interval_seconds(window) == expected
@@ -1708,12 +1950,22 @@ class TestConcurrentFlushes:
                 category=FactCategory.STATUS_CHANGE,
             )
         ]
-        with patch(
-            "aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)
-        ):
+        with patch("aura.extraction.pipeline.distill_facts", AsyncMock(return_value=distilled)):
             await asyncio.gather(
-                flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()),
-                flush_due_batches(conn, embedding_model, settings=_settings(), now=NOW, plan_gate=PlanGate.unenforced()),
+                flush_due_batches(
+                    conn,
+                    embedding_model,
+                    settings=_settings(),
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
+                ),
+                flush_due_batches(
+                    conn,
+                    embedding_model,
+                    settings=_settings(),
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
+                ),
             )
 
         assert len(await get_pending_facts(conn, guild_id=GUILD_A, limit=10)) == 1

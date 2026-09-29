@@ -31,6 +31,7 @@ Every error is a short machine-readable code, never an exception text: the
 caller is another service, and whatever it needs to diagnose a failure is in
 this process's log, not in the response.
 """
+
 from __future__ import annotations
 
 import hmac
@@ -38,7 +39,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any
 
@@ -57,7 +58,12 @@ from pydantic import (
 )
 
 from aura.billing.apply import apply_snapshot
-from aura.billing.entitlement import GuildPlan, InvoiceStatus, SubscriptionRecord, SubscriptionStatus
+from aura.billing.entitlement import (
+    GuildPlan,
+    InvoiceStatus,
+    SubscriptionRecord,
+    SubscriptionStatus,
+)
 from aura.billing.plan_gate import PlanGate
 from aura.db.connection import utc_now
 from aura.db.subscriptions import ApplyOutcome, SubscriptionSnapshot, get_sync_state
@@ -156,12 +162,22 @@ class SnapshotPayload(_RequestModel):
         return self
 
     def to_snapshot(self) -> SubscriptionSnapshot:
-        """Convert the wire shape into the database layer's snapshot."""
+        """Convert the wire shape into the database layer's snapshot.
+
+        Returns
+        -------
+        SubscriptionSnapshot
+            The same subscription with snowflakes parsed to ints and Unix seconds
+            parsed to timezone-aware datetimes. Validation has already happened on
+            this model, so the conversion cannot fail here.
+        """
         return SubscriptionSnapshot(
             subscription_id=self.subscription_id,
             guild_id=int(self.guild_id),
             customer_id=self.customer_id,
-            purchaser_user_id=None if self.purchaser_user_id is None else int(self.purchaser_user_id),
+            purchaser_user_id=None
+            if self.purchaser_user_id is None
+            else int(self.purchaser_user_id),
             status=self.status,
             cancel_at_period_end=self.cancel_at_period_end,
             cancel_at=None if self.cancel_at is None else _datetime_from_unix(self.cancel_at),
@@ -198,7 +214,9 @@ class ApplyRequest(_RequestModel):
 class PlansRequest(_RequestModel):
     """Body of POST /guilds/plans."""
 
-    guild_ids: Annotated[list[_Snowflake], Field(min_length=1, max_length=MAX_GUILD_IDS_PER_REQUEST)]
+    guild_ids: Annotated[
+        list[_Snowflake], Field(min_length=1, max_length=MAX_GUILD_IDS_PER_REQUEST)
+    ]
 
     @field_validator("guild_ids")
     @classmethod
@@ -211,7 +229,7 @@ class PlansRequest(_RequestModel):
 
 
 def _datetime_from_unix(seconds: int) -> datetime:
-    return datetime.fromtimestamp(seconds, tz=timezone.utc)
+    return datetime.fromtimestamp(seconds, tz=UTC)
 
 
 def _unix_or_none(moment: datetime | None) -> int | None:
@@ -221,10 +239,21 @@ def _unix_or_none(moment: datetime | None) -> int | None:
 def plan_payload(plan: GuildPlan, records: tuple[SubscriptionRecord, ...]) -> dict[str, Any]:
     """Serialise one guild's plan for the web backend.
 
-    The subscriptions list carries the customer ID and the purchaser, which the
-    web backend needs to open Stripe's billing portal for the right person and
-    MUST NOT forward to a browser -- that projection is the web backend's job
-    (aura_web.routes.billing), stated here so it is not mistaken for public data.
+    Parameters
+    ----------
+    plan
+        The decided plan and its standing.
+    records
+        Every subscription known for the guild.
+
+    Returns
+    -------
+    dict[str, Any]
+        A JSON-ready mapping. The subscriptions list carries the customer ID and
+        the purchaser, which the web backend needs to open Stripe's billing
+        portal for the right person and MUST NOT forward to a browser -- that
+        projection is the web backend's job (`aura_web.routes.billing`), stated
+        here so it is not mistaken for public data.
     """
     standing = plan.standing
     return {
@@ -336,9 +365,7 @@ async def _handle_apply(request: web.Request) -> web.Response:
         return web.json_response({"outcome": "applied", "version": result.version})
     if result.outcome is ApplyOutcome.DUPLICATE_EVENT:
         return web.json_response({"outcome": "duplicate", "version": result.version})
-    return web.json_response(
-        {"outcome": "version_conflict", "version": result.version}, status=409
-    )
+    return web.json_response({"outcome": "version_conflict", "version": result.version}, status=409)
 
 
 async def _handle_plans(request: web.Request) -> web.Response:
@@ -364,6 +391,30 @@ def _authentication_middleware(secret: str) -> Callable[..., Awaitable[web.Strea
     async def middleware(
         request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
     ) -> web.StreamResponse:
+        """Authenticate one request, then run it with every failure mapped to JSON.
+
+        Parameters
+        ----------
+        request
+            The incoming request.
+        handler
+            The route handler to run once the secret checks out.
+
+        Returns
+        -------
+        web.StreamResponse
+            The handler's response, or a JSON error body: 401 for a missing or
+            wrong secret, 404/405/413 for the routing and size failures aiohttp
+            raises, and 500 for anything else, which is logged with a
+            traceback.
+
+        Notes
+        -----
+        The secret is compared with `hmac.compare_digest` against the fully
+        encoded header value, so the comparison is constant-time and a header
+        that is not valid UTF-8 compares as empty rather than raising. Exactly
+        one Authorization header is accepted; zero or several compare as empty.
+        """
         presented_values = request.headers.getall("Authorization", [])
         presented = presented_values[0] if len(presented_values) == 1 else ""
         try:
@@ -401,7 +452,28 @@ def create_internal_api_app(
     secret: str,
     clock: Callable[[], datetime] = utc_now,
 ) -> web.Application:
-    """Build the aiohttp application. Separate from starting it so tests can drive it directly."""
+    """Build the aiohttp application, without starting a listener.
+
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    gate
+        The plan gate to read and write through.
+    secret
+        The shared secret every request must present.
+    clock
+        Reads the current time.
+
+    Returns
+    -------
+    web.Application
+        A fully routed application behind the authentication middleware.
+
+    Notes
+    -----
+    Separate from starting it so tests can drive it directly, with no socket.
+    """
     app = web.Application(
         middlewares=[_authentication_middleware(secret)],
         client_max_size=MAX_REQUEST_BYTES,
@@ -421,12 +493,29 @@ class InternalApiServer:
 
     @property
     def bound_port(self) -> int:
-        """The port actually bound -- meaningful when started on port 0 in tests."""
+        """Return the port actually bound.
+
+        Returns
+        -------
+        int
+            The listening port. Meaningful when started on port 0, which is what the
+            tests do to avoid colliding with anything on the host.
+        """
         address = self.runner.addresses[0]
         return int(address[1])
 
     async def stop(self) -> None:
-        """Stop accepting requests and release the socket."""
+        """Stop accepting requests and release the socket.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        Idempotent in the sense that aiohttp's cleanup is: calling it on an already
+        stopped runner does nothing.
+        """
         await self.runner.cleanup()
 
 
@@ -439,7 +528,33 @@ async def start_internal_api(
     port: int,
     clock: Callable[[], datetime] = utc_now,
 ) -> InternalApiServer:
-    """Start listening. Raises if the address cannot be bound, so startup fails visibly."""
+    """Start listening on the configured address.
+
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    gate
+        The plan gate to read and write through.
+    secret
+        The shared secret every request must present.
+    host, port
+        Address to bind. Port 0 binds an arbitrary free port.
+    clock
+        Reads the current time.
+
+    Returns
+    -------
+    InternalApiServer
+        The running listener, owned by the bot client for its lifetime.
+
+    Raises
+    ------
+    OSError
+        If the address cannot be bound. Deliberately not swallowed: a bot that
+        cannot accept subscription updates should fail visibly at startup rather
+        than run looking healthy while every guild silently stays on Free.
+    """
     app = create_internal_api_app(conn, gate, secret=secret, clock=clock)
     # aiohttp's access log is off: every request here is service-to-service,
     # and the apply path already logs each state change with its reason.

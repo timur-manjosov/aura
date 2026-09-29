@@ -1,4 +1,5 @@
 """Tests for aura.facts_service: the seam between Discord commands and the repository."""
+
 from __future__ import annotations
 
 import asyncio
@@ -32,7 +33,12 @@ async def test_add_fact_creates_an_active_fact(
     conn: aiosqlite.Connection, embedding_model: TextEmbedding
 ) -> None:
     fact = await add_fact(
-        conn, embedding_model, guild_id=GUILD_A, channel_id=42, message_id=99, content="the sky is blue"
+        conn,
+        embedding_model,
+        guild_id=GUILD_A,
+        channel_id=42,
+        message_id=99,
+        content="the sky is blue",
     )
     assert fact.guild_id == GUILD_A
     assert fact.channel_id == 42

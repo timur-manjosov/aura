@@ -15,12 +15,13 @@ This file is also where the brief's "Attack It" section is answered directly:
   * TestDuplicateJoin -- a redelivered on_member_join must not post twice.
   * TestMentionSuppression -- @everyone in a fact's text.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from unittest.mock import MagicMock
 
@@ -42,7 +43,7 @@ CHANNEL_A = 300000000000000003
 CHANNEL_B = 400000000000000004
 MODERATOR = 4242
 
-NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=UTC)
 
 _next_message_id = iter(range(700000000000000000, 700000000000001000))
 _next_user_id = iter(range(1, 100000))
@@ -91,7 +92,12 @@ class FakeGateway:
 
 
 def _settings(*, fact_limit: int = 15, daily_cap: int = 20) -> Settings:
-    return Settings(_env_file=None, discord_token="fake-token", onboarding_fact_limit=fact_limit, onboarding_daily_cap=daily_cap)  # type: ignore[call-arg]
+    return Settings(
+        _env_file=None,
+        discord_token="fake-token",
+        onboarding_fact_limit=fact_limit,
+        onboarding_daily_cap=daily_cap,
+    )  # type: ignore[call-arg]
 
 
 async def _onboarding_sends_count(conn: aiosqlite.Connection, *, guild_id: int) -> int:
@@ -110,7 +116,11 @@ async def _onboarding_sends_count(conn: aiosqlite.Connection, *, guild_id: int) 
 
 
 def _member(
-    *, user_id: int | None = None, bot: bool = False, guild_id: int = GUILD_A, joined_at: datetime | None = NOW
+    *,
+    user_id: int | None = None,
+    bot: bool = False,
+    guild_id: int = GUILD_A,
+    joined_at: datetime | None = NOW,
 ) -> MagicMock:
     member = MagicMock(spec=discord.Member)
     member.id = user_id if user_id is not None else next(_next_user_id)
@@ -168,8 +178,16 @@ async def add_fact(
                  confirmed_fact_id, created_at)
             VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)
             """,
-            (guild_id, CHANNEL_A, next(_next_message_id), f"candidate for {fact_id}",
-             b"\x00\x00\x00\x00", category, fact_id, utc_iso(NOW)),
+            (
+                guild_id,
+                CHANNEL_A,
+                next(_next_message_id),
+                f"candidate for {fact_id}",
+                b"\x00\x00\x00\x00",
+                category,
+                fact_id,
+                utc_iso(NOW),
+            ),
         )
         await conn.commit()
     return fact_id
@@ -193,7 +211,13 @@ class TestNotConfigured:
     async def test_an_unconfigured_guild_gets_no_message(self, conn: aiosqlite.Connection) -> None:
         gateway = FakeGateway()
 
-        await handle_member_join(_member(), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
+        await handle_member_join(
+            _member(),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
+        )
 
         assert gateway.sent == []
         assert gateway.resolve_calls == 0
@@ -203,7 +227,13 @@ class TestNotConfigured:
         await configure(conn, enabled=False)
         gateway.add_channel(CHANNEL_A, GUILD_A)
 
-        await handle_member_join(_member(), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
+        await handle_member_join(
+            _member(),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
+        )
 
         assert gateway.sent == []
 
@@ -215,7 +245,13 @@ class TestEmptyContent:
         gateway = FakeGateway()
         await ready_guild(conn, gateway, with_content=False)
 
-        await handle_member_join(_member(), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
+        await handle_member_join(
+            _member(),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
+        )
 
         assert gateway.sent == []
         # Read-only up to the point content is known empty -- no claim spent.
@@ -229,7 +265,13 @@ class TestEmptyContent:
         gateway.add_channel(CHANNEL_A, GUILD_A)
         await add_fact(conn, content="The server hit 500 members.", category=FactCategory.MILESTONE)
 
-        await handle_member_join(_member(), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
+        await handle_member_join(
+            _member(),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
+        )
 
         assert gateway.sent == []
 
@@ -241,7 +283,13 @@ class TestHappyPath:
         gateway = FakeGateway()
         await ready_guild(conn, gateway)
 
-        await handle_member_join(_member(), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
+        await handle_member_join(
+            _member(),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
+        )
 
         assert len(gateway.sent) == 1
         assert gateway.sent[0].channel_id == CHANNEL_A
@@ -250,7 +298,13 @@ class TestHappyPath:
         gateway = FakeGateway()
         await ready_guild(conn, gateway)
 
-        await handle_member_join(_member(), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
+        await handle_member_join(
+            _member(),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
+        )
 
         assert await _onboarding_sends_count(conn, guild_id=GUILD_A) == 1
 
@@ -261,7 +315,11 @@ class TestHappyPath:
         await ready_guild(conn, gateway)
 
         await handle_member_join(
-            _member(joined_at=None), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced()
+            _member(joined_at=None),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
 
         assert len(gateway.sent) == 1
@@ -277,7 +335,11 @@ class TestBotJoins:
         await ready_guild(conn, gateway)
 
         await handle_member_join(
-            _member(bot=True), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced()
+            _member(bot=True),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
 
         assert gateway.sent == []
@@ -289,7 +351,11 @@ class TestBotJoins:
         await ready_guild(conn, gateway)
 
         await handle_member_join(
-            _member(bot=True), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced()
+            _member(bot=True),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
 
         assert gateway.resolve_calls == 0
@@ -311,7 +377,11 @@ class TestCrossGuildRefusal:
 
         with caplog.at_level(logging.ERROR):
             await handle_member_join(
-                _member(guild_id=GUILD_A), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced()
+                _member(guild_id=GUILD_A),
+                db=conn,
+                gateway=gateway,
+                settings=_settings(),
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert gateway.sent == []
@@ -331,7 +401,13 @@ class TestUnresolvableChannel:
         # Never added to the gateway -- resolve_channel returns None.
 
         with caplog.at_level(logging.WARNING):
-            await handle_member_join(_member(), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
+            await handle_member_join(
+                _member(),
+                db=conn,
+                gateway=gateway,
+                settings=_settings(),
+                plan_gate=PlanGate.unenforced(),
+            )
 
         assert gateway.sent == []
         assert await _onboarding_sends_count(conn, guild_id=GUILD_A) == 0
@@ -346,8 +422,20 @@ class TestUnresolvableChannel:
         await configure(conn)
         await add_fact(conn)
 
-        await handle_member_join(_member(), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
-        await handle_member_join(_member(), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
+        await handle_member_join(
+            _member(),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
+        )
+        await handle_member_join(
+            _member(),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
+        )
 
         async with conn.execute("SELECT COUNT(*) FROM onboarding_sends") as cursor:
             assert await cursor.fetchone() == (0,)
@@ -362,7 +450,13 @@ class TestSendFailure:
         channel.raises = discord.Forbidden(MagicMock(status=403), "missing permission")
 
         with caplog.at_level(logging.ERROR):
-            await handle_member_join(_member(), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
+            await handle_member_join(
+                _member(),
+                db=conn,
+                gateway=gateway,
+                settings=_settings(),
+                plan_gate=PlanGate.unenforced(),
+            )
 
         assert gateway.sent == []
         assert any(record.levelno >= logging.ERROR for record in caplog.records)
@@ -377,7 +471,13 @@ class TestSendFailure:
         channel = await ready_guild(conn, gateway)
         channel.raises = RuntimeError("boom")
 
-        await handle_member_join(_member(), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
+        await handle_member_join(
+            _member(),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
+        )
 
         assert await _onboarding_sends_count(conn, guild_id=GUILD_A) == 1
 
@@ -392,8 +492,12 @@ class TestDuplicateJoin:
         await ready_guild(conn, gateway)
         member = _member(user_id=999, joined_at=NOW)
 
-        await handle_member_join(member, db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
-        await handle_member_join(member, db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
+        await handle_member_join(
+            member, db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced()
+        )
+        await handle_member_join(
+            member, db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced()
+        )
 
         assert len(gateway.sent) == 1
 
@@ -406,7 +510,11 @@ class TestDuplicateJoin:
         await ready_guild(conn, gateway)
 
         await handle_member_join(
-            _member(user_id=999, joined_at=NOW), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced()
+            _member(user_id=999, joined_at=NOW),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         await handle_member_join(
             _member(user_id=999, joined_at=NOW + timedelta(days=30)),
@@ -431,7 +539,9 @@ class TestMassJoin:
         members = [_member(joined_at=NOW + timedelta(seconds=i)) for i in range(30)]
 
         for member in members:
-            await handle_member_join(member, db=conn, gateway=gateway, settings=settings, plan_gate=PlanGate.unenforced())
+            await handle_member_join(
+                member, db=conn, gateway=gateway, settings=settings, plan_gate=PlanGate.unenforced()
+            )
 
         assert len(gateway.sent) == 5
 
@@ -445,7 +555,13 @@ class TestMassJoin:
 
         await asyncio.gather(
             *(
-                handle_member_join(member, db=conn, gateway=gateway, settings=settings, plan_gate=PlanGate.unenforced())
+                handle_member_join(
+                    member,
+                    db=conn,
+                    gateway=gateway,
+                    settings=settings,
+                    plan_gate=PlanGate.unenforced(),
+                )
                 for member in members
             )
         )
@@ -461,10 +577,18 @@ class TestMassJoin:
 
         with caplog.at_level(logging.WARNING):
             await handle_member_join(
-                _member(joined_at=NOW), db=conn, gateway=gateway, settings=settings, plan_gate=PlanGate.unenforced()
+                _member(joined_at=NOW),
+                db=conn,
+                gateway=gateway,
+                settings=settings,
+                plan_gate=PlanGate.unenforced(),
             )
             await handle_member_join(
-                _member(joined_at=NOW + timedelta(seconds=1)), db=conn, gateway=gateway, settings=settings, plan_gate=PlanGate.unenforced()
+                _member(joined_at=NOW + timedelta(seconds=1)),
+                db=conn,
+                gateway=gateway,
+                settings=settings,
+                plan_gate=PlanGate.unenforced(),
             )
 
         assert len(gateway.sent) == 1
@@ -480,7 +604,13 @@ class TestMentionSuppression:
         gateway.add_channel(CHANNEL_A, GUILD_A)
         await add_fact(conn, content="@everyone read the rules before posting.")
 
-        await handle_member_join(_member(), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced())
+        await handle_member_join(
+            _member(),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
+        )
 
         assert len(gateway.sent) == 1
         mentions = gateway.sent[0].allowed_mentions
@@ -497,10 +627,18 @@ class TestGuildIsolation:
         await ready_guild(conn, gateway, guild_id=GUILD_B, channel_id=CHANNEL_B)
 
         await handle_member_join(
-            _member(guild_id=GUILD_A), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced()
+            _member(guild_id=GUILD_A),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
         await handle_member_join(
-            _member(guild_id=GUILD_B), db=conn, gateway=gateway, settings=_settings(), plan_gate=PlanGate.unenforced()
+            _member(guild_id=GUILD_B),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(),
+            plan_gate=PlanGate.unenforced(),
         )
 
         assert len(gateway.sent) == 2
@@ -516,7 +654,11 @@ class TestGuildIsolation:
         settings = _settings(daily_cap=1)
 
         await handle_member_join(
-            _member(guild_id=GUILD_A, joined_at=NOW), db=conn, gateway=gateway, settings=settings, plan_gate=PlanGate.unenforced()
+            _member(guild_id=GUILD_A, joined_at=NOW),
+            db=conn,
+            gateway=gateway,
+            settings=settings,
+            plan_gate=PlanGate.unenforced(),
         )
         await handle_member_join(
             _member(guild_id=GUILD_A, joined_at=NOW + timedelta(seconds=1)),
@@ -526,7 +668,11 @@ class TestGuildIsolation:
             plan_gate=PlanGate.unenforced(),
         )
         await handle_member_join(
-            _member(guild_id=GUILD_B, joined_at=NOW), db=conn, gateway=gateway, settings=settings, plan_gate=PlanGate.unenforced()
+            _member(guild_id=GUILD_B, joined_at=NOW),
+            db=conn,
+            gateway=gateway,
+            settings=settings,
+            plan_gate=PlanGate.unenforced(),
         )
 
         assert len(gateway.sent) == 2
@@ -546,7 +692,11 @@ class TestFactLimitFlowsThrough:
             await add_fact(conn, content=f"rule {index}")
 
         await handle_member_join(
-            _member(), db=conn, gateway=gateway, settings=_settings(fact_limit=3), plan_gate=PlanGate.unenforced()
+            _member(),
+            db=conn,
+            gateway=gateway,
+            settings=_settings(fact_limit=3),
+            plan_gate=PlanGate.unenforced(),
         )
 
         assert len(gateway.sent) == 1

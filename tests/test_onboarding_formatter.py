@@ -7,9 +7,10 @@ shared with the digest through aura.rendering and is exercised again here
 rather than assumed inherited, because a regression in the shared module
 should be caught by every caller's own suite, not just the first one written.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import discord
@@ -22,7 +23,7 @@ from aura.onboarding.formatter import build_onboarding_embed, onboarding_locale
 
 GUILD_A = 100000000000000001
 CHANNEL = 300000000000000003
-NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=UTC)
 
 EMBED_TOTAL_LIMIT = 6000
 FIELD_VALUE_LIMIT = 1024

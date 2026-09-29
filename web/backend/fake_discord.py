@@ -21,6 +21,7 @@ Field shapes follow Discord's documentation as of API v10:
   * ``POST /oauth2/token`` -> form-encoded in, JSON out, client credentials
     in HTTP Basic auth.
 """
+
 from __future__ import annotations
 
 import base64
@@ -275,9 +276,7 @@ def create_fake_discord(state: FakeDiscordState) -> FastAPI:
         if _is_bot(request, state):
             state.request_log.append("GET /users/@me/guilds (bot)")
             if state.fail_bot_guilds_status is not None:
-                return JSONResponse(
-                    {"message": "nope"}, status_code=state.fail_bot_guilds_status
-                )
+                return JSONResponse({"message": "nope"}, status_code=state.fail_bot_guilds_status)
             entries: list[dict[str, Any]] = [
                 {
                     "id": guild_id,
@@ -295,9 +294,7 @@ def create_fake_discord(state: FakeDiscordState) -> FastAPI:
         else:
             state.request_log.append("GET /users/@me/guilds (user)")
             if state.fail_user_guilds_status is not None:
-                return JSONResponse(
-                    {"message": "nope"}, status_code=state.fail_user_guilds_status
-                )
+                return JSONResponse({"message": "nope"}, status_code=state.fail_user_guilds_status)
             user_id = _bearer_user(request, state)
             if user_id is None:
                 return JSONResponse({"message": "401: Unauthorized"}, status_code=401)

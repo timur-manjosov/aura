@@ -16,6 +16,7 @@ synthetic_corpus.corpus_model: a message is FACT_WORTHY_ANNOUNCEMENT because
 the announcement prompt produced it, not because something read it afterwards
 and guessed.
 """
+
 from __future__ import annotations
 
 from datetime import datetime

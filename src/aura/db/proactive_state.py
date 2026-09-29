@@ -55,12 +55,14 @@ The cost is that the reset lands mid-evening in the Americas rather than at a
 tidy local midnight. That is the right trade for a spend limit, where a
 predictable, uniform window matters and the exact wall-clock moment does not.
 """
+
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
 from enum import StrEnum
 from math import isfinite
+from typing import Final
 
 import aiosqlite
 from pydantic import BaseModel
@@ -119,7 +121,7 @@ ON CONFLICT (channel_id, message_id) DO NOTHING
 # cooldown longer than a month is the daily cap's job, and a cap of a million
 # escalations a day is not a budget.
 MAX_COOLDOWN_SECONDS = 30 * 24 * 60 * 60.0
-MAX_DAILY_CAP = 1_000_000
+MAX_DAILY_CAP: Final = 1_000_000
 
 
 class EscalationOutcome(StrEnum):
@@ -132,7 +134,17 @@ class EscalationOutcome(StrEnum):
 
 
 class _LedgerState(BaseModel):
-    """The three ledger readings every acquisition decision is made from."""
+    """The three ledger readings every acquisition decision is made from.
+
+    Attributes
+    ----------
+    already_escalated
+        Whether this exact message already holds a slot (Discord redelivery).
+    last_escalated_at
+        When this channel last spent a slot, or None if it never has.
+    daily_count
+        Slots this guild has spent on the current UTC day.
+    """
 
     already_escalated: bool
     last_escalated_at: str | None
@@ -140,11 +152,27 @@ class _LedgerState(BaseModel):
 
 
 class EscalationAttempt(BaseModel):
-    """The result of one attempt to acquire an escalation slot, with the state behind it.
+    """The result of one attempt to acquire an escalation slot, with its evidence.
 
-    Carries the numbers the decision was made on, not just the verdict, so
-    the debug trail can show *why* a message was held back without
-    re-deriving state that has since moved on.
+    Attributes
+    ----------
+    outcome
+        Whether the slot was granted, and which guard refused it if not.
+    cooldown_seconds_remaining
+        Cooldown left as observed *before* this attempt, so a granted
+        escalation reports the state it walked into (typically 0.0) rather
+        than the cooldown it just started.
+    daily_count
+        Slots spent on this UTC day *including* this attempt when it was
+        granted, so the trail reads as "3 of 20 of today's budget is gone".
+    daily_cap
+        The ceiling the count was measured against.
+
+    Notes
+    -----
+    Carries the numbers the decision was made on, not just the verdict, so the
+    debug trail can show *why* a message was held back without re-deriving
+    state that has since moved on.
     """
 
     outcome: EscalationOutcome
@@ -159,16 +187,38 @@ class EscalationAttempt(BaseModel):
 
     @property
     def granted(self) -> bool:
-        """Whether this attempt actually took a slot from the budget."""
+        """Report whether this attempt actually took a slot from the budget.
+
+        Returns
+        -------
+        bool
+            True only for a GRANTED outcome -- that is, only when a slot was
+            actually taken from the budget.
+        """
         return self.outcome is EscalationOutcome.GRANTED
 
 
 async def count_escalations_on(conn: aiosqlite.Connection, *, guild_id: int, day: str) -> int:
-    """Return how many escalations guild_id has already spent on a given UTC day.
+    """Return how many escalations a guild has already spent on a UTC day.
 
-    Read-only; used by the debug command to show live cap usage. Takes the
-    day as a string produced by utc_day so the caller's clock, not this
-    function's, defines "today".
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild whose ledger to count.
+    day
+        A UTC day key as produced by `utc_day`, so the caller's clock -- not
+        this function's -- defines "today".
+
+    Returns
+    -------
+    int
+        Rows in `proactive_escalations` for that guild and day; 0 if none.
+
+    Notes
+    -----
+    Read-only; used by the debug command to show live cap usage.
     """
     async with connection_lock(conn):
         async with conn.execute(
@@ -182,8 +232,28 @@ async def count_escalations_on(conn: aiosqlite.Connection, *, guild_id: int, day
 async def is_still_freshest_escalation(
     conn: aiosqlite.Connection, *, channel_id: int, message_id: int
 ) -> bool:
-    """Whether message_id's escalation is still the most recent one granted in its channel.
+    """Report whether a message's escalation is still its channel's most recent.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    channel_id
+        Channel the escalation belongs to.
+    message_id
+        The message whose grant is being re-checked.
+
+    Returns
+    -------
+    bool
+        True while no later escalation exists in the same channel. False if a
+        newer one does -- and also False for a message with no escalation row
+        at all, which is unreachable in production (a granted slot is never
+        deleted) but is the honest failure direction for a row this function
+        cannot find, matching this module's bias toward silence over a guess.
+
+    Notes
+    -----
     Read-only. Used by Phase 2b-1's wake-time freshness recheck (see
     aura.proactive.listener), immediately before the paid synthesis call a
     granted slot authorizes. Under the default configuration this can never
@@ -196,10 +266,6 @@ async def is_still_freshest_escalation(
     instead of -- the first one's grace period even ends. Standing down is
     the safe direction: "someone newer already has this channel's turn."
 
-    Returns False, not True, for a message_id with no escalation row at all.
-    Unreachable in production -- a granted slot is never deleted -- but the
-    honest failure direction for a row this function cannot find, matching
-    the rest of this module's bias toward silence over a guess.
     """
     async with connection_lock(conn):
         async with conn.execute(
@@ -232,6 +298,44 @@ async def try_acquire_escalation_slot(
 ) -> EscalationAttempt:
     """Atomically take one slot from the channel cooldown and the guild's daily cap.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild whose daily budget to spend from.
+    channel_id
+        Channel whose cooldown to start.
+    message_id
+        The message being escalated. Together with `channel_id` this is the
+        idempotency key that absorbs a Discord redelivery.
+    cooldown_seconds
+        How long this grant silences the channel. Must be finite and within
+        [0, MAX_COOLDOWN_SECONDS].
+    daily_cap
+        Today's ceiling. 0 is valid and means "never escalate".
+    now
+        Timezone-aware moment; supplies the timestamp, the UTC day key and the
+        cooldown comparison, so none of the three can disagree.
+
+    Returns
+    -------
+    EscalationAttempt
+        The verdict plus the cooldown and cap state behind it. A refusal names
+        which of the three guards declined.
+
+    Raises
+    ------
+    ValueError
+        If `cooldown_seconds` is non-finite or out of range, `daily_cap` is
+        outside [0, MAX_DAILY_CAP], or `now` is naive.
+
+    Notes
+    -----
+    Atomic against concurrent callers, including a second process sharing the
+    database file: all three guards live inside one INSERT's WHERE clause, so
+    there is no window between deciding and writing.
+
     Call this the moment a message is known to be worth escalating and
     *before* any expensive work runs on its behalf -- that ordering is the
     whole point (see aura.proactive.gate). A slot is recorded when it is
@@ -240,17 +344,12 @@ async def try_acquire_escalation_slot(
     mechanism whose job is bounding spend, erring toward "already spent" is
     the only safe direction.
 
-    Returns an EscalationAttempt describing whether the slot was granted and
-    the cooldown/cap state behind that answer. Never raises on a normal
-    refusal -- being on cooldown or out of budget is an expected outcome, not
-    an error.
+    Being on cooldown or out of budget is an expected outcome, not an error,
+    so a refusal is a return value rather than an exception. A cap of 0 is a
+    useful off switch, not a misconfiguration.
 
-    A daily_cap of 0 is valid and means "never escalate", which is a useful
-    off switch rather than a misconfiguration.
-
-    Requires a timezone-aware `now`, injected rather than read from the clock
-    here, so the daily boundary and cooldown expiry are testable at the exact
-    moment they matter.
+    `now` is injected rather than read from the clock here so the daily
+    boundary and cooldown expiry are testable at the exact moment they matter.
     """
     if not isfinite(cooldown_seconds) or not 0 <= cooldown_seconds <= MAX_COOLDOWN_SECONDS:
         raise ValueError(
@@ -347,8 +446,23 @@ async def _read_state(
 ) -> _LedgerState:
     """Read the ledger's current answer to all three guard questions at once.
 
-    Caller must already hold the connection lock. Used to explain a refusal;
-    the authority on whether a slot is granted is _ACQUIRE_SLOT_SQL itself.
+    Parameters
+    ----------
+    conn
+        Open database connection. The caller must already hold its lock.
+    guild_id, channel_id, message_id, day
+        The keys the three guards are evaluated against.
+
+    Returns
+    -------
+    _LedgerState
+        One reading of all three, taken in a single statement so they cannot
+        describe different moments.
+
+    Notes
+    -----
+    Used to EXPLAIN a refusal, never to decide one: the authority on whether a
+    slot is granted is `_ACQUIRE_SLOT_SQL` itself.
     """
     async with conn.execute(
         """
@@ -381,9 +495,28 @@ async def _read_state(
 def _classify_block(
     state: _LedgerState, *, cooldown_cutoff: str, daily_cap: int
 ) -> EscalationOutcome | None:
-    """Return the reason this message can't escalate, or None if nothing blocks it.
+    """Return the reason this message cannot escalate, or None if nothing blocks it.
 
-    Ordered so the reason is deterministic when several apply at once, and
+    Parameters
+    ----------
+    state
+        One reading of the ledger, from `_read_state`.
+    cooldown_cutoff
+        The fixed-width UTC ISO-8601 instant before which a previous
+        escalation no longer silences the channel.
+    daily_cap
+        Today's ceiling.
+
+    Returns
+    -------
+    EscalationOutcome or None
+        The first guard that refuses, in the fixed order
+        ALREADY_ESCALATED, COOLDOWN_ACTIVE, DAILY_CAP_REACHED; None when none
+        of them does.
+
+    Notes
+    -----
+    Pure: no I/O, no clock. Ordered so the reason is deterministic when several apply at once, and
     identity beats budget: a redelivered message is not a cooldown violation
     or a spend, it is the same event arriving twice, and reporting it as
     either would misattribute a Discord retry to the person who wrote it.
@@ -411,7 +544,26 @@ def _refusal(
     cooldown_seconds: float,
     daily_cap: int,
 ) -> EscalationAttempt:
-    """Package a refusal together with the state that caused it."""
+    """Package a refusal together with the state that caused it.
+
+    Parameters
+    ----------
+    outcome
+        Which guard refused.
+    state
+        The ledger reading the refusal was decided from.
+    now
+        The moment the decision was made, for the cooldown arithmetic.
+    cooldown_seconds
+        The configured cooldown, for the same arithmetic.
+    daily_cap
+        The ceiling to report alongside the count.
+
+    Returns
+    -------
+    EscalationAttempt
+        A non-granted attempt carrying the evidence behind the refusal.
+    """
     return EscalationAttempt(
         outcome=outcome,
         cooldown_seconds_remaining=_remaining(
@@ -423,8 +575,27 @@ def _refusal(
 
 
 def _remaining(last_escalated_at: str | None, *, now: datetime, cooldown_seconds: float) -> float:
-    """Seconds of cooldown left on a channel, for display in the debug trail only.
+    """Return the seconds of cooldown left on a channel, for the debug trail only.
 
+    Parameters
+    ----------
+    last_escalated_at
+        The channel's last escalation as fixed-width UTC ISO-8601 text, or
+        None if it has never escalated.
+    now
+        The moment to measure from.
+    cooldown_seconds
+        The configured cooldown length.
+
+    Returns
+    -------
+    float
+        Seconds remaining, never negative. 0.0 when the channel has never
+        escalated, when the cooldown has expired, or when the stored timestamp
+        cannot be parsed.
+
+    Notes
+    -----
     Best-effort by design. The decision to grant or refuse a slot is made by
     string comparison in SQL and never depends on this number, so an
     unparseable timestamp (only reachable by editing the database by hand)

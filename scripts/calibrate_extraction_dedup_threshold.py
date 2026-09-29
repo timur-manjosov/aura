@@ -19,25 +19,29 @@ asymmetry is weaker than Stage 1's and does not automatically justify picking
 the sharper of the two), a per-category breakdown, a per-locale breakdown,
 and the two named Phase 3a-3 attack cases scored individually.
 """
+
 from __future__ import annotations
 
 import asyncio
 import sys
 from pathlib import Path
 
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fastembed import TextEmbedding  # noqa: E402
+from fastembed import TextEmbedding
 
-from aura.embeddings import cosine_similarity  # noqa: E402
-from extraction_dedup_corpus_cases import (  # noqa: E402
+from aura.embeddings import cosine_similarity
+from extraction_dedup_corpus_cases import (
     ALL_CASES,
     NAMED_ATTACK_CASE_NAMES,
     DedupCategory,
     DedupPairCase,
 )
-from synthetic_corpus.metrics import (  # noqa: E402
+from synthetic_corpus.metrics import (
     ConfusionCounts,
     confusion_at,
     describe_distribution,
@@ -92,14 +96,18 @@ def _print_sweep(
     positive_scores = [score for score, truth in pairs if truth]
     negative_scores = [score for score, truth in pairs if not truth]
 
-    print(f"\n{label} (n={len(pairs)}, should_mark={len(positive_scores)}, should_not={len(negative_scores)})")
+    print(
+        f"\n{label} (n={len(pairs)}, should_mark={len(positive_scores)}, should_not={len(negative_scores)})"
+    )
     print(f"  should-mark score distribution:     {describe_distribution(positive_scores)}")
     print(f"  should-not-mark score distribution: {describe_distribution(negative_scores)}")
     for threshold in thresholds:
         print(_row(threshold, confusion_at(pairs, threshold)))
 
 
-def _best_f1(scored: list[tuple[DedupPairCase, float]], thresholds: list[float]) -> tuple[float, ConfusionCounts]:
+def _best_f1(
+    scored: list[tuple[DedupPairCase, float]], thresholds: list[float]
+) -> tuple[float, ConfusionCounts]:
     pairs = [(score, case.should_mark) for case, score in scored]
     best_threshold = thresholds[0]
     best_counts = confusion_at(pairs, best_threshold)
@@ -127,9 +135,10 @@ def _best_recall_leaning(
     pairs = [(score, case.should_mark) for case, score in scored]
     best: tuple[float, ConfusionCounts] | None = None
     for threshold, counts in sweep(pairs, sorted(thresholds, reverse=True)):
-        if counts.specificity >= min_specificity:
-            if best is None or counts.recall > best[1].recall:
-                best = (threshold, counts)
+        if counts.specificity >= min_specificity and (
+            best is None or counts.recall > best[1].recall
+        ):
+            best = (threshold, counts)
     return best
 
 
@@ -142,9 +151,12 @@ def _print_per_category(scored: list[tuple[DedupPairCase, float]], threshold: fl
             continue
         marked = sum(1 for _, score in subset if score >= threshold)
         values = [score for _, score in subset]
-        expect = "MARK" if category in {
-            DedupCategory.DUPLICATE, DedupCategory.SUPERSESSION, DedupCategory.CONTRADICTION
-        } else "HOLD BACK"
+        expect = (
+            "MARK"
+            if category
+            in {DedupCategory.DUPLICATE, DedupCategory.SUPERSESSION, DedupCategory.CONTRADICTION}
+            else "HOLD BACK"
+        )
         print(
             f"  {category.value:22s} n={len(subset):3d} expect={expect:10s} "
             f"marked={marked:3d}/{len(subset):<3d} {describe_distribution(values)}"
@@ -174,7 +186,9 @@ def _print_named_attack_cases(scored: list[tuple[DedupPairCase, float]], thresho
         marked = "MARKED" if score >= threshold else "held back"
         outcome = "OK (correctly held back)" if marked == "held back" else "FALSE POSITIVE"
         print(f"  {name}")
-        print(f"    {case.predecessor_locale} -> {case.candidate_locale}  score={score:+.3f}  {marked}  [{outcome}]")
+        print(
+            f"    {case.predecessor_locale} -> {case.candidate_locale}  score={score:+.3f}  {marked}  [{outcome}]"
+        )
 
 
 async def main() -> int:
@@ -198,13 +212,23 @@ async def main() -> int:
     # for the exact same reason -- an aggregate optimum dominated by an easy
     # majority class can recommend a value that does nothing useful against
     # the case that actually matters.
-    hard = [(case, score) for case, score in scored if case.should_mark or case.category is DedupCategory.INDEPENDENT_RELATED]
-    _print_sweep("HARD (should-mark vs. independent_related only, UNRELATED excluded)", hard, coarse)
+    hard = [
+        (case, score)
+        for case, score in scored
+        if case.should_mark or case.category is DedupCategory.INDEPENDENT_RELATED
+    ]
+    _print_sweep(
+        "HARD (should-mark vs. independent_related only, UNRELATED excluded)", hard, coarse
+    )
 
     f1_threshold, f1_counts = _best_f1(scored, thresholds)
-    print(f"\nFULL-CORPUS F1-OPTIMUM: threshold={f1_threshold:+.3f}  {_row(f1_threshold, f1_counts).strip()}")
+    print(
+        f"\nFULL-CORPUS F1-OPTIMUM: threshold={f1_threshold:+.3f}  {_row(f1_threshold, f1_counts).strip()}"
+    )
     hard_f1_threshold, hard_f1_counts = _best_f1(hard, thresholds)
-    print(f"HARD-ONLY F1-OPTIMUM:   threshold={hard_f1_threshold:+.3f}  {_row(hard_f1_threshold, hard_f1_counts).strip()}")
+    print(
+        f"HARD-ONLY F1-OPTIMUM:   threshold={hard_f1_threshold:+.3f}  {_row(hard_f1_threshold, hard_f1_counts).strip()}"
+    )
 
     # Recall-shifted alternative, computed against the HARD set so the
     # specificity floor is measured against independent_related (the category
@@ -218,7 +242,7 @@ async def main() -> int:
             f"threshold={recall_threshold:+.3f}  {_row(recall_threshold, recall_counts).strip()}"
         )
 
-    print(f"\n=== breakdowns at the CURRENT PLACEHOLDER (+0.700) for comparison ===")
+    print("\n=== breakdowns at the CURRENT PLACEHOLDER (+0.700) for comparison ===")
     _print_per_category(scored, 0.70)
     _print_per_locale(scored, 0.70)
     _print_named_attack_cases(scored, 0.70)
@@ -233,7 +257,9 @@ async def main() -> int:
         _print_named_attack_cases(scored, threshold)
 
     if recall_leaning is not None:
-        print(f"\n=== breakdowns at the hard recall-leaning threshold ({recall_leaning[0]:+.3f}) ===")
+        print(
+            f"\n=== breakdowns at the hard recall-leaning threshold ({recall_leaning[0]:+.3f}) ==="
+        )
         _print_per_category(scored, recall_leaning[0])
         _print_per_locale(scored, recall_leaning[0])
         _print_named_attack_cases(scored, recall_leaning[0])

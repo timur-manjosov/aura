@@ -1,4 +1,16 @@
-"""Pydantic models mirroring the knowledge model schema: fact, timestamp, status, link."""
+"""Pydantic models mirroring the knowledge model schema.
+
+One class per component of CLAUDE.md's four-part knowledge model: `Fact`
+carries the distilled sentence, its origin reference and its timestamp,
+`FactStatus` carries the active/superseded status, and `FactLink` carries the
+thematic relationship between two facts.
+
+These are the shapes every layer above the database speaks in. They hold no
+behaviour and open no connection; `aura.db.repository` and its siblings own the
+SQL that produces and consumes them. Imports nothing from `aura`, so any module
+may depend on it.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -20,17 +32,36 @@ class FactStatus(StrEnum):
 
 
 class Fact(BaseModel):
-    """One distilled, sourced statement about a server, per CLAUDE.md's knowledge model.
+    """One distilled, sourced statement about a server.
 
-    `superseded_by_id` chains to the fact that replaced this one when
-    `status` is SUPERSEDED; both it and `superseded_at` are None while a
-    fact is still active.
+    Attributes
+    ----------
+    id
+        Database primary key.
+    guild_id, channel_id, message_id
+        The Discord permalink components of the message this was distilled
+        from. The knowledge model stores this reference instead of a second
+        copy of the original text (CLAUDE.md, Fact).
+    content
+        The distilled sentence itself -- one sentence, not the raw message.
+    embedding
+        `content`'s vector representation, float32 always (see
+        `aura.embeddings.EMBEDDING_DTYPE`), stored raw via `ndarray.tobytes`
+        and read back via `np.frombuffer(..., dtype=EMBEDDING_DTYPE)`. Never
+        re-derived here: deserializing needs the dtype declared once and
+        shared, not guessed independently at every read site.
+    status
+        Whether this fact currently reflects reality.
+    superseded_by_id, superseded_at
+        The fact that replaced this one, and when. Both are None exactly while
+        `status` is ACTIVE.
+    created_at
+        The knowledge model's Timestamp component.
 
-    `embedding` is `content`'s vector representation, float32 always (see
-    aura.embeddings.EMBEDDING_DTYPE), stored raw via ndarray.tobytes() and
-    read back via np.frombuffer(fact.embedding, dtype=EMBEDDING_DTYPE) --
-    never re-derived here, since deserializing needs the dtype declared once
-    and shared, not guessed independently at every read site.
+    Notes
+    -----
+    A superseded fact is never deleted, so the history of what used to be true
+    stays intact; retrieval filters on `status` instead.
     """
 
     id: int
@@ -48,8 +79,20 @@ class Fact(BaseModel):
 class FactLink(BaseModel):
     """An undirected thematic relationship between two facts.
 
-    `fact_a_id` is always the smaller of the two IDs; see the CHECK
-    constraint on `fact_links` in schema.sql for why.
+    Attributes
+    ----------
+    fact_a_id, fact_b_id
+        The linked facts. `fact_a_id` is always the smaller of the two, so one
+        relationship has exactly one row whichever order it was created in;
+        see the CHECK constraint on `fact_links` in schema.sql.
+    created_at
+        When the link was recorded.
+
+    Notes
+    -----
+    This is CLAUDE.md's Link component: what lets thematically related facts,
+    spread across time and channels, be pulled into one synthesized answer
+    with multiple citations rather than returned as isolated fragments.
     """
 
     fact_a_id: int

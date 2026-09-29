@@ -6,6 +6,7 @@ for between fact-extraction logic and a live Discord connection, applied to
 the one piece of authorization logic this service has. Every hostile shape
 this module rejects is a unit test rather than a live OAuth round trip.
 """
+
 from __future__ import annotations
 
 # Discord serialises permissions as a decimal string of a variable-length
@@ -35,6 +36,19 @@ MAX_SNOWFLAKE_DIGITS = 20
 def parse_permissions(raw: object) -> int | None:
     """Parse Discord's permission field into a non-negative int, or None if unusable.
 
+    Parameters
+    ----------
+    raw
+        Discord's permission field, whose JSON type is not guaranteed.
+
+    Returns
+    -------
+    int or None
+        A non-negative integer, or None when the value is missing, not an
+        integer string, or negative.
+
+    Notes
+    -----
     Returns None rather than raising, and rather than defaulting to zero,
     so the caller can distinguish "Discord said this user has no permissions"
     from "this value made no sense" -- the two deserve different log lines
@@ -76,6 +90,19 @@ def parse_permissions(raw: object) -> int | None:
 def has_manage_guild(permissions: object) -> bool:
     """Whether this permission bitmask grants management of the guild.
 
+    Parameters
+    ----------
+    permissions
+        Discord's permission field, in whatever shape it arrived.
+
+    Returns
+    -------
+    bool
+        True only when the bitmask parses and carries Manage Guild.
+        Unparseable permissions grant nothing.
+
+    Notes
+    -----
     ADMINISTRATOR counts. Discord's computed bitmask does not fold the
     administrator grant into the other bits -- an administrator can have
     MANAGE_GUILD unset while being able to do everything the permission
@@ -91,6 +118,19 @@ def has_manage_guild(permissions: object) -> bool:
 def parse_snowflake(raw: object) -> str | None:
     """Normalise a Discord ID to its decimal string form, or None if unusable.
 
+    Parameters
+    ----------
+    raw
+        A Discord ID, as an int or a string.
+
+    Returns
+    -------
+    str or None
+        Its decimal string form, or None when it is absent or not a
+        non-negative integer.
+
+    Notes
+    -----
     Kept as a string rather than an int throughout this service: IDs are only
     ever compared and displayed, never arithmetic, and JavaScript loses
     precision on integers past 2^53 -- which every Discord snowflake exceeds.
@@ -112,6 +152,20 @@ def parse_snowflake(raw: object) -> str | None:
 def sanitize_guild_name(raw: object, fallback: str) -> str:
     """Clamp a guild name to something safe to store and hand to a browser.
 
+    Parameters
+    ----------
+    raw
+        The name Discord returned, which is user-controlled text.
+    fallback
+        What to use when `raw` is unusable.
+
+    Returns
+    -------
+    str
+        A non-empty, length-clamped name safe to store and hand to a browser.
+
+    Notes
+    -----
     Control characters are stripped rather than escaped: they carry no
     meaning in a server name, and a name containing a line break or a
     bidirectional override is a display problem in every consumer this value
@@ -130,6 +184,19 @@ def sanitize_guild_name(raw: object, fallback: str) -> str:
 def sanitize_icon_hash(raw: object) -> str | None:
     """Validate an icon hash, or None if it is absent or not a plain hash.
 
+    Parameters
+    ----------
+    raw
+        The icon field Discord returned.
+
+    Returns
+    -------
+    str or None
+        The hash when it is a plain hash, otherwise None -- so nothing that is
+        not a hash can ever be interpolated into an image URL.
+
+    Notes
+    -----
     The value is interpolated into a CDN path
     (``/icons/{guild_id}/{icon}.png``) by whoever renders it, so anything
     beyond the documented alphabet -- a slash, a dot, a query string -- turns
@@ -141,6 +208,8 @@ def sanitize_icon_hash(raw: object) -> str | None:
     candidate = raw.strip()
     if not candidate or len(candidate) > 64:
         return None
-    if not all(character.isascii() and (character.isalnum() or character == "_") for character in candidate):
+    if not all(
+        character.isascii() and (character.isalnum() or character == "_") for character in candidate
+    ):
         return None
     return candidate

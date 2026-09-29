@@ -7,6 +7,7 @@ corpus_model.py's docstring). Calibration reads the JSON directly and scores
 each message's content through aura.extraction.fact_worthiness -- there is
 nothing here for a database to simulate.
 """
+
 from __future__ import annotations
 
 import json

@@ -13,9 +13,10 @@ different set of questions, because onboarding is not windowed:
     builder tests take: verified against the actual writers, not just against
     hand-inserted rows shaped like their output.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 import pytest
@@ -29,7 +30,7 @@ GUILD_A = 100000000000000001
 GUILD_B = 200000000000000002
 CHANNEL = 300000000000000003
 
-NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=UTC)
 
 _next_message_id = iter(range(600000000000000000, 600000000000001000))
 
@@ -56,8 +57,15 @@ async def add_fact(
             (guild_id, channel_id, message_id, content, embedding, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (guild_id, CHANNEL, next(_next_message_id), content, b"\x00\x00\x00\x00",
-         status, utc_iso(created_at)),
+        (
+            guild_id,
+            CHANNEL,
+            next(_next_message_id),
+            content,
+            b"\x00\x00\x00\x00",
+            status,
+            utc_iso(created_at),
+        ),
     )
     await conn.commit()
     assert cursor.lastrowid is not None
@@ -79,8 +87,16 @@ async def categorize(
              confirmed_fact_id, created_at)
         VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)
         """,
-        (guild_id, CHANNEL, next(_next_message_id), f"candidate for {fact_id}",
-         b"\x00\x00\x00\x00", category, fact_id, utc_iso(NOW)),
+        (
+            guild_id,
+            CHANNEL,
+            next(_next_message_id),
+            f"candidate for {fact_id}",
+            b"\x00\x00\x00\x00",
+            category,
+            fact_id,
+            utc_iso(NOW),
+        ),
     )
     await conn.commit()
 
@@ -168,9 +184,7 @@ class TestCategoryPriority:
         assert content.status_changes == []
         assert [f.content for f in content.other] == ["We just hit 1000 members!"]
 
-    async def test_within_a_bucket_facts_are_newest_first(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_within_a_bucket_facts_are_newest_first(self, conn: aiosqlite.Connection) -> None:
         old_id = await add_fact(conn, content="older rule", created_at=NOW - timedelta(days=5))
         await categorize(conn, fact_id=old_id, category=FactCategory.RULE)
         new_id = await add_fact(conn, content="newer rule", created_at=NOW - timedelta(days=1))
@@ -232,9 +246,7 @@ class TestTheCap:
         with pytest.raises(ValueError, match="negative"):
             await build(conn, limit=-1)
 
-    async def test_everything_fitting_leaves_no_omission(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_everything_fitting_leaves_no_omission(self, conn: aiosqlite.Connection) -> None:
         rule_id = await add_fact(conn, content="a rule")
         await categorize(conn, fact_id=rule_id, category=FactCategory.RULE)
 

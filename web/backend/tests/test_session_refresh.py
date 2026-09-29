@@ -6,9 +6,11 @@ long-lived session eventually does. The three outcomes it must distinguish:
 refreshed (carry on), refused (log out), unreachable (fail this request but
 keep the login).
 """
+
 from __future__ import annotations
 
 import httpx
+
 from fake_discord import FakeDiscordState
 from helpers import complete_login
 

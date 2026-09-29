@@ -8,9 +8,11 @@ the flooding, cycling, cross-guild and stale-chain shapes that decide whether
 No Discord, no LLM, no embedding model: expansion is pure data-layer logic over
 a real in-memory database, and is tested as such.
 """
+
 from __future__ import annotations
 
 import asyncio
+from itertools import pairwise
 
 import aiosqlite
 import pytest
@@ -63,7 +65,10 @@ async def _supersede(conn: aiosqlite.Connection, old: Fact, new: Fact) -> None:
 
 async def _expand(conn: aiosqlite.Connection, facts: list[Fact], **kwargs: int) -> list[int]:
     expanded = await expand_with_linked_facts(
-        conn, guild_id=GUILD_A, facts=facts, **kwargs  # type: ignore[arg-type]
+        conn,
+        guild_id=GUILD_A,
+        facts=facts,
+        **kwargs,  # type: ignore[arg-type]
     )
     return [fact.id for fact in expanded]
 
@@ -161,7 +166,7 @@ class TestSupersessionResolution:
         found = await _make_fact(conn, content="found")
         versions = [await _make_fact(conn, content=f"v{i}") for i in range(1, 5)]
         await _link(conn, found, versions[0])
-        for older, newer in zip(versions, versions[1:]):
+        for older, newer in pairwise(versions):
             await _supersede(conn, older, newer)
 
         expanded = await expand_with_linked_facts(conn, guild_id=GUILD_A, facts=[found])
@@ -268,7 +273,7 @@ class TestFloodingIsBounded:
         # This is the structural half of the flood defence -- the cap above is
         # the backstop, this is why it is rarely the thing that binds.
         chain = [await _make_fact(conn, content=f"chain {i}") for i in range(20)]
-        for earlier, later in zip(chain, chain[1:]):
+        for earlier, later in pairwise(chain):
             await _link(conn, earlier, later)
 
         assert await _expand(conn, [chain[0]]) == [chain[0].id, chain[1].id]
@@ -335,9 +340,7 @@ class TestOrderingIsDeterministic:
 
 
 class TestGuildIsolation:
-    async def test_another_guilds_facts_are_never_added(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_another_guilds_facts_are_never_added(self, conn: aiosqlite.Connection) -> None:
         found = await _make_fact(conn, guild_id=GUILD_A, content="a")
         foreign_1 = await _make_fact(conn, guild_id=GUILD_B, content="b1")
         foreign_2 = await _make_fact(conn, guild_id=GUILD_B, content="b2")
@@ -386,9 +389,7 @@ class TestQueryCost:
         selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
         assert len(selects) <= 3, selects
 
-    async def test_expansion_issues_no_mutating_statement(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_expansion_issues_no_mutating_statement(self, conn: aiosqlite.Connection) -> None:
         # Retrieval reads the knowledge model; it never writes it. Asserted at
         # the SQL level so the claim rests on what the database actually saw.
         found = await _make_fact(conn, content="found")

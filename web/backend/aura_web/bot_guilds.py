@@ -22,6 +22,7 @@ the error propagates: this service fails closed. It never falls back to "show
 the user every guild they can manage", which would list servers Aura is not
 in -- the exact filtering failure this sub-phase's brief calls out.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -71,6 +72,19 @@ class BotGuildCache:
     async def get(self) -> frozenset[str]:
         """Return the bot's guild IDs, refreshing if the cached entry has expired.
 
+        Returns
+        -------
+        frozenset[str]
+            The bot's guild IDs, refreshed from Discord when the cached entry has
+            expired and served from cache otherwise.
+
+        Raises
+        ------
+        DiscordAPIError
+            If a refresh is due and fails, and no usable cached value remains.
+
+        Notes
+        -----
         Raises whatever DiscordClient raised if there is no cached value new
         enough to stand in -- callers must surface that rather than degrade to
         an unfiltered list.

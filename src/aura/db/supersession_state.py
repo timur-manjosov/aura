@@ -33,10 +33,12 @@ judgment. That is a materially softer failure than the extraction cap's (which
 drops a batch), and it is why this cap can be set aggressively low -- including
 to 0 -- without breaking anything.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Final
 
 import aiosqlite
 from pydantic import BaseModel
@@ -59,7 +61,7 @@ WHERE (
 # int that does not fit a signed 64-bit integer, so a value past this would
 # raise on every candidate instead of being refused once where an operator can
 # see it.
-MAX_DAILY_CAP = 1_000_000
+MAX_DAILY_CAP: Final = 1_000_000
 
 
 class SupersessionCallOutcome(StrEnum):
@@ -85,17 +87,40 @@ class SupersessionCallAttempt(BaseModel):
 
     @property
     def granted(self) -> bool:
-        """Whether this attempt actually took a slot from the budget."""
+        """Report whether this attempt actually took a slot from the budget.
+
+        Returns
+        -------
+        bool
+            True only for a GRANTED outcome -- that is, only when a slot was
+            actually taken from the budget.
+        """
         return self.outcome is SupersessionCallOutcome.GRANTED
 
 
 async def count_supersession_calls_on(
     conn: aiosqlite.Connection, *, guild_id: int, day: str
 ) -> int:
-    """Return how many judgment calls guild_id has already spent on a UTC day.
+    """Return how many judgment calls a guild has already spent on a UTC day.
 
-    Read-only. Takes the day as a string produced by utc_day so the caller's
-    clock, not this function's, defines "today".
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild whose ledger to count.
+    day
+        A UTC day key as produced by `utc_day`, so the caller's clock --
+        not this function's -- defines "today".
+
+    Returns
+    -------
+    int
+        Rows in `supersession_calls` for that guild and day; 0 if there are none.
+
+    Notes
+    -----
+    Read-only; takes no slot and changes nothing.
     """
     async with connection_lock(conn):
         async with conn.execute(
@@ -116,6 +141,38 @@ async def try_acquire_supersession_call_slot(
 ) -> SupersessionCallAttempt:
     """Atomically take one slot from the guild's daily judgment budget.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild whose budget to spend from.
+    pending_fact_id
+        The staged candidate this judgment is about. Always staged before the
+        slot is claimed, so the reference is never dangling.
+    daily_cap
+        Today's ceiling. 0 is valid and means "never spend".
+    now
+        Timezone-aware moment; supplies both the timestamp and the UTC day
+        key, so the two can never straddle midnight in opposite directions.
+
+    Returns
+    -------
+    SupersessionCallAttempt
+        GRANTED with the post-write count when a slot was taken;
+        DAILY_CAP_REACHED with the current count when it was not.
+
+    Raises
+    ------
+    ValueError
+        If `daily_cap` is outside [0, MAX_DAILY_CAP] or `now` is naive.
+
+    Notes
+    -----
+    Atomic against concurrent callers, including a second process sharing
+    the database file: the cap is re-checked inside the INSERT's own WHERE
+    clause, so there is no window between deciding and writing.
+
     Call this once a candidate is known to be worth judging and *before* the LLM
     call it authorizes -- the same ordering, for the same reason, as both other
     ledgers. A slot is recorded when it is claimed, not when the work it
@@ -123,12 +180,13 @@ async def try_acquire_supersession_call_slot(
     instead of quietly refunding it. Without that direction, a reliably-failing
     model would earn unlimited retries.
 
-    Never raises on a normal refusal: being out of budget is an expected
-    outcome, not an error. A daily_cap of 0 is valid and means "never judge",
-    which leaves extraction fully working and every candidate still reviewable.
+    Being out of budget is an expected outcome, not an error, so a refusal is
+    a return value rather than an exception. A cap of 0 leaves extraction fully
+    working and every candidate still reviewable -- see the module docstring on
+    why refusal is cheap here.
 
-    Requires a timezone-aware `now`, injected rather than read from the clock
-    here, so the daily boundary is testable at the exact moment it matters.
+    `now` is injected rather than read from the clock here so the daily
+    boundary is testable at the exact moment it matters.
     """
     if not 0 <= daily_cap <= MAX_DAILY_CAP:
         raise ValueError(f"daily_cap must be between 0 and {MAX_DAILY_CAP}, got {daily_cap}")
@@ -150,8 +208,7 @@ async def try_acquire_supersession_call_slot(
             if cursor.rowcount == 1:
                 await conn.commit()
                 async with conn.execute(
-                    "SELECT COUNT(*) FROM supersession_calls "
-                    "WHERE guild_id = ? AND call_day = ?",
+                    "SELECT COUNT(*) FROM supersession_calls WHERE guild_id = ? AND call_day = ?",
                     (guild_id, day),
                 ) as count_cursor:
                     row = await count_cursor.fetchone()

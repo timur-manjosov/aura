@@ -13,6 +13,7 @@ data layer -- see aura.db.repository.supersede_fact_with_existing_successor's
 docstring for why the data layer needed one new, minimal function rather than
 reusing supersede_fact verbatim.
 """
+
 from __future__ import annotations
 
 import logging
@@ -100,7 +101,19 @@ class SupersedeConfirmView(discord.ui.View):
         self._resolved = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Reject a button press from anyone but the moderator who ran the command."""
+        """Reject a button press from anyone but the moderator who ran the command.
+
+        Parameters
+        ----------
+        interaction
+            The button press to authorise.
+
+        Returns
+        -------
+        bool
+            True only for the moderator who ran the command. Anyone else gets an
+            ephemeral refusal and False, so discord.py never dispatches the callback.
+        """
         if interaction.user.id != self._invoker_id:
             await interaction.response.send_message(
                 t("supersede_wrong_user_error", self._locale), ephemeral=True
@@ -110,7 +123,20 @@ class SupersedeConfirmView(discord.ui.View):
 
     @discord.ui.button(style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
-        """Commit the supersession, re-validating atomically so a race fails cleanly, not silently."""
+        """Commit the supersession, re-validating atomically so a race fails cleanly, not silently.
+
+        Parameters
+        ----------
+        interaction
+            The button press. Already authorised by `interaction_check`.
+        _button
+            discord.py's button object. Unused: this callback is bound to one
+            button already.
+
+        Returns
+        -------
+        None
+        """
         if self._resolved:
             # A second, near-simultaneous click on this same view (see
             # _resolved's docstring) -- the first click already decided this
@@ -163,7 +189,20 @@ class SupersedeConfirmView(discord.ui.View):
 
     @discord.ui.button(style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
-        """Back out of the confirmation: nothing is ever written to the database."""
+        """Back out of the confirmation: nothing is ever written to the database.
+
+        Parameters
+        ----------
+        interaction
+            The button press. Already authorised by `interaction_check`.
+        _button
+            discord.py's button object. Unused: this callback is bound to one
+            button already.
+
+        Returns
+        -------
+        None
+        """
         if self._resolved:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -186,7 +225,9 @@ class SupersedeConfirmView(discord.ui.View):
             return
         self._resolved = True
         if self.message is not None:
-            await self.message.edit(content=t("supersede_expired", self._locale), embed=None, view=None)
+            await self.message.edit(
+                content=t("supersede_expired", self._locale), embed=None, view=None
+            )
 
 
 async def _handle_supersede_command_error(
@@ -226,6 +267,22 @@ async def supersede_command(
 ) -> None:
     """Validate both fact references, then ask for confirmation before superseding old_fact_id.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    old_fact_id
+        The fact to retire.
+    new_fact_id
+        The already-existing fact that replaces it.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Every rejection path here is a friendly, pre-flight check for a common
     mistake, distinct from the atomic re-validation supersede_fact_with_existing_successor
     performs at commit time -- both exist because time passes between this
@@ -296,5 +353,15 @@ supersede_command.error(_handle_supersede_command_error)
 
 
 def register_supersede_command(tree: app_commands.CommandTree) -> None:
-    """Register /aura-supersede onto tree."""
+    """Register /aura-supersede onto tree.
+
+    Parameters
+    ----------
+    tree
+        The command tree to register into.
+
+    Returns
+    -------
+    None
+    """
     tree.add_command(supersede_command)

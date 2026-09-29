@@ -19,6 +19,7 @@ messages that must be rejected. Without one, a model that returns an empty list
 for everything would score perfectly on the negative cases while being
 completely useless, and the whole evaluation would flatter it.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -561,15 +562,14 @@ _QUOTE_HAZARD_BATCHES = (
                 "der admin meinte grad „ab morgen heißt der deal-kanal "
                 "offiziell ‚angebote' statt ‚rabatte'\"",
                 True,
-                "nested typographic quotes (outer „...\", inner single "
+                'nested typographic quotes (outer „...", inner single '
                 "‚...') -- attack case beyond what 3a-3 measured",
             ),
             EvalMessage(
-                "der alte kanal „ankündigungen\" wurde geschlossen und heißt "
+                'der alte kanal „ankündigungen" wurde geschlossen und heißt '
                 'jetzt „news", steht in der admin nachricht',
                 True,
-                "two separate quoted phrases in one message, same "
-                "convention repeated",
+                "two separate quoted phrases in one message, same convention repeated",
             ),
         ),
     ),

@@ -26,6 +26,7 @@ simply logged and not reattempted for that join -- the same class of gap
 _cannot_post_in on /aura-onboarding exists to catch in advance, and a
 moderator who fixes permissions gets it right for every join from then on.
 """
+
 from __future__ import annotations
 
 import logging
@@ -55,6 +56,25 @@ async def handle_member_join(
 ) -> None:
     """Post one member's onboarding summary, if this guild wants one and has anything to say.
 
+    Parameters
+    ----------
+    member
+        The member who just joined.
+    db
+        Open database connection.
+    gateway
+        Resolves the guild's configured onboarding channel.
+    settings
+        Loaded configuration.
+    plan_gate
+        Decides whether each guild may use this Pro trigger.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Never raises: every branch below is an ordinary "do not send" outcome
     (unconfigured, empty, unresolvable channel, lost race, over the daily
     cap), and the one genuinely exceptional step -- the network call to
@@ -128,8 +148,7 @@ async def handle_member_join(
     )
     if outcome is OnboardingSendOutcome.ALREADY_SENT:
         logger.info(
-            "Onboarding for member %s in guild %s was already sent for this join; "
-            "staying silent",
+            "Onboarding for member %s in guild %s was already sent for this join; staying silent",
             member.id,
             guild.id,
         )

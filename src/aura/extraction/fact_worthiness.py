@@ -45,6 +45,7 @@ not weight heavily. reports/phase-3a-1.txt documents that near-miss pair
 explicitly and reports the calibrated threshold's actual behaviour on it
 rather than assuming separation that was never measured.
 """
+
 from __future__ import annotations
 
 from fastembed import TextEmbedding
@@ -164,6 +165,19 @@ NOT_FACT_WORTHY_EXEMPLARS: tuple[str, ...] = (
 async def create_fact_worthiness_detector(model: TextEmbedding) -> QuestionDetector:
     """Build a fact-worthiness detector: a second QuestionDetector instance.
 
+    Parameters
+    ----------
+    model
+        The loaded embedding model.
+
+    Returns
+    -------
+    QuestionDetector
+        A detector bound to this module's fact-worthy / not-fact-worthy exemplar
+        sets rather than to the question/statement ones.
+
+    Notes
+    -----
     Deliberately a thin wrapper around QuestionDetector.create rather than a
     second class -- see this module's docstring. Callers that want the raw
     class for typing or mocking should still import QuestionDetector directly;

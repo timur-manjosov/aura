@@ -4,6 +4,7 @@ A real in-memory database throughout, never a live gateway connection, per
 CLAUDE.md's testing philosophy. The one invariant that matters most is asserted
 first and repeatedly: a channel with no row is OFF.
 """
+
 from __future__ import annotations
 
 import asyncio

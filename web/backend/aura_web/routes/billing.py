@@ -27,6 +27,7 @@ future cookie change weakens that.
 Every refusal is a code, never prose, and none reveals whether a guild the user
 cannot see has a subscription.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -67,7 +68,9 @@ def _refuse_cross_site(request: Request, context: ServiceContext) -> Response | 
     if content_type != "application/json":
         return error_response(ErrorCode.UNSUPPORTED_MEDIA_TYPE, status_code=415)
     origins = request.headers.getlist("origin")
-    if len(origins) > 1 or (origins and origins[0].strip().lower() != context.settings.frontend_origin):
+    if len(origins) > 1 or (
+        origins and origins[0].strip().lower() != context.settings.frontend_origin
+    ):
         logger.warning("Refused a billing request from a foreign origin")
         return error_response(ErrorCode.FORBIDDEN_ORIGIN, status_code=403)
     if request.headers.get("sec-fetch-site", "").strip().lower() == "cross-site":
@@ -122,7 +125,21 @@ async def _resolve_caller(request: Request, context: ServiceContext) -> _Caller 
 
 
 def browser_plan(plan: GuildPlanView, *, user_id: str) -> dict[str, object]:
-    """What a browser may see of a guild's plan: the standing, never who paid or with which account."""
+    """What a browser may see of a guild's plan: the standing, never who paid or with which account.
+
+    Parameters
+    ----------
+    plan
+        The guild's plan as the bot reported it.
+    user_id
+        The caller, used only to decide whether they may open the portal.
+
+    Returns
+    -------
+    dict[str, object]
+        What a browser may see: the standing, and whether this caller can
+        manage the subscription. Never the customer ID, never who paid.
+    """
     return {
         "tier": plan.tier,
         "basis": plan.basis,
@@ -140,6 +157,22 @@ def browser_plan(plan: GuildPlanView, *, user_id: str) -> dict[str, object]:
 def checkout_idempotency_key(*, user_id: str, guild_id: str, now: float) -> str:
     """One Stripe idempotency key per user, guild and time window.
 
+    Parameters
+    ----------
+    user_id, guild_id
+        Who is paying for which guild.
+    now
+        Current Unix time, bucketed into a window so a double-submit inside it
+        reuses one key.
+
+    Returns
+    -------
+    str
+        A key stable for one user, guild and window -- so a repeated submission
+        creates one Stripe session rather than two.
+
+    Notes
+    -----
     Hashed so the key Stripe stores is not a readable pairing of a Discord user
     and a guild, and namespaced so it cannot collide with a key any other code
     path might ever send.
@@ -150,8 +183,24 @@ def checkout_idempotency_key(*, user_id: str, guild_id: str, now: float) -> str:
 
 
 @router.get("/guilds")
-async def billing_guilds(request: Request, context: ServiceContext = Depends(get_context)) -> Response:
-    """Plans for every guild on the caller's dashboard. Possibly none."""
+async def billing_guilds(
+    request: Request, context: ServiceContext = Depends(get_context)
+) -> Response:
+    """Plans for every guild on the caller's dashboard. Possibly none.
+
+    Parameters
+    ----------
+    request
+        The incoming request.
+    context
+        The shared context: settings, stores and clients.
+
+    Returns
+    -------
+    Response
+        Plans for every guild on the caller's dashboard, possibly none; 401
+        without a session.
+    """
     caller = await _resolve_caller(request, context)
     if isinstance(caller, Response):
         return caller
@@ -170,8 +219,25 @@ async def billing_guilds(request: Request, context: ServiceContext = Depends(get
 
 
 @router.post("/checkout")
-async def create_checkout(request: Request, context: ServiceContext = Depends(get_context)) -> Response:
-    """Start a Stripe-hosted Pro checkout for one guild the caller may manage."""
+async def create_checkout(
+    request: Request, context: ServiceContext = Depends(get_context)
+) -> Response:
+    """Start a Stripe-hosted Pro checkout for one guild the caller may manage.
+
+    Parameters
+    ----------
+    request
+        The incoming request.
+    context
+        The shared context: settings, stores and clients.
+
+    Returns
+    -------
+    Response
+        The hosted checkout URL for the browser to follow, or a JSON error:
+        401 without a session, 403 for a guild the caller may not manage, 409
+        when the guild already has a subscription the bot knows about.
+    """
     refusal = _refuse_cross_site(request, context)
     if refusal is not None:
         return refusal
@@ -228,8 +294,24 @@ async def create_checkout(request: Request, context: ServiceContext = Depends(ge
 
 
 @router.post("/portal")
-async def open_billing_portal(request: Request, context: ServiceContext = Depends(get_context)) -> Response:
-    """Open Stripe's billing portal for a subscription the caller paid for."""
+async def open_billing_portal(
+    request: Request, context: ServiceContext = Depends(get_context)
+) -> Response:
+    """Open Stripe's billing portal for a subscription the caller paid for.
+
+    Parameters
+    ----------
+    request
+        The incoming request.
+    context
+        The shared context: settings, stores and clients.
+
+    Returns
+    -------
+    Response
+        A single-use Stripe portal URL, or a JSON error: 401 without a
+        session, 403 unless the caller is the purchaser of record.
+    """
     refusal = _refuse_cross_site(request, context)
     if refusal is not None:
         return refusal
@@ -247,11 +329,17 @@ async def open_billing_portal(request: Request, context: ServiceContext = Depend
     try:
         plan = (await context.bot_billing.get_guild_plans([guild_id]))[guild_id]
     except BotBillingError as exc:
-        logger.warning("Refused a billing portal session for guild %s: plans unavailable (%s)", guild_id, exc)
+        logger.warning(
+            "Refused a billing portal session for guild %s: plans unavailable (%s)", guild_id, exc
+        )
         return error_response(ErrorCode.BILLING_UNAVAILABLE, status_code=503)
 
     owned = sorted(
-        (subscription for subscription in plan.subscriptions if subscription.purchaser_user_id == session.user.id),
+        (
+            subscription
+            for subscription in plan.subscriptions
+            if subscription.purchaser_user_id == session.user.id
+        ),
         key=lambda subscription: not subscription.grants_access,
     )
     if not owned:

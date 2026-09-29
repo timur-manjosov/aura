@@ -5,6 +5,7 @@ covered here is the part that only exists in main.py -- that on_message is
 actually reachable, actually delegates, and cannot blow up on a message that
 arrives before startup has finished.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -409,9 +410,7 @@ class TestBackfillWiring:
             patch("aura.main.verify_signal_schema", AsyncMock()),
             patch("aura.main.verify_pending_facts_schema", AsyncMock()),
             patch("aura.main.asyncio.to_thread", AsyncMock(return_value=client.embedding_model)),
-            patch(
-                "aura.main.QuestionDetector.create", AsyncMock(return_value=question)
-            ),
+            patch("aura.main.QuestionDetector.create", AsyncMock(return_value=question)),
             patch(
                 "aura.main.create_fact_worthiness_detector",
                 AsyncMock(return_value=fact_worthiness),
@@ -488,8 +487,20 @@ class TestBillingWiring:
         client = _client()
         client.db = MagicMock()
         patches = _setup_hook_patches(client)
-        with patches[0], patches[1] as loader, patches[2], patches[3], patches[4], patches[5], \
-                patches[6], patches[7], patches[8], patches[9], patches[10], patches[11]:
+        with (
+            patches[0],
+            patches[1] as loader,
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
+            patches[8],
+            patches[9],
+            patches[10],
+            patches[11],
+        ):
             await client.setup_hook()
 
         loader.assert_awaited_once_with(client.db)
@@ -501,15 +512,29 @@ class TestBillingWiring:
         client = _client()
         client.db = MagicMock()
         patches = _setup_hook_patches(client)
-        with patch("aura.main.start_internal_api", AsyncMock()) as starter, patches[0], patches[1], \
-                patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], \
-                patches[9], patches[10], patches[11]:
+        with (
+            patch("aura.main.start_internal_api", AsyncMock()) as starter,
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
+            patches[8],
+            patches[9],
+            patches[10],
+            patches[11],
+        ):
             await client.setup_hook()
 
         starter.assert_not_awaited()
         assert client.internal_api is None
 
-    async def test_the_internal_api_is_started_with_the_configured_address_and_the_gate(self) -> None:
+    async def test_the_internal_api_is_started_with_the_configured_address_and_the_gate(
+        self,
+    ) -> None:
         settings = Settings(
             _env_file=None,  # type: ignore[call-arg]
             discord_token="fake-token",
@@ -521,9 +546,21 @@ class TestBillingWiring:
         client.db = MagicMock()
         server = MagicMock()
         patches = _setup_hook_patches(client)
-        with patch("aura.main.start_internal_api", AsyncMock(return_value=server)) as starter, \
-                patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], \
-                patches[7], patches[8], patches[9], patches[10], patches[11]:
+        with (
+            patch("aura.main.start_internal_api", AsyncMock(return_value=server)) as starter,
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
+            patches[8],
+            patches[9],
+            patches[10],
+            patches[11],
+        ):
             await client.setup_hook()
 
         starter.assert_awaited_once()
@@ -536,8 +573,20 @@ class TestBillingWiring:
         client = _client()
         client.db = MagicMock()
         patches = _setup_hook_patches(client)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], \
-                patches[7], patches[8], patches[9], patches[10], patches[11]:
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
+            patches[8],
+            patches[9],
+            patches[10],
+            patches[11],
+        ):
             await client.setup_hook()
 
         assert "aura-plan" in {command.name for command in client.tree.get_commands()}

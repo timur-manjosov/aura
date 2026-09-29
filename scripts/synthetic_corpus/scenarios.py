@@ -20,6 +20,7 @@ guilds and there are nine locales. It gets the extra slot as Aura's mandatory
 fallback locale -- the one every deployment can end up using regardless of what
 its members speak.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

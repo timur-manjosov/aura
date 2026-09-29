@@ -31,6 +31,7 @@ model's whole job is to catch it if the generator tried.
 wiring the read side into any similarity search is Part 2, entirely out of
 scope here (see CLAUDE.md's Multi-Representation Indexing note).
 """
+
 from __future__ import annotations
 
 import logging
@@ -88,7 +89,7 @@ _MAX_AUDIT_REASONING_CHARS = 300
 
 _QUOTE_HAZARD_WARNING = (
     "Never use any quotation-mark character inside a JSON string value -- not "
-    "the straight double quote \", and not a typographic variant like “ "
+    'the straight double quote ", and not a typographic variant like “ '
     "” ‚ ‘ ’ « » either. If you need to quote a "
     "word, use a plain apostrophe ' or no quotation mark at all. Any such "
     "character inside a value breaks JSON parsing and the whole response is "
@@ -143,8 +144,8 @@ def _build_generation_messages(canonical: str, *, count: int) -> list[dict[str, 
         "Every one of these rules is load-bearing:\n\n"
         "1. PRESERVE EVERY EXCEPTION AND QUALIFIER. If the fact states a "
         'limit, a scope, a condition, or an "except / unless / only" clause, '
-        "every variant must keep it. A variant that drops \"except on "
-        "Saturdays\" or \"only in #trading\" from the original is wrong, even "
+        'every variant must keep it. A variant that drops "except on '
+        'Saturdays" or "only in #trading" from the original is wrong, even '
         "if it reads more naturally without it.\n"
         "2. PRESERVE THE EXACT SCOPE. If the fact is about ONE specific "
         "channel, role, or person, every variant must name that same specific "
@@ -186,9 +187,7 @@ def _build_generation_messages(canonical: str, *, count: int) -> list[dict[str, 
     ]
 
 
-def _build_audit_messages(
-    canonical: str, variants: list[str]
-) -> list[dict[str, str]]:
+def _build_audit_messages(canonical: str, variants: list[str]) -> list[dict[str, str]]:
     """Build the system/user messages for the independent fidelity-audit call."""
     numbered_variants = "\n".join(
         f"[{index}] {variant[:_MAX_VARIANT_CHARS]}"
@@ -223,7 +222,7 @@ def _build_audit_messages(
         "nothing else -- no markdown, no commentary outside the JSON. "
         f"{_QUOTE_HAZARD_WARNING}\n"
         '{"verdicts": [{"index": <the number in brackets>, "faithful": '
-        "<true or false>, \"reasoning\": \"<ONE brief sentence: what "
+        '<true or false>, "reasoning": "<ONE brief sentence: what '
         'specifically changed, or "preserves meaning" if faithful>"}, ...]}\n'
         "Include exactly one verdict per numbered variant shown to you."
     )
@@ -270,9 +269,7 @@ def _validate_generated_variants(raw_variants: list[str]) -> list[str]:
     return validated
 
 
-async def _generate_variants(
-    canonical: str, *, count: int, model: str
-) -> list[str] | None:
+async def _generate_variants(canonical: str, *, count: int, model: str) -> list[str] | None:
     """Ask the generation model for up to `count` differently-worded, faithful variants.
 
     Returns None on any failure -- malformed JSON, a blank or oversized entry,
@@ -350,15 +347,15 @@ def _apply_audit_verdicts(
     by_index = {raw.index: raw for raw in raw_verdicts}
     filled: list[_RawAuditVerdict] = []
     for index in range(1, variant_count + 1):
-        raw = by_index.get(index)
-        if raw is None:
+        supplied = by_index.get(index)
+        if supplied is None:
             filled.append(
                 _RawAuditVerdict(
                     index=index, faithful=False, reasoning="not addressed by the audit response"
                 )
             )
             continue
-        reasoning = raw.reasoning.strip()
+        reasoning = supplied.reasoning.strip()
         if not reasoning:
             raise ValueError(f"model returned a blank reasoning sentence for variant {index}")
         if len(reasoning) > _MAX_AUDIT_REASONING_CHARS:
@@ -366,7 +363,9 @@ def _apply_audit_verdicts(
                 f"model returned a {len(reasoning)}-character reasoning for variant "
                 f"{index}, over the {_MAX_AUDIT_REASONING_CHARS}-character limit"
             )
-        filled.append(_RawAuditVerdict(index=index, faithful=raw.faithful, reasoning=reasoning))
+        filled.append(
+            _RawAuditVerdict(index=index, faithful=supplied.faithful, reasoning=reasoning)
+        )
     return filled
 
 
@@ -426,23 +425,37 @@ async def generate_variants_for_fact(
     embedding_model: TextEmbedding,
     fact: Fact,
 ) -> list[FactVariant]:
-    """Generate, audit and store meaning-preserving variants of one newly active fact.
+    """Generate, audit and store meaning-preserving variants of one new fact.
 
-    Never raises: this runs as background enrichment after a fact already
-    exists and is already citable (see aura.facts_service), so nothing here may
-    ever affect the fact itself or propagate into whatever just finished
-    creating it. Every failure mode -- no model configured, the daily cap
-    spent, a malformed or failed generation call, a malformed or failed audit
-    call -- degrades to "zero variants stored", exactly the outcome an
-    operator who never configured this feature at all would see.
-    asyncio.CancelledError is a BaseException and still propagates, so a
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    embedding_model
+        The loaded embedding model, for vectorising the surviving variants.
+    fact
+        The newly active fact to enrich. Already committed and already citable.
+
+    Returns
+    -------
+    list[FactVariant]
+        The variants actually stored, which may be fewer than
+        `settings.variant_count` or zero -- both are accepted, documented
+        outcomes (see reports/variant-indexing-part1.txt), never an error to
+        retry. There is no automatic regeneration to make up a shortfall in this
+        sub-phase, on purpose.
+
+    Notes
+    -----
+    Never raises for an expected failure. This runs as background enrichment
+    after a fact already exists, so nothing here may affect the fact itself or
+    propagate into whatever just finished creating it. No model configured, the
+    daily cap spent, a malformed or failed generation call, a malformed or failed
+    audit call -- every one degrades to "zero variants stored", exactly the
+    outcome an operator who never configured this feature would see.
+
+    `asyncio.CancelledError` is a BaseException and still propagates, so a
     shutdown cancelling this task is not swallowed as "generation failed".
-
-    Returns the variants actually stored, which may be fewer than
-    settings.variant_count or zero -- both are accepted, documented outcomes
-    (see reports/variant-indexing-part1.txt), never treated as an error to
-    retry. There is no automatic regeneration to make up a shortfall in this
-    sub-phase, on purpose (see the phase brief's explicit scope limit).
     """
     try:
         settings = load_settings()

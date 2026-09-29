@@ -12,6 +12,7 @@ Whether the MODELS then behave correctly on these prompts is a different
 question no mock can answer. It is measured against real paid calls and
 reported in reports/variant-indexing-part1.txt.
 """
+
 from __future__ import annotations
 
 import json
@@ -185,9 +186,7 @@ class TestGenerateVariants:
         assert result == []
 
     async def test_a_blank_variant_invalidates_the_whole_response(self) -> None:
-        with patch(
-            "litellm.acompletion", _mock_llm({"variants": ["good one", "   "]})
-        ):
+        with patch("litellm.acompletion", _mock_llm({"variants": ["good one", "   "]})):
             result = await _generate_variants(CANONICAL, count=6, model=GENERATION_MODEL)
         assert result is None
 
@@ -282,14 +281,70 @@ class TestAuditVariants:
         assert result is not None
         assert [v.faithful for v in result] == [True, False, True]
 
+    async def test_each_index_keeps_its_own_reasoning(self) -> None:
+        # Added by the academic refactor's adversarial pass. The mix test above
+        # pins `faithful` per index but not `reasoning`, so reading the wrong
+        # verdict's sentence -- e.g. always the first one's -- survived the
+        # whole suite. The reasoning is what a moderator reads to understand
+        # why a variant was rejected, so it has to belong to the variant it is
+        # shown against.
+        with patch(
+            "litellm.acompletion",
+            _mock_llm(
+                {
+                    "verdicts": [
+                        _verdict(1, reasoning="first reason"),
+                        _verdict(2, reasoning="second reason"),
+                        _verdict(3, reasoning="third reason"),
+                    ]
+                }
+            ),
+        ):
+            result = await _audit_variants(
+                canonical=CANONICAL, variants=["a", "b", "c"], model=AUDIT_MODEL
+            )
+        assert result is not None
+        assert [verdict.reasoning for verdict in result] == [
+            "first reason",
+            "second reason",
+            "third reason",
+        ]
+
+    async def test_verdicts_are_mapped_by_index_not_by_arrival_order(self) -> None:
+        # Nothing obliges the model to answer in order. Mapping by position
+        # would attach every verdict to the wrong variant the moment it does
+        # not, which is worse than a missing verdict: it reads as a confident
+        # judgement about something it never examined.
+        with patch(
+            "litellm.acompletion",
+            _mock_llm(
+                {
+                    "verdicts": [
+                        _verdict(3, faithful=False, reasoning="third reason"),
+                        _verdict(1, faithful=True, reasoning="first reason"),
+                        _verdict(2, faithful=True, reasoning="second reason"),
+                    ]
+                }
+            ),
+        ):
+            result = await _audit_variants(
+                canonical=CANONICAL, variants=["a", "b", "c"], model=AUDIT_MODEL
+            )
+        assert result is not None
+        assert [verdict.index for verdict in result] == [1, 2, 3]
+        assert [verdict.faithful for verdict in result] == [True, True, False]
+        assert [verdict.reasoning for verdict in result] == [
+            "first reason",
+            "second reason",
+            "third reason",
+        ]
+
     async def test_a_fenced_response_is_parsed(self) -> None:
         with patch(
             "litellm.acompletion",
             _mock_llm({"verdicts": [_verdict(1)]}, fenced=True),
         ):
-            result = await _audit_variants(
-                canonical=CANONICAL, variants=["a"], model=AUDIT_MODEL
-            )
+            result = await _audit_variants(canonical=CANONICAL, variants=["a"], model=AUDIT_MODEL)
         assert result is not None and result[0].faithful is True
 
     async def test_a_hallucinated_index_invalidates_the_whole_audit(self) -> None:
@@ -321,16 +376,12 @@ class TestAuditVariants:
             "litellm.acompletion",
             _mock_llm({"verdicts": [_verdict(1, reasoning="")]}),
         ):
-            result = await _audit_variants(
-                canonical=CANONICAL, variants=["a"], model=AUDIT_MODEL
-            )
+            result = await _audit_variants(canonical=CANONICAL, variants=["a"], model=AUDIT_MODEL)
         assert result is None
 
     async def test_a_network_failure_becomes_none(self) -> None:
         with patch("litellm.acompletion", AsyncMock(side_effect=ConnectionError("down"))):
-            result = await _audit_variants(
-                canonical=CANONICAL, variants=["a"], model=AUDIT_MODEL
-            )
+            result = await _audit_variants(canonical=CANONICAL, variants=["a"], model=AUDIT_MODEL)
         assert result is None
 
     async def test_cancellation_still_propagates(self) -> None:
@@ -419,9 +470,7 @@ class TestGenerateVariantsForFact:
         assert [v.content for v in stored] == ["variant a", "variant b"]
         readback = await get_variants_for_fact(conn, fact.id)
         assert [v.content for v in readback] == ["variant a", "variant b"]
-        assert await count_variant_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(utc_now())
-        ) == 1
+        assert await count_variant_calls_on(conn, guild_id=GUILD_A, day=utc_day(utc_now())) == 1
 
     async def test_partial_audit_rejection_stores_only_the_faithful_subset(
         self, conn: aiosqlite.Connection, embedding_model, monkeypatch: pytest.MonkeyPatch
@@ -522,9 +571,7 @@ class TestGenerateVariantsForFact:
         llm.assert_not_awaited()
         # No episode is charged either: an unconfigured deployment must look
         # exactly like one that never enabled this feature at all.
-        assert await count_variant_calls_on(
-            conn, guild_id=GUILD_A, day=utc_day(utc_now())
-        ) == 0
+        assert await count_variant_calls_on(conn, guild_id=GUILD_A, day=utc_day(utc_now())) == 0
 
     async def test_no_generation_model_configured_skips_everything(
         self, conn: aiosqlite.Connection, embedding_model, monkeypatch: pytest.MonkeyPatch
@@ -650,8 +697,13 @@ class TestCrossGuildBudget:
         # An unrelated guild's unrelated ledger spend, real and durable,
         # exactly the shape a shared operator key would actually see.
         await try_acquire_escalation_slot(
-            conn, guild_id=GUILD_B, channel_id=1, message_id=1,
-            cooldown_seconds=0.0, daily_cap=1_000_000, now=utc_now(),
+            conn,
+            guild_id=GUILD_B,
+            channel_id=1,
+            message_id=1,
+            cooldown_seconds=0.0,
+            daily_cap=1_000_000,
+            now=utc_now(),
         )
 
         fact = await _fact_without_scheduling(

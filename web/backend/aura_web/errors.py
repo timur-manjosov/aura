@@ -11,6 +11,7 @@ a language is a new locale file and no backend change, and an error the
 frontend has never heard of degrades to a visible key rather than a blank
 screen.
 """
+
 from __future__ import annotations
 
 from enum import StrEnum
@@ -45,6 +46,21 @@ class ErrorCode(StrEnum):
 def error_response(code: ErrorCode, status_code: int) -> JSONResponse:
     """Build the one error shape this service emits.
 
+    Parameters
+    ----------
+    code
+        The machine-readable error code.
+    status_code
+        The HTTP status to send.
+
+    Returns
+    -------
+    JSONResponse
+        The one error shape this service emits: a body carrying only `code`,
+        never a message that could leak internal detail.
+
+    Notes
+    -----
     Deliberately just the code -- no message, no exception text, no upstream
     status. Everything a reader needs to diagnose a failure is in this
     process's logs, where it is not also handed to whoever triggered it.

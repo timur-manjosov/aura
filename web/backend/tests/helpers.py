@@ -4,16 +4,17 @@ A module of its own rather than functions on conftest: importing conftest by
 name works only by accident of pytest's sys.path handling, and breaks the
 moment the suite is run from a different rootdir.
 """
+
 from __future__ import annotations
 
 import httpx
-from fake_discord import FakeDiscordState
 
 from aura_web.app import create_app
 from aura_web.bot_billing import BotBillingClient
 from aura_web.config import WebSettings
 from aura_web.discord_api import DiscordClient
 from aura_web.stripe_api import StripeClient
+from fake_discord import FakeDiscordState
 
 FAKE_DISCORD_BASE = "https://discord.test/api/v10"
 FAKE_STRIPE_BASE = "https://stripe.test"
@@ -68,7 +69,9 @@ def build_app(
     def bot_factory(_: httpx.AsyncClient, settings: WebSettings) -> BotBillingClient:
         assert bot_http is not None
         return BotBillingClient(
-            bot_http, base_url=settings.bot_internal_api_url, secret=settings.bot_internal_api_secret
+            bot_http,
+            base_url=settings.bot_internal_api_url,
+            secret=settings.bot_internal_api_secret,
         )
 
     return create_app(
@@ -106,6 +109,4 @@ def set_cookie_header(response: httpx.Response, name: str) -> str:
     for header_value in response.headers.get_list("set-cookie"):
         if header_value.split("=", 1)[0].strip() == name:
             return header_value
-    raise AssertionError(
-        f"no Set-Cookie for {name!r} in {response.headers.get_list('set-cookie')}"
-    )
+    raise AssertionError(f"no Set-Cookie for {name!r} in {response.headers.get_list('set-cookie')}")

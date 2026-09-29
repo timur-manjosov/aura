@@ -4,6 +4,7 @@ The direct-query trigger from CLAUDE.md's knowledge model -- the one this
 whole project exists to serve. Unlike every other command so far, this has
 no permission gate; it's explicitly open to any member.
 """
+
 from __future__ import annotations
 
 import logging
@@ -74,7 +75,21 @@ async def _handle_ask_command_error(
 @app_commands.guild_only()
 @app_commands.checks.cooldown(_COOLDOWN_USES, _COOLDOWN_SECONDS)
 async def ask_command(interaction: discord.Interaction[AuraClient], question: str) -> None:
-    """Answer question by synthesizing across the guild's relevant active facts, with sources."""
+    """Answer question by synthesizing across the guild's relevant active facts, with sources.
+
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    question
+        What the user asked, taken verbatim and fenced as untrusted input in the
+        synthesis prompt.
+
+    Returns
+    -------
+    None
+    """
     assert interaction.guild_id is not None  # guaranteed by guild_only()
     assert interaction.channel_id is not None  # guaranteed by guild_only(): always a real channel
     locale = str(interaction.locale)
@@ -189,5 +204,15 @@ ask_command.error(_handle_ask_command_error)
 
 
 def register_ask_command(tree: app_commands.CommandTree) -> None:
-    """Register /aura-ask onto tree."""
+    """Register /aura-ask onto tree.
+
+    Parameters
+    ----------
+    tree
+        The command tree to register into.
+
+    Returns
+    -------
+    None
+    """
     tree.add_command(ask_command)

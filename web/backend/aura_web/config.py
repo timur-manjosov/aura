@@ -13,6 +13,7 @@ Every variable is read with an ``AURA_WEB_`` prefix so that mounting the
 bot's own ``.env`` into this container by accident configures nothing rather
 than configuring something subtly wrong.
 """
+
 from __future__ import annotations
 
 from typing import Literal
@@ -205,7 +206,9 @@ class WebSettings(BaseSettings):
     # three days in live mode and a few hours in a sandbox; an event lost past
     # that would otherwise leave a paying guild on Free until its next
     # renewal. Six hours bounds that to well inside one renewal grace period.
-    stripe_reconcile_interval_seconds: float = Field(default=6 * 3600.0, ge=60.0, le=7 * 24 * 3600.0)
+    stripe_reconcile_interval_seconds: float = Field(
+        default=6 * 3600.0, ge=60.0, le=7 * 24 * 3600.0
+    )
 
     # --- The bot's internal billing API (Phase 4c) --------------------------
     # This service never opens Aura's database (see web/README.md); it hands
@@ -299,7 +302,9 @@ class WebSettings(BaseSettings):
     @field_validator("stripe_webhook_secret")
     @classmethod
     def _stripe_webhook_secret_shape(cls, value: str) -> str:
-        return _require_stripe_token(value, field_name="STRIPE_WEBHOOK_SECRET", prefixes=("whsec_",))
+        return _require_stripe_token(
+            value, field_name="STRIPE_WEBHOOK_SECRET", prefixes=("whsec_",)
+        )
 
     @field_validator("stripe_price_id")
     @classmethod
@@ -341,7 +346,10 @@ class WebSettings(BaseSettings):
                 f"BOT_INTERNAL_API_SECRET must be at least {MIN_BOT_INTERNAL_API_SECRET_LENGTH} "
                 "characters and equal to INTERNAL_API_SECRET in the bot's .env. " + ENV_EXAMPLE_HINT
             )
-        if not all(character.isascii() and character.isprintable() and not character.isspace() for character in value):
+        if not all(
+            character.isascii() and character.isprintable() and not character.isspace()
+            for character in value
+        ):
             raise ValueError(
                 "BOT_INTERNAL_API_SECRET may contain only printable ASCII characters without spaces."
             )
@@ -350,7 +358,10 @@ class WebSettings(BaseSettings):
     @model_validator(mode="after")
     def _live_mode_is_a_deliberate_decision(self) -> WebSettings:
         """Refuse a live Stripe key unless live mode was switched on explicitly."""
-        if self.stripe_secret_key.startswith(STRIPE_LIVE_KEY_PREFIXES) and not self.stripe_allow_live_mode:
+        if (
+            self.stripe_secret_key.startswith(STRIPE_LIVE_KEY_PREFIXES)
+            and not self.stripe_allow_live_mode
+        ):
             raise ValueError(
                 "STRIPE_SECRET_KEY is a LIVE key, and STRIPE_ALLOW_LIVE_MODE is not set. Live "
                 "payments are a separate, deliberate step: use a test key (sk_test_/rk_test_) "
@@ -360,13 +371,28 @@ class WebSettings(BaseSettings):
 
     @property
     def stripe_live_mode(self) -> bool:
-        """Whether the configured key is a live-mode key (events must then be live too)."""
+        """Whether the configured key is a live-mode key (events must then be live too).
+
+        Returns
+        -------
+        bool
+            True when the configured secret key is a live-mode key, in which case
+            only live events are accepted.
+        """
         return self.stripe_secret_key.startswith(STRIPE_LIVE_KEY_PREFIXES)
 
     @property
     def frontend_origin(self) -> str:
         """The single browser origin this service serves, derived from the post-login URL.
 
+        Returns
+        -------
+        str
+            The single scheme-and-host origin this service serves, derived from the
+            post-login URL so the two cannot disagree.
+
+        Notes
+        -----
         Mutating billing requests must come from here. Derived rather than
         configured separately so the two can never disagree.
         """
@@ -395,6 +421,19 @@ class WebSettings(BaseSettings):
 def load_web_settings() -> WebSettings:
     """Load and validate web settings, raising WebConfigurationError on failure.
 
+    Returns
+    -------
+    WebSettings
+        A fully validated configuration.
+
+    Raises
+    ------
+    WebConfigurationError
+        On any validation failure, carrying one plain-text message rather
+        than pydantic's structured error.
+
+    Notes
+    -----
     The entry point production code should use, for the same reason
     aura.config.load_settings exists: it flattens pydantic's error structure
     into one readable line so a misconfigured container fails immediately with

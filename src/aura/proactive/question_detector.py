@@ -35,6 +35,7 @@ that threshold lives in configuration and is applied by the gate (see
 aura.proactive.gate). Same split aura.embeddings already draws: rank here,
 threshold at the call site.
 """
+
 from __future__ import annotations
 
 import logging
@@ -167,7 +168,19 @@ class QuestionDetector:
         question_embeddings: list[np.ndarray],
         statement_embeddings: list[np.ndarray],
     ) -> None:
-        """Bind two already-embedded exemplar sets. Prefer create() over calling this directly."""
+        """Bind two already-embedded exemplar sets.
+
+        Parameters
+        ----------
+        model
+            The loaded embedding model, kept for scoring incoming text.
+        question_embeddings, statement_embeddings
+            The two exemplar sets, already embedded.
+
+        Notes
+        -----
+        Prefer `create` over calling this directly; it is what embeds the sets.
+        """
         self._model = model
         self._question_embeddings = question_embeddings
         self._statement_embeddings = statement_embeddings
@@ -181,6 +194,27 @@ class QuestionDetector:
     ) -> QuestionDetector:
         """Embed both exemplar sets once, up front, and return a ready detector.
 
+        Parameters
+        ----------
+        model
+            The loaded embedding model.
+        question_exemplars, statement_exemplars
+            The sets to embed. Both must be non-empty. The parameters exist so tests
+            can substitute known sets; production always uses the module-level ones.
+
+        Returns
+        -------
+        QuestionDetector
+            A detector ready to score messages with no further embedding of
+            exemplars.
+
+        Raises
+        ------
+        ValueError
+            If either exemplar set is empty.
+
+        Notes
+        -----
         Called once at startup (see AuraClient.setup_hook), never per
         message: re-embedding these fixed sentences for every incoming
         message would multiply the per-message inference cost by the size of
@@ -205,8 +239,24 @@ class QuestionDetector:
         return cls(model, embeddings[:split], embeddings[split:])
 
     async def question_likeness(self, text: str) -> float:
-        """Return how much more question-like than statement-like text reads.
+        """Return how much more question-like than statement-like a text reads.
 
+        Parameters
+        ----------
+        text
+            The message text to score.
+
+        Returns
+        -------
+        float
+            A difference of two cosine similarities, spanning [-2.0, 2.0] in
+            principle. Positive means the text sits closer to the question exemplars
+            than to the statement exemplars, negative the other way round, zero says
+            neither. `_NO_QUESTION_EVIDENCE` (the floor, -2.0) for input where a
+            score would be meaningless, rather than an exception.
+
+        Notes
+        -----
         The score is a difference of two cosine similarities, so it spans
         [-2.0, 2.0] in principle: positive means the text sits closer to the
         question exemplars than to the statement exemplars, negative the
@@ -245,7 +295,9 @@ class QuestionDetector:
         score = question_similarity - statement_similarity
 
         if not math.isfinite(score):
-            logger.warning("Question-likeness scored non-finite (%r); treating as not a question", score)
+            logger.warning(
+                "Question-likeness scored non-finite (%r); treating as not a question", score
+            )
             return _NO_QUESTION_EVIDENCE
 
         return score

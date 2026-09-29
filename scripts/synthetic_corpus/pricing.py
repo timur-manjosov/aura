@@ -10,6 +10,7 @@ not start.
 No API key is needed -- OpenRouter's model catalog is public -- which also
 means the pre-run cost estimate can be printed before any paid call happens.
 """
+
 from __future__ import annotations
 
 import json
@@ -32,7 +33,7 @@ class PricingUnavailableError(RuntimeError):
 
 def catalog_id(model: str) -> str:
     """Strip litellm's provider prefix to get OpenRouter's own model id."""
-    return model[len(_LITELLM_PREFIX):] if model.startswith(_LITELLM_PREFIX) else model
+    return model[len(_LITELLM_PREFIX) :] if model.startswith(_LITELLM_PREFIX) else model
 
 
 def fetch_model_prices(models: list[str]) -> dict[str, ModelPrice]:

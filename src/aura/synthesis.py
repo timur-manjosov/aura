@@ -33,6 +33,7 @@ fluency, since the answer must be written in the target locale, not just in
 English. There is no one right model for this across OpenRouter's whole
 catalog, which is why the model is passed in rather than hardcoded here.
 """
+
 from __future__ import annotations
 
 import json
@@ -290,8 +291,7 @@ def _build_messages(
     # still named as data in the system prompt above, since a channel name is
     # server-member-controlled text, not something Aura wrote itself.
     question_context_line = (
-        f"\nAsked in channel #{question_channel_name} at "
-        f"{question_asked_at.isoformat()}.\n"
+        f"\nAsked in channel #{question_channel_name} at {question_asked_at.isoformat()}.\n"
         if question_channel_name is not None and question_asked_at is not None
         else ""
     )
@@ -319,27 +319,45 @@ async def synthesize_answer(
     question_asked_at: datetime | None = None,
     fact_channel_names: dict[int, str] | None = None,
 ) -> SynthesisResult | None:
-    """Ask the LLM `model` to answer question from facts, or return None on any failure.
+    """Ask a model to answer a question from a set of facts.
 
-    `model` is the already-resolved model string for the calling trigger (see
-    Settings.resolve_model); it is passed in rather than read here so there is
-    exactly one model-resolution seam in the codebase and this shared function
-    serves both triggers without knowing which one called it.
+    Parameters
+    ----------
+    facts
+        The retrieved facts, already bounded by the caller. These are the ONLY
+        content the model may draw on.
+    question
+        The user's message, fenced and labelled as untrusted in the prompt.
+    locale
+        The language the answer must be written in.
+    model
+        The already-resolved model string for the calling trigger (see
+        `Settings.resolve_model`), passed in rather than read here so there is
+        exactly one model-resolution seam in the codebase.
+    question_channel_name, question_asked_at
+        Optional, both-or-nothing channel context for the question.
+    fact_channel_names
+        Optional per-CHANNEL name mapping for the facts. Omit all three and the
+        prompt is unchanged from before they existed.
 
-    The three channel-context parameters are optional, and deliberately don't
-    take a discord.py object directly: this function stays Discord-connection-
-    free and independently testable per CLAUDE.md's testing philosophy, so
-    each caller (aura.commands.ask, aura.proactive.responder) resolves its own
-    channel objects to plain strings/dicts via aura.discord_context first. Omit
-    them entirely and the prompt this function builds is unchanged from before
-    they existed -- see _build_messages.
+    Returns
+    -------
+    SynthesisResult or None
+        The answer, the real fact IDs it used, and the model's own
+        `answers_question` self-assessment; None on any failure.
 
-    Never raises: a hallucinated citation, malformed JSON, empty content, a
-    network error, an auth failure, and a timeout are all real, expected
-    failure modes here -- not hypotheticals -- and every one of them is
-    caught and turned into a clean None, so the caller can show one
-    consistent, localized error message (Trigger 1) or simply stay silent
-    (Trigger 2) instead of a raw exception.
+    Notes
+    -----
+    Never raises. A hallucinated citation, malformed JSON, empty content, a
+    network error, an auth failure and a timeout are all real, expected failure
+    modes here -- not hypotheticals -- and every one is caught and turned into a
+    clean None, so the caller can show one consistent, localized error message
+    (Trigger 1) or simply stay silent (Trigger 2) instead of a raw exception.
+
+    The three channel-context parameters deliberately do not take a discord.py
+    object: this function stays Discord-connection-free and independently
+    testable per CLAUDE.md's testing philosophy, so each caller resolves its own
+    channel objects to plain strings and dicts via `aura.discord_context` first.
     """
     settings = load_settings()
 

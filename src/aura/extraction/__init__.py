@@ -25,6 +25,7 @@ something only /aura-supersede does, run by a human. See reports/phase-3a-2.txt
 and reports/phase-3a-3.txt for what each call was measured to actually do,
 including where each is still weak.
 """
+
 from aura.extraction.distiller import DistilledFact, distill_facts
 from aura.extraction.fact_worthiness import (
     FACT_WORTHY_EXEMPLARS,
@@ -49,8 +50,8 @@ __all__ = [
     "create_fact_worthiness_detector",
     "distill_facts",
     "flush_due_batches",
-    "judge_relationship",
     "handle_extraction_message",
+    "judge_relationship",
     "run_extraction_sweeper",
     "should_extract",
     "sweep_interval_seconds",

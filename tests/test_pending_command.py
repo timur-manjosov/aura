@@ -11,6 +11,7 @@ the data-level guarantee it depends on lives in tests/test_pending_facts.py.
 Both are needed: the database decides the outcome, and this file is what proves
 the command surfaces that decision instead of claiming success anyway.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -145,9 +146,7 @@ class TestEmptyQueue:
         assert kwargs["ephemeral"] is True
         assert "embed" not in kwargs
 
-    async def test_another_guilds_candidates_do_not_count(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_another_guilds_candidates_do_not_count(self, conn: aiosqlite.Connection) -> None:
         await _stage(conn, guild_id=GUILD_B)
         interaction = _make_interaction(db=conn, guild_id=GUILD_A)
         await pending_command.callback(interaction)
@@ -177,12 +176,14 @@ class TestShowingACandidate:
     ) -> None:
         # A moderator confirming a machine-written sentence has to be able to
         # read what it was written from, in one click.
-        candidate = await _stage(conn, message_id=98765)
+        await _stage(conn, message_id=98765)
         interaction = _make_interaction(db=conn)
         await pending_command.callback(interaction)
 
         embed = interaction.response.send_message.call_args.kwargs["embed"]
-        links = [field.value for field in embed.fields if "discord.com/channels" in str(field.value)]
+        links = [
+            field.value for field in embed.fields if "discord.com/channels" in str(field.value)
+        ]
         assert links
         assert f"/{GUILD_A}/{CHANNEL}/98765" in links[0]
 
@@ -340,9 +341,7 @@ class TestRelationshipDisplay:
     ) -> None:
         # A missing translation key renders as "[pending_relationship_x]", which
         # is what this catches for all four values at once.
-        embed = await self._render(
-            conn, relationship=relationship, embedding_model=embedding_model
-        )
+        embed = await self._render(conn, relationship=relationship, embedding_model=embedding_model)
         rendered = self._rendered(embed)
         assert "[pending_relationship" not in rendered
 
@@ -355,9 +354,8 @@ class TestRelationshipDisplay:
             reasoning="Der Wartungstag wurde von Dienstag auf Mittwoch verschoben.",
             embedding_model=embedding_model,
         )
-        assert (
-            "Der Wartungstag wurde von Dienstag auf Mittwoch verschoben."
-            in self._rendered(embed)
+        assert "Der Wartungstag wurde von Dienstag auf Mittwoch verschoben." in self._rendered(
+            embed
         )
 
     async def test_a_contradiction_is_the_only_one_that_colours_the_embed(
@@ -381,9 +379,7 @@ class TestRelationshipDisplay:
     async def test_the_other_three_leave_the_embed_uncoloured(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding, relationship
     ) -> None:
-        embed = await self._render(
-            conn, relationship=relationship, embedding_model=embedding_model
-        )
+        embed = await self._render(conn, relationship=relationship, embedding_model=embedding_model)
         assert embed.colour is None
 
     async def test_a_contradiction_carries_a_warning_icon_the_others_do_not(
@@ -407,9 +403,7 @@ class TestRelationshipDisplay:
     async def test_the_other_three_carry_no_warning_icon(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding, relationship
     ) -> None:
-        embed = await self._render(
-            conn, relationship=relationship, embedding_model=embedding_model
-        )
+        embed = await self._render(conn, relationship=relationship, embedding_model=embedding_model)
         assert not any("⚠" in str(field.name) for field in embed.fields)
 
     @pytest.mark.parametrize("locale", ["en-US", "de", "ja"])
@@ -518,9 +512,7 @@ class TestConfirmButton:
         assert resolved is not None
         assert resolved.resolved_by_id == MOD_A
 
-    async def test_a_double_click_on_one_view_acts_once(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_double_click_on_one_view_acts_once(self, conn: aiosqlite.Connection) -> None:
         # A client can send two component interactions before the first
         # edit_message propagates back. _resolved is checked and set with no
         # await in between, so the second cannot also act.
@@ -607,9 +599,7 @@ class TestTwoModeratorRace:
 
 
 class TestViewAuthorization:
-    async def test_another_user_cannot_press_the_buttons(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_another_user_cannot_press_the_buttons(self, conn: aiosqlite.Connection) -> None:
         candidate = await _stage(conn)
         view = _view(conn, candidate, invoker_id=MOD_A)
         intruder = _make_interaction(db=conn, user_id=MOD_B)
@@ -627,9 +617,7 @@ class TestViewAuthorization:
 
 
 class TestTimeout:
-    async def test_a_timeout_leaves_the_candidate_pending(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_timeout_leaves_the_candidate_pending(self, conn: aiosqlite.Connection) -> None:
         candidate = await _stage(conn)
         view = _view(conn, candidate)
         view.message = MagicMock()

@@ -16,11 +16,12 @@ Nothing here touches a real Discord connection, and nothing here waits: `sleep`
 is injected into fetch_history_page for exactly that reason, and every fake
 below is the smallest object the code under test actually reaches into.
 """
+
 from __future__ import annotations
 
 import logging
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import discord
@@ -34,7 +35,7 @@ from aura.backfill.history import (
 )
 
 CHANNEL_A = 300000000000000003
-EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
+EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _message(message_id: int, *, created_at: datetime | None = None) -> MagicMock:
@@ -59,7 +60,7 @@ class _FakeHistory:
         self._pages = pages
         self.calls: list[dict[str, object]] = []
 
-    def __call__(self, **kwargs: object) -> "_FakeHistory._Iterator":
+    def __call__(self, **kwargs: object) -> _FakeHistory._Iterator:
         self.calls.append(kwargs)
         page = self._pages[min(len(self.calls) - 1, len(self._pages) - 1)]
         return _FakeHistory._Iterator(page)
@@ -69,7 +70,7 @@ class _FakeHistory:
             self._page = page
             self._index = 0
 
-        def __aiter__(self) -> "_FakeHistory._Iterator":
+        def __aiter__(self) -> _FakeHistory._Iterator:
             return self
 
         async def __anext__(self) -> MagicMock:
@@ -187,9 +188,7 @@ class TestOrderedPage:
         older_id_newer_time = _message(1, created_at=EPOCH + timedelta(days=2))
         newer_id_older_time = _message(2, created_at=EPOCH + timedelta(days=1))
 
-        result = ordered_page(
-            [older_id_newer_time, newer_id_older_time], after_message_id=None
-        )
+        result = ordered_page([older_id_newer_time, newer_id_older_time], after_message_id=None)
 
         assert [m.id for m in result] == [2, 1]
 
@@ -229,9 +228,7 @@ class TestFetching:
     async def test_the_bounds_are_passed_to_discord_as_snowflake_objects(self) -> None:
         channel = _channel([[]])
 
-        await fetch_history_page(
-            channel, after_message_id=42, before_message_id=99, limit=100
-        )
+        await fetch_history_page(channel, after_message_id=42, before_message_id=99, limit=100)
 
         call = channel.history.calls[0]
         assert call["oldest_first"] is True
@@ -242,9 +239,7 @@ class TestFetching:
     async def test_no_lower_bound_is_passed_as_none_not_as_zero(self) -> None:
         channel = _channel([[]])
 
-        await fetch_history_page(
-            channel, after_message_id=None, before_message_id=99, limit=100
-        )
+        await fetch_history_page(channel, after_message_id=None, before_message_id=99, limit=100)
 
         assert channel.history.calls[0]["after"] is None
 
@@ -252,16 +247,17 @@ class TestFetching:
         """Empty means 'the history is exhausted'; None means 'the fetch failed'."""
         channel = _channel([[]])
 
-        assert await fetch_history_page(
-            channel, after_message_id=None, before_message_id=99, limit=100
-        ) == []
+        assert (
+            await fetch_history_page(
+                channel, after_message_id=None, before_message_id=99, limit=100
+            )
+            == []
+        )
 
 
 class TestPermanentFailures:
     @pytest.mark.parametrize("status", [403, 404])
-    async def test_forbidden_and_not_found_end_the_run_rather_than_retrying(
-        self, status
-    ) -> None:
+    async def test_forbidden_and_not_found_end_the_run_rather_than_retrying(self, status) -> None:
         response = MagicMock()
         response.status = status
         response.reason = "test"

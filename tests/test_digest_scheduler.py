@@ -10,12 +10,13 @@ guild), which is what makes the release-and-retry behaviour observable at all:
 the interesting property is not "a digest was posted" but "the window is still
 open afterwards".
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from unittest.mock import patch
 
@@ -38,7 +39,7 @@ CHANNEL_A = 300000000000000003
 CHANNEL_B = 400000000000000004
 MODERATOR = 4242
 
-NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 16, 12, 0, 0, tzinfo=UTC)
 WEEK = int(DigestInterval.WEEKLY)
 DAY = int(DigestInterval.DAILY)
 
@@ -55,7 +56,9 @@ class SentMessage:
 class FakeChannel:
     """The smallest thing the scheduler needs a channel to be."""
 
-    def __init__(self, channel_id: int, guild_id: int, sink: list[SentMessage], *, locale: str = "en-US") -> None:
+    def __init__(
+        self, channel_id: int, guild_id: int, sink: list[SentMessage], *, locale: str = "en-US"
+    ) -> None:
         self.id = channel_id
         self.guild = FakeGuild(guild_id, locale)
         self._sink = sink
@@ -149,8 +152,14 @@ async def add_fact(
             (guild_id, channel_id, message_id, content, embedding, status, created_at)
         VALUES (?, ?, ?, ?, ?, 'active', ?)
         """,
-        (guild_id, CHANNEL_A, next(_next_message_id), content, b"\x00\x00\x00\x00",
-         utc_iso(created_at)),
+        (
+            guild_id,
+            CHANNEL_A,
+            next(_next_message_id),
+            content,
+            b"\x00\x00\x00\x00",
+            utc_iso(created_at),
+        ),
     )
     await conn.commit()
     assert cursor.lastrowid is not None
@@ -205,8 +214,12 @@ class TestDueness:
         await ready_guild(conn, gateway)
 
         await send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced())
-        await send_due_digests(conn, gateway, now=NOW + timedelta(hours=1), plan_gate=PlanGate.unenforced())
-        await send_due_digests(conn, gateway, now=NOW + timedelta(hours=6), plan_gate=PlanGate.unenforced())
+        await send_due_digests(
+            conn, gateway, now=NOW + timedelta(hours=1), plan_gate=PlanGate.unenforced()
+        )
+        await send_due_digests(
+            conn, gateway, now=NOW + timedelta(hours=6), plan_gate=PlanGate.unenforced()
+        )
 
         assert len(gateway.sent) == 1
 
@@ -220,12 +233,12 @@ class TestDueness:
         later = NOW + timedelta(days=7, minutes=1)
         await add_fact(conn, content="Something else.", created_at=later - timedelta(hours=1))
 
-        assert await send_due_digests(conn, gateway, now=later, plan_gate=PlanGate.unenforced()) == 1
+        assert (
+            await send_due_digests(conn, gateway, now=later, plan_gate=PlanGate.unenforced()) == 1
+        )
         assert len(gateway.sent) == 2
 
-    async def test_a_disabled_guild_is_never_evaluated(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_disabled_guild_is_never_evaluated(self, conn: aiosqlite.Connection) -> None:
         gateway = FakeGateway()
         await ready_guild(conn, gateway)
         await configure(conn, enabled=False)
@@ -242,7 +255,9 @@ class TestDueness:
 
     async def test_a_naive_now_is_refused(self, conn: aiosqlite.Connection) -> None:
         with pytest.raises(ValueError, match="timezone-aware"):
-            await send_due_digests(conn, FakeGateway(), now=NOW.replace(tzinfo=None), plan_gate=PlanGate.unenforced())
+            await send_due_digests(
+                conn, FakeGateway(), now=NOW.replace(tzinfo=None), plan_gate=PlanGate.unenforced()
+            )
 
 
 class TestTheFirstDigest:
@@ -284,7 +299,9 @@ class TestTheFirstDigest:
         await configure(conn)
         await backdate_enabled_at(conn, moment=NOW + timedelta(days=30))
 
-        posted = await send_due_digests(conn, gateway, now=NOW + timedelta(days=38), plan_gate=PlanGate.unenforced())
+        posted = await send_due_digests(
+            conn, gateway, now=NOW + timedelta(days=38), plan_gate=PlanGate.unenforced()
+        )
 
         assert posted == 0
         assert len(gateway.sent) == 1  # still just the original one
@@ -312,7 +329,12 @@ class TestEmptyDigests:
         assert [run.outcome for run in runs] == [DigestRunOutcome.SKIPPED_EMPTY]
 
         await add_fact(conn, content="Something new.", created_at=NOW + timedelta(hours=1))
-        assert await send_due_digests(conn, gateway, now=NOW + timedelta(hours=2), plan_gate=PlanGate.unenforced()) == 0
+        assert (
+            await send_due_digests(
+                conn, gateway, now=NOW + timedelta(hours=2), plan_gate=PlanGate.unenforced()
+            )
+            == 0
+        )
 
     async def test_the_skipped_window_is_covered_by_the_following_digest(
         self, conn: aiosqlite.Connection
@@ -321,9 +343,19 @@ class TestEmptyDigests:
         await ready_guild(conn, gateway, with_content=False)
         await send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced())
 
-        await add_fact(conn, content="Arrived during the quiet week.", created_at=NOW + timedelta(hours=1))
+        await add_fact(
+            conn, content="Arrived during the quiet week.", created_at=NOW + timedelta(hours=1)
+        )
 
-        assert await send_due_digests(conn, gateway, now=NOW + timedelta(days=7, minutes=1), plan_gate=PlanGate.unenforced()) == 1
+        assert (
+            await send_due_digests(
+                conn,
+                gateway,
+                now=NOW + timedelta(days=7, minutes=1),
+                plan_gate=PlanGate.unenforced(),
+            )
+            == 1
+        )
         assert "Arrived during the quiet week." in str(gateway.sent[0].embed.fields[0].value)
 
 
@@ -362,7 +394,12 @@ class TestDowntime:
 
         await send_due_digests(conn, gateway, now=back_up, plan_gate=PlanGate.unenforced())
         for minutes in (1, 30, 90, 600):
-            await send_due_digests(conn, gateway, now=back_up + timedelta(minutes=minutes), plan_gate=PlanGate.unenforced())
+            await send_due_digests(
+                conn,
+                gateway,
+                now=back_up + timedelta(minutes=minutes),
+                plan_gate=PlanGate.unenforced(),
+            )
 
         assert len(gateway.sent) == 2
         runs = await get_digest_runs(conn, guild_id=GUILD_A, limit=20)
@@ -379,7 +416,9 @@ class TestDowntime:
         for week in range(1, 6):
             await add_fact(conn, content=f"week {week}", created_at=NOW + timedelta(weeks=week))
 
-        await send_due_digests(conn, gateway, now=NOW + timedelta(weeks=6), plan_gate=PlanGate.unenforced())
+        await send_due_digests(
+            conn, gateway, now=NOW + timedelta(weeks=6), plan_gate=PlanGate.unenforced()
+        )
 
         listed = str(gateway.sent[1].embed.fields[0].value)
         for week in range(1, 6):
@@ -391,8 +430,12 @@ class TestDowntime:
         gateway = FakeGateway()
         await ready_guild(conn, gateway, with_content=False)
 
-        await send_due_digests(conn, gateway, now=NOW + timedelta(weeks=6), plan_gate=PlanGate.unenforced())
-        await send_due_digests(conn, gateway, now=NOW + timedelta(weeks=6, hours=1), plan_gate=PlanGate.unenforced())
+        await send_due_digests(
+            conn, gateway, now=NOW + timedelta(weeks=6), plan_gate=PlanGate.unenforced()
+        )
+        await send_due_digests(
+            conn, gateway, now=NOW + timedelta(weeks=6, hours=1), plan_gate=PlanGate.unenforced()
+        )
 
         runs = await get_digest_runs(conn, guild_id=GUILD_A, limit=10)
         assert [run.outcome for run in runs] == [DigestRunOutcome.SKIPPED_EMPTY]
@@ -412,9 +455,24 @@ class TestTwoGuilds:
         assert await send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced()) == 2
 
         # ...and then the daily one alone comes due the next day.
-        await add_fact(conn, content="A day later.", created_at=NOW + timedelta(hours=20), guild_id=GUILD_A)
-        await add_fact(conn, content="Also a day later.", created_at=NOW + timedelta(hours=20), guild_id=GUILD_B)
-        assert await send_due_digests(conn, gateway, now=NOW + timedelta(days=1, minutes=1), plan_gate=PlanGate.unenforced()) == 1
+        await add_fact(
+            conn, content="A day later.", created_at=NOW + timedelta(hours=20), guild_id=GUILD_A
+        )
+        await add_fact(
+            conn,
+            content="Also a day later.",
+            created_at=NOW + timedelta(hours=20),
+            guild_id=GUILD_B,
+        )
+        assert (
+            await send_due_digests(
+                conn,
+                gateway,
+                now=NOW + timedelta(days=1, minutes=1),
+                plan_gate=PlanGate.unenforced(),
+            )
+            == 1
+        )
         assert gateway.sent[-1].channel_id == CHANNEL_A
 
     async def test_one_guilds_digest_never_contains_anothers_facts(
@@ -423,12 +481,18 @@ class TestTwoGuilds:
         gateway = FakeGateway()
         await ready_guild(conn, gateway, guild_id=GUILD_A, channel_id=CHANNEL_A)
         await ready_guild(conn, gateway, guild_id=GUILD_B, channel_id=CHANNEL_B)
-        await add_fact(conn, content="Guild A secret.", created_at=NOW - timedelta(days=1), guild_id=GUILD_A)
-        await add_fact(conn, content="Guild B secret.", created_at=NOW - timedelta(days=1), guild_id=GUILD_B)
+        await add_fact(
+            conn, content="Guild A secret.", created_at=NOW - timedelta(days=1), guild_id=GUILD_A
+        )
+        await add_fact(
+            conn, content="Guild B secret.", created_at=NOW - timedelta(days=1), guild_id=GUILD_B
+        )
 
         await send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced())
 
-        by_channel = {message.channel_id: str(message.embed.fields[0].value) for message in gateway.sent}
+        by_channel = {
+            message.channel_id: str(message.embed.fields[0].value) for message in gateway.sent
+        }
         assert "Guild A secret." in by_channel[CHANNEL_A]
         assert "Guild B secret." not in by_channel[CHANNEL_A]
         assert "Guild B secret." in by_channel[CHANNEL_B]
@@ -475,7 +539,9 @@ class TestPostFailures:
         del gateway.channels[CHANNEL_A]  # deleted, or Aura's access revoked
 
         with caplog.at_level(logging.WARNING):
-            assert await send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced()) == 0
+            assert (
+                await send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced()) == 0
+            )
 
         assert await get_digest_runs(conn, guild_id=GUILD_A, limit=5) == []
         assert any("unavailable" in record.getMessage() for record in caplog.records)
@@ -491,7 +557,12 @@ class TestPostFailures:
         # A moderator fixes the channel; the next hourly tick must post the same
         # window rather than skipping a week's worth of changes.
         gateway.channels[CHANNEL_A] = channel
-        assert await send_due_digests(conn, gateway, now=NOW + timedelta(hours=1), plan_gate=PlanGate.unenforced()) == 1
+        assert (
+            await send_due_digests(
+                conn, gateway, now=NOW + timedelta(hours=1), plan_gate=PlanGate.unenforced()
+            )
+            == 1
+        )
         assert len(gateway.sent) == 1
         assert "Movie night is on Fridays." in str(gateway.sent[0].embed.fields[0].value)
 
@@ -503,13 +574,20 @@ class TestPostFailures:
         channel.raises = RuntimeError("Discord returned 503")
 
         with caplog.at_level(logging.ERROR):
-            assert await send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced()) == 0
+            assert (
+                await send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced()) == 0
+            )
 
         runs = await get_digest_runs(conn, guild_id=GUILD_A, limit=5)
         assert [run.outcome for run in runs] == [DigestRunOutcome.POST_FAILED]
 
         channel.raises = None
-        assert await send_due_digests(conn, gateway, now=NOW + timedelta(hours=1), plan_gate=PlanGate.unenforced()) == 1
+        assert (
+            await send_due_digests(
+                conn, gateway, now=NOW + timedelta(hours=1), plan_gate=PlanGate.unenforced()
+            )
+            == 1
+        )
 
     async def test_a_permanently_broken_channel_does_not_accumulate_bookkeeping(
         self, conn: aiosqlite.Connection
@@ -522,7 +600,9 @@ class TestPostFailures:
         del gateway.channels[CHANNEL_A]
 
         for hour in range(10):
-            await send_due_digests(conn, gateway, now=NOW + timedelta(hours=hour), plan_gate=PlanGate.unenforced())
+            await send_due_digests(
+                conn, gateway, now=NOW + timedelta(hours=hour), plan_gate=PlanGate.unenforced()
+            )
 
         assert gateway.sent == []
         assert await get_digest_runs(conn, guild_id=GUILD_A, limit=50) == []
@@ -538,7 +618,9 @@ class TestPostFailures:
         channel.raises = RuntimeError("send forbidden")
 
         for hour in range(5):
-            await send_due_digests(conn, gateway, now=NOW + timedelta(hours=hour), plan_gate=PlanGate.unenforced())
+            await send_due_digests(
+                conn, gateway, now=NOW + timedelta(hours=hour), plan_gate=PlanGate.unenforced()
+            )
 
         assert gateway.sent == []
         runs = await get_digest_runs(conn, guild_id=GUILD_A, limit=50)
@@ -546,7 +628,12 @@ class TestPostFailures:
         assert all(run.outcome is DigestRunOutcome.POST_FAILED for run in runs)
 
         channel.raises = None
-        assert await send_due_digests(conn, gateway, now=NOW + timedelta(hours=5), plan_gate=PlanGate.unenforced()) == 1
+        assert (
+            await send_due_digests(
+                conn, gateway, now=NOW + timedelta(hours=5), plan_gate=PlanGate.unenforced()
+            )
+            == 1
+        )
         assert len(gateway.sent) == 1
 
     async def test_a_channel_belonging_to_another_guild_is_refused(
@@ -559,7 +646,9 @@ class TestPostFailures:
         gateway.channels[CHANNEL_A] = FakeChannel(CHANNEL_A, GUILD_B, gateway.sent)
 
         with caplog.at_level(logging.ERROR):
-            assert await send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced()) == 0
+            assert (
+                await send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced()) == 0
+            )
 
         assert gateway.sent == []
         assert any("belongs to guild" in record.getMessage() for record in caplog.records)
@@ -579,7 +668,9 @@ class TestClockSafety:
         # An NTP correction moves the clock a year back. The window would end
         # before it starts, which must not be written.
         with caplog.at_level(logging.WARNING):
-            posted = await send_due_digests(conn, gateway, now=NOW - timedelta(days=365), plan_gate=PlanGate.unenforced())
+            posted = await send_due_digests(
+                conn, gateway, now=NOW - timedelta(days=365), plan_gate=PlanGate.unenforced()
+            )
 
         assert posted == 0
         assert any("clock" in record.getMessage() for record in caplog.records)
@@ -591,10 +682,17 @@ class TestClockSafety:
         gateway = FakeGateway()
         await ready_guild(conn, gateway)
         await send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced())
-        await send_due_digests(conn, gateway, now=NOW - timedelta(days=365), plan_gate=PlanGate.unenforced())
+        await send_due_digests(
+            conn, gateway, now=NOW - timedelta(days=365), plan_gate=PlanGate.unenforced()
+        )
 
         await add_fact(conn, content="After the correction.", created_at=NOW + timedelta(days=8))
-        assert await send_due_digests(conn, gateway, now=NOW + timedelta(days=9), plan_gate=PlanGate.unenforced()) == 1
+        assert (
+            await send_due_digests(
+                conn, gateway, now=NOW + timedelta(days=9), plan_gate=PlanGate.unenforced()
+            )
+            == 1
+        )
 
 
 class TestConcurrentTicks:
@@ -609,7 +707,10 @@ class TestConcurrentTicks:
         await ready_guild(conn, gateway)
 
         results = await asyncio.gather(
-            *(send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced()) for _ in range(5))
+            *(
+                send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced())
+                for _ in range(5)
+            )
         )
 
         assert sum(results) == 1
@@ -630,7 +731,9 @@ class TestCorruptBookkeeping:
         await conn.commit()
 
         with caplog.at_level(logging.WARNING):
-            posted = await send_due_digests(conn, gateway, now=NOW + timedelta(days=30), plan_gate=PlanGate.unenforced())
+            posted = await send_due_digests(
+                conn, gateway, now=NOW + timedelta(days=30), plan_gate=PlanGate.unenforced()
+            )
 
         assert posted == 0
         assert len(gateway.sent) == 1
@@ -648,9 +751,13 @@ class TestCorruptBookkeeping:
             (GUILD_A,),
         )
         await conn.commit()
-        await add_fact(conn, content="Later fact.", created_at=NOW + timedelta(days=20), guild_id=GUILD_B)
+        await add_fact(
+            conn, content="Later fact.", created_at=NOW + timedelta(days=20), guild_id=GUILD_B
+        )
 
-        posted = await send_due_digests(conn, gateway, now=NOW + timedelta(days=30), plan_gate=PlanGate.unenforced())
+        posted = await send_due_digests(
+            conn, gateway, now=NOW + timedelta(days=30), plan_gate=PlanGate.unenforced()
+        )
 
         assert posted == 1
         assert gateway.sent[-1].channel_id == CHANNEL_B
@@ -691,7 +798,9 @@ class TestWindowStart:
 
 class TestTheLoop:
     def _settings(self, interval: float = 1800.0) -> Settings:
-        return Settings(_env_file=None, discord_token="fake-token", digest_check_interval_seconds=interval)  # type: ignore[call-arg]
+        return Settings(
+            _env_file=None, discord_token="fake-token", digest_check_interval_seconds=interval
+        )  # type: ignore[call-arg]
 
     async def test_a_failing_sweep_does_not_end_the_loop(
         self, conn: aiosqlite.Connection, caplog: pytest.LogCaptureFixture
@@ -718,7 +827,10 @@ class TestTheLoop:
                 with caplog.at_level(logging.ERROR):
                     with pytest.raises(asyncio.CancelledError):
                         await run_digest_scheduler(
-                            conn, FakeGateway(), settings=self._settings(), plan_gate=PlanGate.unenforced()
+                            conn,
+                            FakeGateway(),
+                            settings=self._settings(),
+                            plan_gate=PlanGate.unenforced(),
                         )
 
         assert len(sweeps) == 3  # kept going after the failure
@@ -735,7 +847,12 @@ class TestTheLoop:
 
         with patch("aura.digest.scheduler.asyncio.sleep", fake_sleep):
             with pytest.raises(asyncio.CancelledError):
-                await run_digest_scheduler(conn, FakeGateway(), settings=self._settings(120.0), plan_gate=PlanGate.unenforced())
+                await run_digest_scheduler(
+                    conn,
+                    FakeGateway(),
+                    settings=self._settings(120.0),
+                    plan_gate=PlanGate.unenforced(),
+                )
 
         assert sleeps == [120.0]
 
@@ -751,7 +868,9 @@ class TestTheLoop:
 
         with patch("aura.digest.scheduler.asyncio.sleep", fake_sleep):
             with pytest.raises(asyncio.CancelledError):
-                await run_digest_scheduler(conn, gateway, settings=self._settings(), plan_gate=PlanGate.unenforced())
+                await run_digest_scheduler(
+                    conn, gateway, settings=self._settings(), plan_gate=PlanGate.unenforced()
+                )
 
         assert len(gateway.sent) == 1
 
@@ -763,7 +882,9 @@ class TestPostedMessage:
         # impossible by construction rather than by where the text lands.
         gateway = FakeGateway()
         await ready_guild(conn, gateway, with_content=False)
-        await add_fact(conn, content="@everyone must read the rules.", created_at=NOW - timedelta(days=1))
+        await add_fact(
+            conn, content="@everyone must read the rules.", created_at=NOW - timedelta(days=1)
+        )
 
         await send_due_digests(conn, gateway, now=NOW, plan_gate=PlanGate.unenforced())
 

@@ -36,6 +36,7 @@ Access is a half-open interval: Pro while `now < access_until`, Free from
 `access_until` on. That single comparison is what makes "exactly at the
 boundary" a defined answer rather than an accident of `<` versus `<=`.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -173,12 +174,28 @@ class AccessWindow:
 
 
 def access_window(record: SubscriptionRecord, policy: GracePolicy) -> AccessWindow | None:
-    """The interval during which this one subscription grants Pro, or None if it never does.
+    """Return the interval during which one subscription grants Pro.
 
-    Deliberately time-independent: the window is a property of the record and
-    the policy, and "is it open right now" is a single comparison the caller
-    makes. That split is what lets a test pin the exact second a window closes
-    without faking a clock inside this function.
+    Parameters
+    ----------
+    record
+        The stored subscription.
+    policy
+        The grace periods to extend the paid period by.
+
+    Returns
+    -------
+    AccessWindow or None
+        The window and the standing it implies, or None if this subscription
+        never grants Pro -- collection paused, or its latest invoice written
+        off.
+
+    Notes
+    -----
+    Deliberately time-independent: the window is a property of the record and the
+    policy, and "is it open right now" is a single comparison the caller makes.
+    That split is what lets a test pin the exact second a window closes without
+    faking a clock inside this function.
     """
     if record.collection_paused:
         # Stripe voids or holds the invoices of a subscription whose collection
@@ -231,18 +248,48 @@ class SubscriptionStanding:
 
     @property
     def grants_access(self) -> bool:
-        """Whether any subscription grants Pro at this instant."""
+        """Report whether any subscription grants Pro at this instant.
+
+        Returns
+        -------
+        bool
+            True for ACTIVE, RENEWAL_PENDING, CANCELING and PAYMENT_GRACE. A
+            subscription that is ending still grants access until it actually ends.
+        """
         return self.standing in _GRANTING_STANDINGS
 
 
 def resolve_standing(
     records: Iterable[SubscriptionRecord], *, now: datetime, policy: GracePolicy
 ) -> SubscriptionStanding:
-    """Combine a guild's subscriptions into one standing at `now`.
+    """Combine a guild's subscriptions into one standing at a given instant.
 
-    Any one open window grants Pro. A guild with records but no open window
-    has ENDED rather than NO_SUBSCRIPTION, so an admin whose subscription
-    lapsed is told that, not told they never had one.
+    Parameters
+    ----------
+    records
+        Every subscription known for the guild. May be empty.
+    now
+        The instant to decide at. Must be timezone-aware.
+    policy
+        The grace periods.
+
+    Returns
+    -------
+    SubscriptionStanding
+        One standing for the guild, the subscription it describes, and every
+        subscription granting access right now -- more than one means the guild
+        is paying twice.
+
+    Raises
+    ------
+    ValueError
+        If `now` is naive.
+
+    Notes
+    -----
+    Any one open window grants Pro. A guild with records but no open window has
+    ENDED rather than NO_SUBSCRIPTION, so an admin whose subscription lapsed is
+    told that, not told they never had one.
     """
     _require_aware(now, "now")
     record_list = list(records)
@@ -279,7 +326,9 @@ def resolve_standing(
         access_until=shown.access_until,
         paid_through=shown.record.current_period_end,
         shown_subscription_id=shown.record.subscription_id,
-        granting_subscription_ids=frozenset(window.record.subscription_id for window in open_windows),
+        granting_subscription_ids=frozenset(
+            window.record.subscription_id for window in open_windows
+        ),
     )
 
 
@@ -309,7 +358,13 @@ class GuildPlan:
 
     @property
     def is_pro(self) -> bool:
-        """Whether Pro-only triggers may run for this guild right now."""
+        """Report whether Pro-only triggers may run for this guild right now.
+
+        Returns
+        -------
+        bool
+            Whether the decided tier is PRO, whatever the basis for it.
+        """
         return self.tier is PlanTier.PRO
 
 
@@ -322,10 +377,38 @@ def decide_plan(
     enforced: bool,
     complimentary: bool,
 ) -> GuildPlan:
-    """Decide one guild's plan. The standing is computed in every case, so it can be shown.
+    """Decide one guild's plan.
 
-    Computing it even when billing is not enforced is what lets a guild that
-    subscribed before enforcement was switched on see its subscription, and
+    Parameters
+    ----------
+    guild_id
+        Guild to decide for.
+    records
+        Every subscription known for it.
+    now
+        The instant to decide at. Must be timezone-aware.
+    policy
+        The grace periods.
+    enforced
+        Whether Free is an answer this deployment can give at all.
+    complimentary
+        Whether the operator has put this guild on Pro by decision.
+
+    Returns
+    -------
+    GuildPlan
+        The tier, the basis for it, and the full standing -- computed in every
+        case, including when billing is not enforced.
+
+    Raises
+    ------
+    ValueError
+        If `now` is naive, via `resolve_standing`.
+
+    Notes
+    -----
+    Computing the standing even when billing is not enforced is what lets a guild
+    that subscribed before enforcement was switched on see its subscription, and
     what lets the web backend refuse a second checkout for a guild that is
     already paying regardless of the deployment's mode.
     """

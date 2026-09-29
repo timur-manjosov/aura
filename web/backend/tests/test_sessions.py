@@ -4,9 +4,10 @@ Both stores are reachable by anyone who can hit /api/auth/login, so their
 bounds are a denial-of-service surface rather than housekeeping, and are
 tested as such.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -18,7 +19,7 @@ from aura_web.sessions import (
     constant_time_equals,
 )
 
-START = datetime(2026, 9, 12, 12, 0, 0, tzinfo=timezone.utc)
+START = datetime(2026, 9, 12, 12, 0, 0, tzinfo=UTC)
 
 
 class FrozenClock:

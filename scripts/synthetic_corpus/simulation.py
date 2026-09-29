@@ -18,6 +18,7 @@ Scoring runs once and produces raw numbers; every threshold question is then
 answered from those numbers (see `metrics`). So a hundred candidate thresholds
 cost one embedding pass between them, not a hundred.
 """
+
 from __future__ import annotations
 
 import logging
@@ -248,9 +249,10 @@ async def verify_gate_agreement(
             and case.stage2_top_score >= config.similarity_threshold
         )
 
-        if trail.stage1_passed == sweep_stage1_passed and bool(
-            trail.stage2_passed
-        ) == sweep_stage2_passed:
+        if (
+            trail.stage1_passed == sweep_stage1_passed
+            and bool(trail.stage2_passed) == sweep_stage2_passed
+        ):
             agreements += 1
         else:
             disagreements.append(

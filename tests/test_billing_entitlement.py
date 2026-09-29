@@ -5,9 +5,10 @@ neither too early nor unbounded". Every boundary below is therefore tested as a
 pair: one tick before it (still Pro) and exactly at it (Free). A rule that
 answered one tick early or one tick late would fail one half of its pair.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -24,7 +25,7 @@ from aura.billing.entitlement import (
     resolve_standing,
 )
 
-NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
 TICK = timedelta(microseconds=1)
 POLICY = GracePolicy(renewal_grace=timedelta(hours=72), payment_failure_grace=timedelta(days=7))
 GUILD = 100000000000000001
@@ -129,14 +130,20 @@ class TestSubscriptionSetToEnd:
         assert at(cancel_at - TICK, ending).grants_access
         assert not at(cancel_at, ending).grants_access
 
-    def test_a_cancel_date_already_in_the_past_is_free_even_if_status_still_says_active(self) -> None:
+    def test_a_cancel_date_already_in_the_past_is_free_even_if_status_still_says_active(
+        self,
+    ) -> None:
         """The deletion webhook has not arrived yet; the known end date still binds."""
         assert not at(NOW, record(cancel_at=NOW - timedelta(seconds=1))).grants_access
 
 
 class TestPaymentFailureGrace:
     def test_past_due_is_pro_for_exactly_seven_days_from_the_unpaid_period_start(self) -> None:
-        failed = record(status=SubscriptionStatus.PAST_DUE, current_period_start=NOW, current_period_end=NOW + timedelta(days=30))
+        failed = record(
+            status=SubscriptionStatus.PAST_DUE,
+            current_period_start=NOW,
+            current_period_end=NOW + timedelta(days=30),
+        )
         boundary = NOW + timedelta(days=7)
 
         assert at(boundary - TICK, failed).standing is Standing.PAYMENT_GRACE
@@ -144,11 +151,21 @@ class TestPaymentFailureGrace:
 
     def test_more_failed_retries_do_not_extend_the_grace(self) -> None:
         """A later snapshot of the same unpaid period carries the same period start."""
-        first_failure = record(status=SubscriptionStatus.PAST_DUE, current_period_start=NOW, version=1, confirmed_at=NOW)
-        fifth_failure = first_failure.model_copy(update={"version": 5, "confirmed_at": NOW + timedelta(days=6)})
+        first_failure = record(
+            status=SubscriptionStatus.PAST_DUE,
+            current_period_start=NOW,
+            version=1,
+            confirmed_at=NOW,
+        )
+        fifth_failure = first_failure.model_copy(
+            update={"version": 5, "confirmed_at": NOW + timedelta(days=6)}
+        )
 
         assert access_window(first_failure, POLICY) == access_window(first_failure, POLICY)
-        assert access_window(fifth_failure, POLICY).access_until == access_window(first_failure, POLICY).access_until  # type: ignore[union-attr]
+        assert (
+            access_window(fifth_failure, POLICY).access_until
+            == access_window(first_failure, POLICY).access_until
+        )  # type: ignore[union-attr]
         assert not at(NOW + timedelta(days=7), fifth_failure).grants_access
 
     def test_a_failure_first_heard_about_late_is_not_given_a_fresh_week(self) -> None:
@@ -161,7 +178,9 @@ class TestPaymentFailureGrace:
         assert not at(NOW, stale_failure).grants_access
 
     def test_payment_recovered_back_to_active_is_pro_again(self) -> None:
-        recovered = record(status=SubscriptionStatus.ACTIVE, current_period_start=NOW - timedelta(days=9))
+        recovered = record(
+            status=SubscriptionStatus.ACTIVE, current_period_start=NOW - timedelta(days=9)
+        )
 
         assert at(NOW, recovered).standing is Standing.ACTIVE
 
@@ -185,12 +204,18 @@ class TestStatusesThatNeverGrant:
         assert not at(NOW, record(collection_paused=True)).grants_access
 
     @pytest.mark.parametrize("invoice", [InvoiceStatus.VOID, InvoiceStatus.UNCOLLECTIBLE])
-    def test_a_written_off_invoice_is_free_although_the_status_reads_active(self, invoice: InvoiceStatus) -> None:
+    def test_a_written_off_invoice_is_free_although_the_status_reads_active(
+        self, invoice: InvoiceStatus
+    ) -> None:
         """Stripe: a delayed payment method failing after activation voids the invoice, status stays active."""
         assert not at(NOW, record(latest_invoice_status=invoice)).grants_access
 
-    @pytest.mark.parametrize("invoice", [InvoiceStatus.DRAFT, InvoiceStatus.OPEN, InvoiceStatus.PAID, None])
-    def test_an_invoice_still_in_flight_does_not_revoke(self, invoice: InvoiceStatus | None) -> None:
+    @pytest.mark.parametrize(
+        "invoice", [InvoiceStatus.DRAFT, InvoiceStatus.OPEN, InvoiceStatus.PAID, None]
+    )
+    def test_an_invoice_still_in_flight_does_not_revoke(
+        self, invoice: InvoiceStatus | None
+    ) -> None:
         """A renewal invoice is a draft for about an hour, then open until charged."""
         assert at(NOW, record(latest_invoice_status=invoice)).grants_access
 
@@ -218,7 +243,11 @@ class TestSeveralSubscriptions:
     def test_the_shown_standing_prefers_a_renewing_subscription_over_payment_grace(self) -> None:
         standing = at(
             NOW,
-            record(subscription_id="sub_failing", status=SubscriptionStatus.PAST_DUE, current_period_start=NOW),
+            record(
+                subscription_id="sub_failing",
+                status=SubscriptionStatus.PAST_DUE,
+                current_period_start=NOW,
+            ),
             record(subscription_id="sub_fine"),
         )
 
@@ -229,8 +258,12 @@ class TestSeveralSubscriptions:
 class TestDecidePlan:
     def test_not_enforced_is_pro_for_everyone_and_still_reports_the_standing(self) -> None:
         plan = decide_plan(
-            guild_id=GUILD, records=[record(status=SubscriptionStatus.CANCELED)], now=NOW,
-            policy=POLICY, enforced=False, complimentary=False,
+            guild_id=GUILD,
+            records=[record(status=SubscriptionStatus.CANCELED)],
+            now=NOW,
+            policy=POLICY,
+            enforced=False,
+            complimentary=False,
         )
 
         assert plan.tier is PlanTier.PRO
@@ -238,19 +271,30 @@ class TestDecidePlan:
         assert plan.standing.standing is Standing.ENDED
 
     def test_complimentary_is_pro_without_a_subscription(self) -> None:
-        plan = decide_plan(guild_id=GUILD, records=[], now=NOW, policy=POLICY, enforced=True, complimentary=True)
+        plan = decide_plan(
+            guild_id=GUILD, records=[], now=NOW, policy=POLICY, enforced=True, complimentary=True
+        )
 
         assert plan.is_pro
         assert plan.basis is PlanBasis.COMPLIMENTARY
 
     def test_enforced_without_a_granting_subscription_is_free(self) -> None:
-        plan = decide_plan(guild_id=GUILD, records=[], now=NOW, policy=POLICY, enforced=True, complimentary=False)
+        plan = decide_plan(
+            guild_id=GUILD, records=[], now=NOW, policy=POLICY, enforced=True, complimentary=False
+        )
 
         assert plan.tier is PlanTier.FREE
         assert not plan.is_pro
 
     def test_enforced_with_a_granting_subscription_is_pro(self) -> None:
-        plan = decide_plan(guild_id=GUILD, records=[record()], now=NOW, policy=POLICY, enforced=True, complimentary=False)
+        plan = decide_plan(
+            guild_id=GUILD,
+            records=[record()],
+            now=NOW,
+            policy=POLICY,
+            enforced=True,
+            complimentary=False,
+        )
 
         assert plan.is_pro
         assert plan.basis is PlanBasis.SUBSCRIPTION

@@ -10,10 +10,11 @@ The race tests use real asyncio.gather, and the restart tests use a real file
 on disk: an in-memory database cannot demonstrate durability, since closing it
 loses the data whether or not the design was durable.
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -33,7 +34,7 @@ from aura.facts_service import add_fact
 GUILD_A = 100000000000000001
 GUILD_B = 200000000000000002
 
-NOON = datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc)
+NOON = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -117,9 +118,7 @@ class TestAcquisition:
         async with conn.execute("SELECT COUNT(*) FROM variant_calls") as cursor:
             assert await cursor.fetchone() == (0,)
 
-    async def test_the_cap_is_per_guild(
-        self, conn: aiosqlite.Connection, embedding_model
-    ) -> None:
+    async def test_the_cap_is_per_guild(self, conn: aiosqlite.Connection, embedding_model) -> None:
         for message_id in range(1, 4):
             fact_id = await _fact(conn, embedding_model, message_id=message_id)
             await _acquire(conn, fact_id=fact_id)
@@ -202,9 +201,7 @@ class TestCapRaces:
         self, conn: aiosqlite.Connection, embedding_model
     ) -> None:
         facts = [await _fact(conn, embedding_model, message_id=i) for i in range(1, 21)]
-        attempts = await asyncio.gather(
-            *(_acquire(conn, fact_id=f, daily_cap=3) for f in facts)
-        )
+        attempts = await asyncio.gather(*(_acquire(conn, fact_id=f, daily_cap=3) for f in facts))
 
         assert len([a for a in attempts if a.granted]) == 3
         assert await count_variant_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOON)) == 3
@@ -213,9 +210,7 @@ class TestCapRaces:
         self, conn: aiosqlite.Connection, embedding_model
     ) -> None:
         facts = [await _fact(conn, embedding_model, message_id=i) for i in range(1, 31)]
-        attempts = await asyncio.gather(
-            *(_acquire(conn, fact_id=f, daily_cap=5) for f in facts)
-        )
+        attempts = await asyncio.gather(*(_acquire(conn, fact_id=f, daily_cap=5) for f in facts))
         granted_counts = sorted(a.daily_count for a in attempts if a.granted)
         assert granted_counts == [1, 2, 3, 4, 5]
 
@@ -223,9 +218,7 @@ class TestCapRaces:
         self, conn: aiosqlite.Connection, embedding_model
     ) -> None:
         facts = [await _fact(conn, embedding_model, message_id=i) for i in range(1, 21)]
-        attempts = await asyncio.gather(
-            *(_acquire(conn, fact_id=f, daily_cap=0) for f in facts)
-        )
+        attempts = await asyncio.gather(*(_acquire(conn, fact_id=f, daily_cap=0) for f in facts))
         assert not any(attempt.granted for attempt in attempts)
 
     async def test_two_guilds_racing_do_not_consume_each_others_budget(
@@ -247,9 +240,7 @@ class TestCapRaces:
 
 
 class TestRestartDurability:
-    async def test_a_spent_budget_survives_a_restart(
-        self, tmp_path: Path, embedding_model
-    ) -> None:
+    async def test_a_spent_budget_survives_a_restart(self, tmp_path: Path, embedding_model) -> None:
         database = tmp_path / "aura.db"
 
         first = await aiosqlite.connect(database)

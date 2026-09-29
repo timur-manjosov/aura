@@ -13,6 +13,7 @@ answers at the HTTP boundary: DiscordAuthError means this credential is no
 longer good (re-authenticate the user), DiscordUnavailableError means we
 could not find out (fail the request, keep the session).
 """
+
 from __future__ import annotations
 
 import logging
@@ -109,16 +110,16 @@ def _raise_for_status(response: httpx.Response, *, context: str) -> None:
     hardest.
     """
     if response.status_code in (401, 403):
-        raise DiscordAuthError(f"Discord rejected the credential for {context} (HTTP {response.status_code})")
+        raise DiscordAuthError(
+            f"Discord rejected the credential for {context} (HTTP {response.status_code})"
+        )
     if response.status_code == 429:
         retry_after = response.headers.get("Retry-After", "unknown")
         raise DiscordUnavailableError(
             f"Discord rate-limited {context} (retry after {retry_after}s)"
         )
     if response.status_code >= 400:
-        raise DiscordUnavailableError(
-            f"Discord returned HTTP {response.status_code} for {context}"
-        )
+        raise DiscordUnavailableError(f"Discord returned HTTP {response.status_code} for {context}")
 
 
 def _coerce_expires_in(raw: object) -> int:
@@ -180,7 +181,9 @@ def _parse_user_payload(payload: object) -> DiscordUser:
     username = sanitize_guild_name(raw_username, fallback=f"user-{user_id}")
     raw_global_name = payload.get("global_name")
     global_name = (
-        sanitize_guild_name(raw_global_name, fallback="") if isinstance(raw_global_name, str) else None
+        sanitize_guild_name(raw_global_name, fallback="")
+        if isinstance(raw_global_name, str)
+        else None
     )
 
     return DiscordUser(
@@ -246,6 +249,28 @@ class DiscordClient:
     async def exchange_code(self, code: str, redirect_uri: str) -> DiscordTokens:
         """Trade an authorization code for a token pair.
 
+        Parameters
+        ----------
+        code
+            The authorization code from the callback.
+        redirect_uri
+            The same redirect URI the authorization request used; Discord checks
+            that the two match.
+
+        Returns
+        -------
+        DiscordTokens
+            The access and refresh token pair.
+
+        Raises
+        ------
+        DiscordAuthError
+            When Discord rejects the credential itself.
+        DiscordAPIError
+            For a transport failure, a non-JSON body, or an unexpected status.
+
+        Notes
+        -----
         Client credentials go in HTTP Basic auth rather than the form body.
         Both are documented and accepted; Basic keeps the secret out of any
         request-body logging that httpx, a proxy, or a future debugging patch
@@ -264,6 +289,25 @@ class DiscordClient:
     async def refresh_tokens(self, refresh_token: str) -> DiscordTokens:
         """Exchange a refresh token for a fresh pair.
 
+        Parameters
+        ----------
+        refresh_token
+            The refresh token from a previous pair.
+
+        Returns
+        -------
+        DiscordTokens
+            A fresh pair. The old refresh token is spent.
+
+        Raises
+        ------
+        DiscordAuthError
+            When Discord rejects the credential itself.
+        DiscordAPIError
+            For a transport failure, a non-JSON body, or an unexpected status.
+
+        Notes
+        -----
         Scopes are not re-verified here: the exchange already proved them, and
         Discord's refresh response is documented to carry the same set. A
         missing-scope failure at this point would log the user out for a field
@@ -278,6 +322,19 @@ class DiscordClient:
     async def revoke_token(self, token: str) -> None:
         """Best-effort revocation of a token pair at logout.
 
+        Parameters
+        ----------
+        token
+            The token to revoke.
+
+        Returns
+        -------
+        None
+            Best-effort: a failure is logged and swallowed, because a logout that
+            could not reach Discord has still ended the session here.
+
+        Notes
+        -----
         Failures are logged and swallowed on purpose. Logout's contract to the
         user is "this browser is no longer logged in", which the session
         deletion has already satisfied by the time this runs; letting
@@ -299,7 +356,25 @@ class DiscordClient:
             logger.warning("Could not reach Discord to revoke a token at logout: %s", exc)
 
     async def fetch_current_user(self, access_token: str) -> DiscordUser:
-        """Read the identity behind a user access token (the ``identify`` scope)."""
+        """Read the identity behind a user access token (the ``identify`` scope).
+
+        Parameters
+        ----------
+        access_token
+            A user access token carrying the ``identify`` scope.
+
+        Returns
+        -------
+        DiscordUser
+            The identity behind the token.
+
+        Raises
+        ------
+        DiscordAuthError
+            When Discord rejects the credential itself.
+        DiscordAPIError
+            For a transport failure, a non-JSON body, or an unexpected status.
+        """
         payload = await self._get(
             "/users/@me",
             headers={"Authorization": f"Bearer {access_token}"},
@@ -308,7 +383,27 @@ class DiscordClient:
         return _parse_user_payload(payload)
 
     async def fetch_user_guilds(self, access_token: str) -> list[PartialGuild]:
-        """List the guilds a user belongs to, with their permission bitmask in each."""
+        """List the guilds a user belongs to, with their permission bitmask in each.
+
+        Parameters
+        ----------
+        access_token
+            A user access token carrying the ``guilds`` scope.
+
+        Returns
+        -------
+        list[PartialGuild]
+            The guilds the user belongs to, each with their permission bitmask in
+            it. Entries Discord returns in an unusable shape are dropped rather
+            than failing the whole request.
+
+        Raises
+        ------
+        DiscordAuthError
+            When Discord rejects the credential itself.
+        DiscordAPIError
+            For a transport failure, a non-JSON body, or an unexpected status.
+        """
         return await self._paginate_guilds(
             headers={"Authorization": f"Bearer {access_token}"},
             context="/users/@me/guilds (user)",
@@ -317,6 +412,20 @@ class DiscordClient:
     async def fetch_bot_guild_ids(self) -> frozenset[str]:
         """List the guild IDs Aura itself is a member of.
 
+        Returns
+        -------
+        frozenset[str]
+            The guild IDs Aura itself is a member of.
+
+        Raises
+        ------
+        DiscordAuthError
+            When Discord rejects the credential itself.
+        DiscordAPIError
+            For a transport failure, a non-JSON body, or an unexpected status.
+
+        Notes
+        -----
         This is the question CLAUDE.md's knowledge model cannot answer and
         Discord can. Aura's database has no membership table -- every guild_id
         in it is a side effect of activity (a fact extracted, a channel
@@ -360,7 +469,9 @@ class DiscordClient:
         _raise_for_status(response, context=context)
         return _parse_json(response, context=context)
 
-    async def _paginate_guilds(self, *, headers: dict[str, str], context: str) -> list[PartialGuild]:
+    async def _paginate_guilds(
+        self, *, headers: dict[str, str], context: str
+    ) -> list[PartialGuild]:
         """Walk Discord's ``after``-cursor pagination to the end of a guild list.
 
         Three independent stop conditions, because relying on any one alone

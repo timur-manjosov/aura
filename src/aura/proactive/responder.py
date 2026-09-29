@@ -45,6 +45,7 @@ flip answers_question to true can, at most, affect that one field -- it can
 never make a message that failed the numeric gates reach this code at all,
 because this code only runs behind the gate's ELIGIBLE verdict.
 """
+
 from __future__ import annotations
 
 import logging
@@ -145,11 +146,30 @@ async def respond_with_synthesis(
 ) -> ProactiveResponseOutcome:
     """Synthesize an answer for an already-eligible message and post it, if confident.
 
-    Called only behind the gate's ELIGIBLE verdict -- by which point a budget
-    slot has already been spent for this message, whatever happens next. Returns
-    a ProactiveResponseOutcome the caller records onto the message's trail;
-    never raises for an expected failure (missing config, empty facts, a failed
-    LLM call, a rejected post), so the caller's single record path always runs.
+    Parameters
+    ----------
+    message
+        The message that cleared the gate.
+    db
+        Open database connection.
+    model
+        The loaded embedding model.
+    settings
+        Loaded configuration: which model to use, and whether one is configured
+        at all.
+
+    Returns
+    -------
+    ProactiveResponseOutcome
+        What happened, for the caller to record onto the message's trail. Never
+        raises for an expected failure -- missing config, empty facts, a failed
+        LLM call, a rejected post -- so the caller's single record path always
+        runs.
+
+    Notes
+    -----
+    Called only behind the gate's ELIGIBLE verdict, by which point a budget slot
+    has already been spent for this message, whatever happens next.
 
     The order of checks is the hard code-gate documented at module level:
     configured -> facts still present -> synthesis succeeded -> model confident
@@ -201,9 +221,7 @@ async def respond_with_synthesis(
     # already going to give but can never authorize one it wasn't. Nothing here
     # touches the budget either -- the escalation slot was spent upstream, and
     # this adds facts to one prompt, not a second call.
-    synthesis_facts = await expand_with_linked_facts(
-        db, guild_id=guild.id, facts=relevant_facts
-    )
+    synthesis_facts = await expand_with_linked_facts(db, guild_id=guild.id, facts=relevant_facts)
 
     # --- PROACTIVE_MODEL selection (CLAUDE.md: reason about the task, don't
     #     restate the criteria; document the evidence) -------------------------
@@ -264,9 +282,7 @@ async def respond_with_synthesis(
         model=proactive_model,
         question_channel_name=channel_display_name(channel, channel.id),
         question_asked_at=message.created_at,
-        fact_channel_names=fact_channel_names(
-            guild, {fact.channel_id for fact in synthesis_facts}
-        ),
+        fact_channel_names=fact_channel_names(guild, {fact.channel_id for fact in synthesis_facts}),
     )
 
     if result is None:
@@ -331,9 +347,7 @@ async def respond_with_synthesis(
         # channel was deleted, send permissions were revoked, Discord returned
         # an error. Fail closed -- no post recorded -- and let the caller record
         # the outcome. CancelledError is a BaseException and still propagates.
-        logger.exception(
-            "Proactive post failed in channel %s", getattr(channel, "id", "<unknown>")
-        )
+        logger.exception("Proactive post failed in channel %s", getattr(channel, "id", "<unknown>"))
         return ProactiveResponseOutcome(answers_question=result.answers_question, posted=False)
 
     return ProactiveResponseOutcome(answers_question=result.answers_question, posted=True)

@@ -10,10 +10,11 @@ The race tests use real asyncio.gather, and the restart tests use a real file
 on disk -- an in-memory database cannot demonstrate durability, since closing
 it loses the data whether or not the design was durable.
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -34,7 +35,7 @@ GUILD_B = 200000000000000002
 CHANNEL_A = 500000000000000005
 CHANNEL_B = 600000000000000006
 
-NOON = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+NOON = datetime(2026, 7, 30, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -64,9 +65,7 @@ async def _acquire(
 
 
 class TestAcquisition:
-    async def test_the_first_call_of_the_day_is_granted(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_the_first_call_of_the_day_is_granted(self, conn: aiosqlite.Connection) -> None:
         attempt = await _acquire(conn)
         assert attempt.granted
         assert attempt.outcome is ExtractionCallOutcome.GRANTED
@@ -82,9 +81,7 @@ class TestAcquisition:
             attempt = await _acquire(conn)
             assert attempt.daily_count == expected
 
-    async def test_the_cap_refuses_once_it_is_reached(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_the_cap_refuses_once_it_is_reached(self, conn: aiosqlite.Connection) -> None:
         for _ in range(3):
             assert (await _acquire(conn)).granted
 
@@ -94,9 +91,7 @@ class TestAcquisition:
         assert refused.daily_count == 3
         assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day=utc_day(NOON)) == 3
 
-    async def test_a_zero_cap_is_a_valid_off_switch(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_zero_cap_is_a_valid_off_switch(self, conn: aiosqlite.Connection) -> None:
         attempt = await _acquire(conn, daily_cap=0)
         assert not attempt.granted
         assert attempt.outcome is ExtractionCallOutcome.DAILY_CAP_REACHED
@@ -123,9 +118,7 @@ class TestAcquisition:
         assert (await _acquire(conn, channel_id=CHANNEL_B, daily_cap=2)).granted
         assert not (await _acquire(conn, channel_id=CHANNEL_B, daily_cap=2)).granted
 
-    async def test_the_cap_resets_on_the_next_utc_day(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_the_cap_resets_on_the_next_utc_day(self, conn: aiosqlite.Connection) -> None:
         for _ in range(3):
             await _acquire(conn)
         assert not (await _acquire(conn)).granted
@@ -143,12 +136,8 @@ class TestAcquisition:
         kolkata = ZoneInfo("Asia/Kolkata")
         late = datetime(2026, 7, 31, 1, 30, tzinfo=kolkata)
         await _acquire(conn, now=late)
-        assert await count_extraction_calls_on(
-            conn, guild_id=GUILD_A, day="2026-07-30"
-        ) == 1
-        assert await count_extraction_calls_on(
-            conn, guild_id=GUILD_A, day="2026-07-31"
-        ) == 0
+        assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day="2026-07-30") == 1
+        assert await count_extraction_calls_on(conn, guild_id=GUILD_A, day="2026-07-31") == 0
 
 
 class TestInputValidation:
@@ -169,9 +158,7 @@ class TestInputValidation:
         with pytest.raises(ValueError):
             await _acquire(conn, daily_cap=-1)
 
-    async def test_a_negative_message_count_is_refused(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_negative_message_count_is_refused(self, conn: aiosqlite.Connection) -> None:
         with pytest.raises(ValueError):
             await try_acquire_extraction_call_slot(
                 conn,
@@ -256,18 +243,14 @@ class TestRestartDurability:
         second = await aiosqlite.connect(database)
         await init_schema(second)
         try:
-            assert await count_extraction_calls_on(
-                second, guild_id=GUILD_A, day=utc_day(NOON)
-            ) == 3
+            assert await count_extraction_calls_on(second, guild_id=GUILD_A, day=utc_day(NOON)) == 3
             refused = await _acquire(second, daily_cap=3)
             assert not refused.granted
             assert refused.outcome is ExtractionCallOutcome.DAILY_CAP_REACHED
         finally:
             await second.close()
 
-    async def test_a_slot_claimed_before_a_crash_is_not_refunded(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_a_slot_claimed_before_a_crash_is_not_refunded(self, tmp_path: Path) -> None:
         # The deliberate conservative direction: a crash between claiming a
         # slot and finishing the batch spends the slot. For a spend limit,
         # erring toward "already spent" is the only safe way to err.

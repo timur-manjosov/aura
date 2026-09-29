@@ -12,6 +12,7 @@ correctly refuses to send a Secure cookie back over http. A test suite on
 http would therefore pass only if the Secure flag were missing -- it would
 quietly reward the bug it is supposed to catch.
 """
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
@@ -19,6 +20,8 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
+
+from aura_web.config import WebSettings
 from fake_bot_billing import FakeBotBillingState, create_fake_bot_billing
 from fake_discord import (
     PERMISSION_MANAGE_GUILD,
@@ -29,8 +32,6 @@ from fake_discord import (
 )
 from fake_stripe import FakeStripeState, create_fake_stripe
 from helpers import FAKE_BOT_BASE, FAKE_DISCORD_BASE, FAKE_STRIPE_BASE, FRONTEND_BASE, build_app
-
-from aura_web.config import WebSettings
 
 
 @pytest.fixture

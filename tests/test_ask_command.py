@@ -7,10 +7,11 @@ project's testing philosophy. synthesize_answer and litellm are always
 mocked here too (test_synthesis.py already covers the LLM call itself in
 depth) -- zero real API calls, zero cost, per this phase's hard constraint.
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -64,7 +65,7 @@ def _make_interaction(
     interaction.guild_id = guild_id
     interaction.user = MagicMock()
     interaction.user.id = user_id
-    interaction.created_at = datetime.now(timezone.utc)
+    interaction.created_at = datetime.now(UTC)
     interaction.client = MagicMock()
     interaction.client.db = db
     interaction.client.embedding_model = embedding_model
@@ -150,7 +151,11 @@ class TestBelowThresholdAndZeroFacts:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="we sell homemade candles on weekends",
         )
         # An all-but-impossible bar to clear with any real cosine score,
@@ -161,9 +166,7 @@ class TestBelowThresholdAndZeroFacts:
 
         mock_synth = AsyncMock()
         with patch("aura.commands.ask.synthesize_answer", mock_synth):
-            await _invoke_ask(
-                interaction, "completely unrelated question about martian weather"
-            )
+            await _invoke_ask(interaction, "completely unrelated question about martian weather")
 
         mock_synth.assert_not_awaited()
         interaction.followup.send.assert_awaited_once()
@@ -214,8 +217,7 @@ class TestCooldown:
     own never-reused user IDs to avoid cross-test interference."""
 
     async def test_second_call_within_window_from_same_user_is_rejected(self) -> None:
-        cooldown_check = ask_command.checks[0]
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         first = MagicMock(spec=discord.Interaction)
         first.user = MagicMock(id=900001)
@@ -230,8 +232,7 @@ class TestCooldown:
             await _call_cooldown_check(second)
 
     async def test_different_user_is_unaffected_by_first_users_cooldown(self) -> None:
-        cooldown_check = ask_command.checks[0]
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         first = MagicMock(spec=discord.Interaction)
         first.user = MagicMock(id=900002)
@@ -289,11 +290,19 @@ class TestGuildIsolation:
     ) -> None:
         identical_content = "the server rules were updated last week"
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content=identical_content,
         )
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_B, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_B,
+            channel_id=1,
+            message_id=1,
             content=identical_content,
         )
 
@@ -302,7 +311,9 @@ class TestGuildIsolation:
             db=conn, embedding_model=embedding_model, settings=settings, guild_id=GUILD_A
         )
 
-        mock_synth = AsyncMock(return_value=SynthesisResult(answer="ans", used_fact_ids=[], answers_question=True))
+        mock_synth = AsyncMock(
+            return_value=SynthesisResult(answer="ans", used_fact_ids=[], answers_question=True)
+        )
         with patch("aura.commands.ask.synthesize_answer", mock_synth):
             await _invoke_ask(interaction, identical_content)
 
@@ -317,11 +328,19 @@ class TestSuccessPath:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         cited = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=11, message_id=101,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=11,
+            message_id=101,
             content="the server was founded in 2020",
         )
         uncited = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=22, message_id=202,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=22,
+            message_id=202,
             content="the server's founding year is 2020",
         )
 
@@ -332,7 +351,9 @@ class TestSuccessPath:
         # retrieved and handed to synthesis -- only what the model actually
         # says it drew from becomes a source, not everything retrieved.
         fake_result = SynthesisResult(
-            answer="The server was founded in 2020.", used_fact_ids=[cited.id], answers_question=True
+            answer="The server was founded in 2020.",
+            used_fact_ids=[cited.id],
+            answers_question=True,
         )
         with patch("aura.commands.ask.synthesize_answer", AsyncMock(return_value=fake_result)):
             await _invoke_ask(interaction, "When was the server founded?")
@@ -351,7 +372,11 @@ class TestSuccessPath:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="a relevant fact",
         )
         settings = _fake_settings(similarity_threshold=0.0)
@@ -373,7 +398,11 @@ class TestSynthesisFailure:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="a relevant fact",
         )
         settings = _fake_settings(similarity_threshold=0.0)
@@ -393,7 +422,11 @@ class TestLocalePassedThrough:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="a relevant fact",
         )
         settings = _fake_settings(similarity_threshold=0.0)
@@ -401,7 +434,9 @@ class TestLocalePassedThrough:
             db=conn, embedding_model=embedding_model, settings=settings, locale="de"
         )
 
-        mock_synth = AsyncMock(return_value=SynthesisResult(answer="ans", used_fact_ids=[], answers_question=True))
+        mock_synth = AsyncMock(
+            return_value=SynthesisResult(answer="ans", used_fact_ids=[], answers_question=True)
+        )
         with patch("aura.commands.ask.synthesize_answer", mock_synth):
             await _invoke_ask(interaction, "a question")
 
@@ -416,7 +451,11 @@ class TestLocalePassedThrough:
         # resolves SYNTHESIS through Settings.resolve_model and passes it in, so
         # there is one model-resolution convention across both triggers.
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="a relevant fact",
         )
         settings = _fake_settings(
@@ -457,7 +496,11 @@ class TestGroundingCheck:
         cited: bool = True,
     ) -> MagicMock:
         fact = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=11, message_id=101,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=11,
+            message_id=101,
             content="the server was founded in 2020",
         )
         settings = _fake_settings(
@@ -479,9 +522,7 @@ class TestGroundingCheck:
     async def test_a_grounded_answer_is_sent_unchanged(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
-        interaction = await self._ask_with(
-            conn, embedding_model, outcome=GroundingOutcome.GROUNDED
-        )
+        interaction = await self._ask_with(conn, embedding_model, outcome=GroundingOutcome.GROUNDED)
         _, kwargs = interaction.followup.send.call_args
         assert kwargs["embed"].description == "The server was founded in 2020."
 
@@ -523,9 +564,7 @@ class TestGroundingCheck:
         # Same consequence, different truth: "the facts did not back it" and "I
         # could not check it" are not the same statement, and telling a user the
         # wrong one is its own small dishonesty.
-        rejected = await self._ask_with(
-            conn, embedding_model, outcome=GroundingOutcome.UNGROUNDED
-        )
+        rejected = await self._ask_with(conn, embedding_model, outcome=GroundingOutcome.UNGROUNDED)
         unverified = await self._ask_with(
             conn, embedding_model, outcome=GroundingOutcome.CHECK_FAILED
         )
@@ -547,11 +586,19 @@ class TestGroundingCheck:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         cited = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=11, message_id=101,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=11,
+            message_id=101,
             content="the server was founded in 2020",
         )
         uncited = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=22, message_id=202,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=22,
+            message_id=202,
             content="the server's founding year is 2020",
         )
         settings = _fake_settings(
@@ -581,7 +628,11 @@ class TestGroundingCheck:
         # feature would be theatre.
         answer = "Gegründet 2020 — „laut den Fakten“. 🎉"
         fact = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=11, message_id=101,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=11,
+            message_id=101,
             content="the server was founded in 2020",
         )
         settings = _fake_settings(
@@ -606,7 +657,11 @@ class TestGroundingCheck:
     ) -> None:
         order: list[str] = []
         fact = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=11, message_id=101,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=11,
+            message_id=101,
             content="a relevant fact",
         )
         settings = _fake_settings(
@@ -636,7 +691,11 @@ class TestGroundingCheck:
     ) -> None:
         # Nothing to check, and nothing to pay for.
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="a relevant fact",
         )
         settings = _fake_settings(
@@ -661,14 +720,20 @@ class TestGroundingCheck:
         # be checked against an empty fact set, not waved past for lack of facts.
         check = _grounding(GroundingOutcome.GROUNDED)
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="a relevant fact",
         )
         settings = _fake_settings(
             similarity_threshold=0.0, grounding_check_model="openrouter/other/vendor"
         )
         interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
-        result = SynthesisResult(answer="I have nothing on that.", used_fact_ids=[], answers_question=False)
+        result = SynthesisResult(
+            answer="I have nothing on that.", used_fact_ids=[], answers_question=False
+        )
 
         with (
             patch("aura.commands.ask.synthesize_answer", AsyncMock(return_value=result)),
@@ -686,7 +751,11 @@ class TestGroundingCheck:
 
         check = _grounding(GroundingOutcome.GROUNDED)
         fact = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="a relevant fact",
         )
         settings = _fake_settings(
@@ -717,11 +786,19 @@ class TestNoRegressionWithTheCheckAlwaysPassing:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         cited = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=11, message_id=101,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=11,
+            message_id=101,
             content="the server was founded in 2020",
         )
         uncited = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=22, message_id=202,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=22,
+            message_id=202,
             content="the server's founding year is 2020",
         )
         settings = _fake_settings(
@@ -729,7 +806,9 @@ class TestNoRegressionWithTheCheckAlwaysPassing:
         )
         interaction = _make_interaction(db=conn, embedding_model=embedding_model, settings=settings)
         result = SynthesisResult(
-            answer="The server was founded in 2020.", used_fact_ids=[cited.id], answers_question=True
+            answer="The server was founded in 2020.",
+            used_fact_ids=[cited.id],
+            answers_question=True,
         )
 
         with (
@@ -753,7 +832,11 @@ class TestNoRegressionWithTheCheckAlwaysPassing:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="a relevant fact",
         )
         settings = _fake_settings(
@@ -779,7 +862,11 @@ class TestNoRegressionWithTheCheckAlwaysPassing:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         fact = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="a relevant fact",
         )
         settings = _fake_settings(
@@ -819,7 +906,11 @@ class TestNoRegressionWithTheCheckAlwaysPassing:
         # Not the grounding message: synthesis failing and the check failing are
         # different situations and must stay distinguishable to the user.
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="a relevant fact",
         )
         settings = _fake_settings(

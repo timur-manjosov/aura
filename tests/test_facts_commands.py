@@ -17,6 +17,7 @@ in conftest.py) everywhere a fact actually gets created or a search actually
 runs -- only pure modal-construction tests (which never touch add_fact) use
 a MagicMock, matching how those same tests already use db=MagicMock().
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,11 +31,11 @@ from discord import app_commands
 from fastembed import TextEmbedding
 
 from aura.commands.facts import (
-    AddFactModal,
     _FIELD_VALUE_DISPLAY_LIMIT,
     _LIST_DISPLAY_LIMIT,
     _QUERY_DISPLAY_LIMIT,
     _TEXT_INPUT_MAX_LENGTH,
+    AddFactModal,
     _handle_fact_command_error,
     add_fact_context_menu,
     list_facts_command,
@@ -122,7 +123,7 @@ async def _invoke_list_facts(interaction: discord.Interaction, query: str | None
 
 
 class TestPermissionChecks:
-    """"Permission bypass attempt": both commands must reject a non-moderator."""
+    """Permission bypass attempt: both commands must reject a non-moderator."""
 
     def test_context_menu_rejects_non_moderator(self) -> None:
         fake_interaction = MagicMock(permissions=discord.Permissions(manage_guild=False))
@@ -186,7 +187,7 @@ class TestErrorHandler:
 
 
 class TestAddFactModalConstruction:
-    """"No-text source message" / "Oversized source message" construction-time checks.
+    """Construction-time checks for no-text and oversized source messages.
 
     model=MagicMock() throughout this class: these tests only inspect
     attributes __init__ sets directly (title, content_input.default/max_length)
@@ -307,8 +308,13 @@ class TestAddFactModalSubmit:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         modal = AddFactModal(
-            db=conn, model=embedding_model, locale="en-US", guild_id=GUILD_A, channel_id=1,
-            message_id=1, prefill_content="",
+            db=conn,
+            model=embedding_model,
+            locale="en-US",
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            prefill_content="",
         )
         _submit(modal, "")
         interaction = _make_interaction(db=conn)
@@ -324,8 +330,13 @@ class TestAddFactModalSubmit:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         modal = AddFactModal(
-            db=conn, model=embedding_model, locale="en-US", guild_id=GUILD_A, channel_id=1,
-            message_id=1, prefill_content="",
+            db=conn,
+            model=embedding_model,
+            locale="en-US",
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            prefill_content="",
         )
         _submit(modal, "   \n\t  \n  ")
         interaction = _make_interaction(db=conn)
@@ -338,8 +349,13 @@ class TestAddFactModalSubmit:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         modal = AddFactModal(
-            db=conn, model=embedding_model, locale="en-US", guild_id=GUILD_A, channel_id=5,
-            message_id=9, prefill_content="",
+            db=conn,
+            model=embedding_model,
+            locale="en-US",
+            guild_id=GUILD_A,
+            channel_id=5,
+            message_id=9,
+            prefill_content="",
         )
         _submit(modal, "  the server was founded in 2020  ")
         interaction = _make_interaction(db=conn)
@@ -360,8 +376,13 @@ class TestAddFactModalSubmit:
     ) -> None:
         content = "サーバーのルールは 日本語 でも読めます 🎉 مرحبا بكم"
         modal = AddFactModal(
-            db=conn, model=embedding_model, locale="en-US", guild_id=GUILD_A, channel_id=1,
-            message_id=1, prefill_content="",
+            db=conn,
+            model=embedding_model,
+            locale="en-US",
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            prefill_content="",
         )
         _submit(modal, content)
         interaction = _make_interaction(db=conn)
@@ -387,8 +408,22 @@ class TestListFactsCommand:
     async def test_guild_isolation_at_the_command_layer(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
-        await add_fact(conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content="guild A fact")
-        await add_fact(conn, embedding_model, guild_id=GUILD_B, channel_id=1, message_id=2, content="guild B fact")
+        await add_fact(
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            content="guild A fact",
+        )
+        await add_fact(
+            conn,
+            embedding_model,
+            guild_id=GUILD_B,
+            channel_id=1,
+            message_id=2,
+            content="guild B fact",
+        )
 
         interaction = _make_interaction(db=conn, guild_id=GUILD_A)
         await _invoke_list_facts(interaction)
@@ -403,7 +438,14 @@ class TestListFactsCommand:
     ) -> None:
         total = _LIST_DISPLAY_LIMIT + 5
         for i in range(total):
-            await add_fact(conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=i, content=f"fact {i}")
+            await add_fact(
+                conn,
+                embedding_model,
+                guild_id=GUILD_A,
+                channel_id=1,
+                message_id=i,
+                content=f"fact {i}",
+            )
 
         interaction = _make_interaction(db=conn, guild_id=GUILD_A)
         await _invoke_list_facts(interaction)
@@ -418,7 +460,14 @@ class TestListFactsCommand:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         for i in range(_LIST_DISPLAY_LIMIT):
-            await add_fact(conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=i, content=f"fact {i}")
+            await add_fact(
+                conn,
+                embedding_model,
+                guild_id=GUILD_A,
+                channel_id=1,
+                message_id=i,
+                content=f"fact {i}",
+            )
 
         interaction = _make_interaction(db=conn, guild_id=GUILD_A)
         await _invoke_list_facts(interaction)
@@ -432,7 +481,9 @@ class TestListFactsCommand:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         content = "日本語のファクト 🎉 مرحبا"
-        await add_fact(conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content=content)
+        await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content=content
+        )
 
         interaction = _make_interaction(db=conn, guild_id=GUILD_A)
         await _invoke_list_facts(interaction)
@@ -444,7 +495,14 @@ class TestListFactsCommand:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         long_content = "z" * 3000  # well within TextInput's 4000 cap, but not for a list row
-        await add_fact(conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content=long_content)
+        await add_fact(
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            content=long_content,
+        )
 
         interaction = _make_interaction(db=conn, guild_id=GUILD_A)
         await _invoke_list_facts(interaction)
@@ -461,7 +519,9 @@ class TestListFactsCommandSearch:
     async def test_no_query_is_unchanged_list_all_behavior(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
-        await add_fact(conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content="fact one")
+        await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content="fact one"
+        )
         interaction = _make_interaction(db=conn, guild_id=GUILD_A, embedding_model=embedding_model)
 
         await _invoke_list_facts(interaction, query=None)
@@ -474,7 +534,9 @@ class TestListFactsCommandSearch:
     async def test_blank_query_falls_back_to_list_all_behavior(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
-        await add_fact(conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content="fact one")
+        await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content="fact one"
+        )
         interaction = _make_interaction(db=conn, guild_id=GUILD_A, embedding_model=embedding_model)
 
         await _invoke_list_facts(interaction, query="   ")
@@ -500,11 +562,19 @@ class TestListFactsCommandSearch:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
             content="the server was founded in 2020",
         )
         await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=2,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=2,
             content="we sell homemade candles on weekends",
         )
 
@@ -527,8 +597,12 @@ class TestListFactsCommandSearch:
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
         identical = "the server rules were updated last week"
-        await add_fact(conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content=identical)
-        await add_fact(conn, embedding_model, guild_id=GUILD_B, channel_id=1, message_id=1, content=identical)
+        await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content=identical
+        )
+        await add_fact(
+            conn, embedding_model, guild_id=GUILD_B, channel_id=1, message_id=1, content=identical
+        )
 
         interaction = _make_interaction(db=conn, guild_id=GUILD_A, embedding_model=embedding_model)
         await _invoke_list_facts(interaction, query=identical)
@@ -543,7 +617,9 @@ class TestListFactsCommandSearch:
         # t()'s locale strings are .format()-based; a query containing
         # literal {} must be treated as an inert substituted value, never
         # re-parsed as a nested template.
-        await add_fact(conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content="fact one")
+        await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content="fact one"
+        )
         interaction = _make_interaction(db=conn, guild_id=GUILD_A, embedding_model=embedding_model)
 
         await _invoke_list_facts(interaction, query="{malformed} {unbalanced")
@@ -555,7 +631,9 @@ class TestListFactsCommandSearch:
     async def test_long_query_is_truncated_in_the_embed_title(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
     ) -> None:
-        await add_fact(conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content="fact one")
+        await add_fact(
+            conn, embedding_model, guild_id=GUILD_A, channel_id=1, message_id=1, content="fact one"
+        )
         interaction = _make_interaction(db=conn, guild_id=GUILD_A, embedding_model=embedding_model)
         long_query = "x" * 3000  # Discord allows STRING options up to 6000 chars
 

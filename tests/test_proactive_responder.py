@@ -6,6 +6,7 @@ important adversarial surface in Phase 2a-3. Every test mocks synthesize_answer
 model, so the responder's own decisions -- the hard code-gate, the mid-flight
 re-check, the distinguishable framing -- are what is under test.
 """
+
 from __future__ import annotations
 
 import logging
@@ -72,7 +73,9 @@ class _ScoredModel:
                 yield np.array([1.0, 0.0], dtype=np.float32)
 
 
-async def _seed_fact(conn: aiosqlite.Connection, *, content: str = "The rules are in #welcome.") -> int:
+async def _seed_fact(
+    conn: aiosqlite.Connection, *, content: str = "The rules are in #welcome."
+) -> int:
     fact = await add_fact(
         conn,
         _MatchingModel(),  # type: ignore[arg-type]
@@ -126,7 +129,10 @@ async def _enable(conn: aiosqlite.Connection, channel_id: int = CHANNEL) -> None
 
 async def _respond(conn: aiosqlite.Connection, message: MagicMock, settings: Settings):
     return await respond_with_synthesis(
-        message, db=conn, model=_MatchingModel(), settings=settings  # type: ignore[arg-type]
+        message,
+        db=conn,
+        model=_MatchingModel(),
+        settings=settings,  # type: ignore[arg-type]
     )
 
 
@@ -142,9 +148,7 @@ class TestShortCircuitsBeforeSpending:
         await _enable(conn)
         message = _make_message()
 
-        with patch(
-            "aura.proactive.responder.synthesize_answer", AsyncMock()
-        ) as synth:
+        with patch("aura.proactive.responder.synthesize_answer", AsyncMock()) as synth:
             outcome = await _respond(conn, message, _unconfigured_settings())
 
         synth.assert_not_awaited()
@@ -152,16 +156,12 @@ class TestShortCircuitsBeforeSpending:
         assert outcome.answers_question is None
         assert outcome.posted is False
 
-    async def test_no_relevant_facts_never_synthesizes(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_no_relevant_facts_never_synthesizes(self, conn: aiosqlite.Connection) -> None:
         # An empty knowledge model: nothing to answer from, so no paid call.
         await _enable(conn)
         message = _make_message()
 
-        with patch(
-            "aura.proactive.responder.synthesize_answer", AsyncMock()
-        ) as synth:
+        with patch("aura.proactive.responder.synthesize_answer", AsyncMock()) as synth:
             outcome = await _respond(conn, message, _configured_settings())
 
         synth.assert_not_awaited()
@@ -196,7 +196,12 @@ class TestShortCircuitsBeforeSpending:
         content = "The rules are in #welcome."
         model = _ScoredModel(content, similarity=0.35)
         await add_fact(
-            conn, model, guild_id=GUILD_A, channel_id=1, message_id=1, content=content  # type: ignore[arg-type]
+            conn,
+            model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            content=content,  # type: ignore[arg-type]
         )
         await _enable(conn)
         message = _make_message()
@@ -207,7 +212,10 @@ class TestShortCircuitsBeforeSpending:
             "aura.proactive.responder.synthesize_answer", AsyncMock(return_value=None)
         ) as synth:
             outcome = await respond_with_synthesis(
-                message, db=conn, model=model, settings=settings  # type: ignore[arg-type]
+                message,
+                db=conn,
+                model=model,
+                settings=settings,  # type: ignore[arg-type]
             )
 
         synth.assert_awaited_once()
@@ -226,16 +234,24 @@ class TestShortCircuitsBeforeSpending:
         content = "The rules are in #welcome."
         model = _ScoredModel(content, similarity=0.10)
         await add_fact(
-            conn, model, guild_id=GUILD_A, channel_id=1, message_id=1, content=content  # type: ignore[arg-type]
+            conn,
+            model,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            content=content,  # type: ignore[arg-type]
         )
         await _enable(conn)
         message = _make_message()
         settings = _configured_settings()
-        assert 0.10 < settings.proactive_similarity_threshold
+        assert settings.proactive_similarity_threshold > 0.10
 
         with patch("aura.proactive.responder.synthesize_answer", AsyncMock()) as synth:
             outcome = await respond_with_synthesis(
-                message, db=conn, model=model, settings=settings  # type: ignore[arg-type]
+                message,
+                db=conn,
+                model=model,
+                settings=settings,  # type: ignore[arg-type]
             )
 
         synth.assert_not_awaited()
@@ -267,9 +283,7 @@ class TestHardCodeGate:
         await _enable(conn)
         message = _make_message()
 
-        with patch(
-            "aura.proactive.responder.synthesize_answer", AsyncMock(return_value=None)
-        ):
+        with patch("aura.proactive.responder.synthesize_answer", AsyncMock(return_value=None)):
             outcome = await _respond(conn, message, _configured_settings())
 
         message.channel.send.assert_not_called()
@@ -282,7 +296,9 @@ class TestHardCodeGate:
         fact_id = await _seed_fact(conn)
         await _enable(conn)
         message = _make_message()
-        unconfident = SynthesisResult(answer="maybe", used_fact_ids=[fact_id], answers_question=False)
+        unconfident = SynthesisResult(
+            answer="maybe", used_fact_ids=[fact_id], answers_question=False
+        )
 
         with patch(
             "aura.proactive.responder.synthesize_answer", AsyncMock(return_value=unconfident)
@@ -425,9 +441,7 @@ class TestDistinguishablePost:
         message = _make_message()
         huge = SynthesisResult(answer="x" * 5000, used_fact_ids=[fact_id], answers_question=True)
 
-        with patch(
-            "aura.proactive.responder.synthesize_answer", AsyncMock(return_value=huge)
-        ):
+        with patch("aura.proactive.responder.synthesize_answer", AsyncMock(return_value=huge)):
             await _respond(conn, message, _configured_settings())
 
         embed = message.channel.send.call_args.kwargs["embed"]
@@ -469,9 +483,7 @@ class TestLocaleAndContent:
 
 def _checked_settings(**overrides: object) -> Settings:
     """Configured settings WITH the independent grounding check switched on."""
-    return _configured_settings(
-        grounding_check_model="openrouter/other/vendor", **overrides
-    )
+    return _configured_settings(grounding_check_model="openrouter/other/vendor", **overrides)
 
 
 def _grounding(outcome: GroundingOutcome) -> AsyncMock:
@@ -539,7 +551,10 @@ class TestGroundingCheck:
         "verdict", [GroundingOutcome.UNGROUNDED, GroundingOutcome.CHECK_FAILED]
     )
     async def test_a_withheld_answer_is_logged_rather_than_posted(
-        self, conn: aiosqlite.Connection, caplog: pytest.LogCaptureFixture, verdict: GroundingOutcome
+        self,
+        conn: aiosqlite.Connection,
+        caplog: pytest.LogCaptureFixture,
+        verdict: GroundingOutcome,
     ) -> None:
         # Silence in the channel is correct; silence in the log would make the
         # refusal indistinguishable from a channel toggled off mid-flight.
@@ -678,9 +693,7 @@ class TestGroundingCheck:
         ):
             await _respond(conn, message, _checked_settings())
 
-        assert (
-            check.call_args.kwargs["timeout_seconds"] == PROACTIVE_GROUNDING_TIMEOUT_SECONDS
-        )
+        assert check.call_args.kwargs["timeout_seconds"] == PROACTIVE_GROUNDING_TIMEOUT_SECONDS
 
 
 class TestNoRegressionWithTheCheckAlwaysPassing:
@@ -716,9 +729,7 @@ class TestNoRegressionWithTheCheckAlwaysPassing:
         assert embed.footer.text
         assert "discord.com/channels" in "".join(field.value or "" for field in embed.fields)
 
-    async def test_an_overlong_answer_is_still_truncated(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_an_overlong_answer_is_still_truncated(self, conn: aiosqlite.Connection) -> None:
         fact_id = await _seed_fact(conn)
         await _enable(conn)
         message = _make_message()

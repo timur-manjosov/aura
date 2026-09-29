@@ -42,62 +42,63 @@ not against what real Discord members write.
   .venv/bin/python scripts/measure_backfill.py
   .venv/bin/python scripts/measure_backfill.py --no-pricing   # skip the network
 """
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
+import logging
 import random
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast
 from unittest.mock import patch
 
-import logging
-
 import aiosqlite
 import discord
 from fastembed import TextEmbedding
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_REPO_ROOT / "src"))
-sys.path.insert(0, str(_REPO_ROOT / "scripts"))
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from aura.backfill.worker import advance_due_backfills
 from aura.billing import PlanGate
-from aura.backfill.worker import advance_due_backfills  # noqa: E402
-from aura.config import Settings  # noqa: E402
-from aura.db.backfill_runs import (  # noqa: E402
+from aura.config import Settings
+from aura.db.backfill_runs import (
     BackfillState,
     get_recent_runs,
     start_backfill_run,
 )
-from aura.db.backfill_state import count_backfill_calls_on  # noqa: E402
-from aura.db.connection import utc_day  # noqa: E402
-from aura.db.pending_facts import FactCategory, count_pending_facts  # noqa: E402
-from aura.db.repository import init_schema  # noqa: E402
-from aura.extraction.distiller import DistilledFact  # noqa: E402
-from aura.extraction.fact_worthiness import create_fact_worthiness_detector  # noqa: E402
-from synthetic_corpus.budget import ModelPrice  # noqa: E402
-from synthetic_corpus.pricing import PricingUnavailableError, fetch_model_prices  # noqa: E402
+from aura.db.backfill_state import count_backfill_calls_on
+from aura.db.connection import utc_day
+from aura.db.pending_facts import FactCategory, count_pending_facts
+from aura.db.repository import init_schema
+from aura.extraction.distiller import DistilledFact
+from aura.extraction.fact_worthiness import create_fact_worthiness_detector
+from synthetic_corpus.budget import ModelPrice
+from synthetic_corpus.pricing import PricingUnavailableError, fetch_model_prices
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 CORPUS_PATH = _REPO_ROOT / "reports" / "extraction-corpus" / "corpus.json"
 
 GUILD = 100000000000000001
 CHANNEL = 300000000000000003
 MODERATOR = 4242
-NOW = datetime(2026, 8, 26, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 26, 12, 0, 0, tzinfo=UTC)
 
 # The corpus's messages carry no snowflakes, so they are laid out on a synthetic
 # timeline: one message a minute, oldest first, ending well before the run's
 # upper bound. Spacing them by a real interval rather than by consecutive
 # integers is what makes the run's own date-based progress reporting meaningful.
-FIRST_ID = discord.utils.time_snowflake(
-    datetime(2025, 1, 1, tzinfo=timezone.utc), high=False
-)
+FIRST_ID = discord.utils.time_snowflake(datetime(2025, 1, 1, tzinfo=UTC), high=False)
 SECONDS_BETWEEN_MESSAGES = 60
 
 # The model whose price the projection is quoted in. Read from the environment
@@ -243,11 +244,15 @@ def _load_corpus() -> tuple[list[discord.Message], int]:
     corpus: list[discord.Message] = []
     fact_worthy = 0
     for index, entry in enumerate(entries):
-        message_id = FIRST_ID + discord.utils.time_snowflake(
-            datetime(2025, 1, 1, tzinfo=timezone.utc)
-            + timedelta(seconds=index * SECONDS_BETWEEN_MESSAGES),
-            high=False,
-        ) - FIRST_ID
+        message_id = (
+            FIRST_ID
+            + discord.utils.time_snowflake(
+                datetime(2025, 1, 1, tzinfo=UTC)
+                + timedelta(seconds=index * SECONDS_BETWEEN_MESSAGES),
+                high=False,
+            )
+            - FIRST_ID
+        )
         corpus.append(_Message(message_id, entry["content"]))  # type: ignore[arg-type]
         # Ground truth lives in the category name, the way
         # scripts/calibrate_extraction_filter.py reads it: the five
@@ -342,7 +347,13 @@ async def _run(
                     0
                 ].cursor_message_id
                 advanced = await advance_due_backfills(
-                    conn, model, gateway, detector, settings=settings, now=NOW, plan_gate=PlanGate.unenforced()
+                    conn,
+                    model,
+                    gateway,
+                    detector,
+                    settings=settings,
+                    now=NOW,
+                    plan_gate=PlanGate.unenforced(),
                 )
                 if advanced:
                     stats.ticks += 1
@@ -423,14 +434,10 @@ def _report(stats: _Stats, price: ModelPrice | None, *, label: str) -> None:
     print(f"  pages re-sorted by Aura   {stats.out_of_order_pages}")
     print(f"  wall clock                {stats.seconds:.1f}s")
     if stats.messages_scanned:
-        print(
-            f"  per 1,000 messages        {stats.seconds / stats.messages_scanned * 1000:.2f}s"
-        )
+        print(f"  per 1,000 messages        {stats.seconds / stats.messages_scanned * 1000:.2f}s")
     print(f"  prompt tokens (estimated) {stats.input_tokens:,} in / {stats.output_tokens:,} out")
     if price is not None:
-        cost = price.cost(
-            input_tokens=stats.input_tokens, output_tokens=stats.output_tokens
-        )
+        cost = price.cost(input_tokens=stats.input_tokens, output_tokens=stats.output_tokens)
         print(f"  projected spend           ${cost:.4f}")
 
 
@@ -455,10 +462,7 @@ def _project(stats: _Stats, price: ModelPrice | None) -> None:
         "number below\n  grows with the message count and nothing in the worker is "
         "quadratic in it."
     )
-    print(
-        f"\n  {'messages':>10}  {'calls':>7}  {'pages':>7}  {'days at cap 30':>15}  "
-        f"{'spend':>9}"
-    )
+    print(f"\n  {'messages':>10}  {'calls':>7}  {'pages':>7}  {'days at cap 30':>15}  {'spend':>9}")
     for size in (2_000, 10_000, 50_000, 200_000):
         scale = size / stats.messages_scanned
         calls = round(stats.distillation_calls * scale)

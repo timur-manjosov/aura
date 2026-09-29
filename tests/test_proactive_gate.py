@@ -13,13 +13,14 @@ Two kinds of test live here, deliberately mixed:
 No Discord anywhere in this file, per CLAUDE.md's testing principle: the gate
 takes IDs and a string, not a Message.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import math
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
@@ -51,7 +52,7 @@ GUILD_B = 200000000000000002
 CHANNEL_1 = 5551
 CHANNEL_2 = 5552
 
-NOON = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+NOON = datetime(2026, 7, 24, 12, 0, 0, tzinfo=UTC)
 
 # A config with round numbers, so a test's intent is readable from its inputs
 # rather than from the production defaults (which are placeholders and will
@@ -111,9 +112,7 @@ class _FixedSimilarityModel:
             if document.startswith("fact:"):
                 similarity = self._similarities[int(document.split(":")[1])]
                 vector[0] = similarity
-                vector[int(document.split(":")[1]) + 1] = math.sqrt(
-                    max(0.0, 1.0 - similarity**2)
-                )
+                vector[int(document.split(":")[1]) + 1] = math.sqrt(max(0.0, 1.0 - similarity**2))
             else:
                 vector[0] = 1.0
             yield vector
@@ -222,17 +221,13 @@ class TestStageOneGate:
         model = await _seed_scored_facts(conn, [0.99])
         negative_threshold = CONFIG.model_copy(update={"question_threshold": -1.9})
 
-        decision = await _evaluate(
-            conn, model, _stub_detector(-2.0), config=negative_threshold
-        )
+        decision = await _evaluate(conn, model, _stub_detector(-2.0), config=negative_threshold)
 
         assert decision.verdict is GateVerdict.STAGE1_REJECTED
 
 
 class TestStageTwoSimilarity:
-    async def test_a_confident_unopposed_match_passes(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_confident_unopposed_match_passes(self, conn: aiosqlite.Connection) -> None:
         model = await _seed_scored_facts(conn, [0.9, 0.1])
 
         decision = await _evaluate(conn, model, _stub_detector(0.5))
@@ -243,9 +238,7 @@ class TestStageTwoSimilarity:
         assert decision.stage2_passed is True
         assert decision.verdict is GateVerdict.ELIGIBLE
 
-    async def test_a_match_below_the_threshold_is_refused(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_match_below_the_threshold_is_refused(self, conn: aiosqlite.Connection) -> None:
         model = await _seed_scored_facts(conn, [0.49, 0.0])
 
         decision = await _evaluate(conn, model, _stub_detector(0.5))
@@ -266,9 +259,7 @@ class TestStageTwoSimilarity:
         probe = await _evaluate(conn, model, _stub_detector(0.5), message_id=1)
         assert probe.stage2_top_score is not None
 
-        at_the_boundary = CONFIG.model_copy(
-            update={"similarity_threshold": probe.stage2_top_score}
-        )
+        at_the_boundary = CONFIG.model_copy(update={"similarity_threshold": probe.stage2_top_score})
         # A different channel and message, so neither the cooldown nor the
         # duplicate guard can decide this instead of Stage 2.
         decision = await _evaluate(
@@ -308,9 +299,7 @@ class TestStageTwoSimilarity:
         assert decision.stage2_gap is None
         assert decision.verdict is GateVerdict.ELIGIBLE
 
-    async def test_only_this_guilds_facts_are_considered(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_only_this_guilds_facts_are_considered(self, conn: aiosqlite.Connection) -> None:
         # A near-perfect match in another server must not make this server's
         # message answerable.
         model = await _seed_scored_facts(conn, [0.99], guild_id=GUILD_B)
@@ -465,9 +454,7 @@ class _NanEmbeddingModel:
 
 
 class TestBudgetIsClaimedAtTheRightMoment:
-    async def test_an_eligible_message_claims_a_slot(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_an_eligible_message_claims_a_slot(self, conn: aiosqlite.Connection) -> None:
         model = await _seed_scored_facts(conn, [0.9, 0.1])
 
         decision = await _evaluate(conn, model, _stub_detector(0.5))
@@ -494,9 +481,7 @@ class TestBudgetIsClaimedAtTheRightMoment:
         ) as cursor:
             assert await cursor.fetchone() == (1,)
 
-    async def test_a_stage_two_failure_claims_nothing(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_stage_two_failure_claims_nothing(self, conn: aiosqlite.Connection) -> None:
         # Being unable to answer must not burn a slot -- otherwise ordinary
         # chatter in a server with few facts would exhaust the daily budget
         # without a single answer being possible.
@@ -533,9 +518,7 @@ class TestBudgetIsClaimedAtTheRightMoment:
             )
             assert decision.verdict is GateVerdict.ELIGIBLE
 
-        capped = await _evaluate(
-            conn, model, _stub_detector(0.5), channel_id=8000, message_id=800
-        )
+        capped = await _evaluate(conn, model, _stub_detector(0.5), channel_id=8000, message_id=800)
 
         assert capped.verdict is GateVerdict.DAILY_CAP_REACHED
         assert capped.daily_count == CONFIG.daily_cap
@@ -571,8 +554,13 @@ class TestCrossGuildBudget:
         # An unrelated guild's unrelated ledger spend, pushing the combined
         # cross-guild total above a budget smaller than even one such spend.
         await try_acquire_escalation_slot(
-            conn, guild_id=GUILD_B, channel_id=9999, message_id=1,
-            cooldown_seconds=0.0, daily_cap=1_000_000, now=NOON,
+            conn,
+            guild_id=GUILD_B,
+            channel_id=9999,
+            message_id=1,
+            cooldown_seconds=0.0,
+            daily_cap=1_000_000,
+            now=NOON,
         )
         model = await _seed_scored_facts(conn, [0.9, 0.1])
         hard_and_tiny = CONFIG.model_copy(
@@ -588,12 +576,15 @@ class TestCrossGuildBudget:
         assert decision.stage2_passed is True  # it earned an answer; the operator budget said no
         assert await count_escalations_on(conn, guild_id=GUILD_A, day="2026-07-24") == 0
 
-    async def test_warn_mode_over_budget_still_escalates(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_warn_mode_over_budget_still_escalates(self, conn: aiosqlite.Connection) -> None:
         await try_acquire_escalation_slot(
-            conn, guild_id=GUILD_B, channel_id=9999, message_id=1,
-            cooldown_seconds=0.0, daily_cap=1_000_000, now=NOON,
+            conn,
+            guild_id=GUILD_B,
+            channel_id=9999,
+            message_id=1,
+            cooldown_seconds=0.0,
+            daily_cap=1_000_000,
+            now=NOON,
         )
         model = await _seed_scored_facts(conn, [0.9, 0.1])
         warn_and_tiny = CONFIG.model_copy(
@@ -619,10 +610,7 @@ class TestConcurrentEligibleMessages:
         model = await _seed_scored_facts(conn, [0.9, 0.1])
 
         decisions = await asyncio.gather(
-            *(
-                _evaluate(conn, model, _stub_detector(0.5), message_id=index)
-                for index in range(50)
-            )
+            *(_evaluate(conn, model, _stub_detector(0.5), message_id=index) for index in range(50))
         )
 
         verdicts = [decision.verdict for decision in decisions]
@@ -650,7 +638,9 @@ class TestConcurrentEligibleMessages:
 
         eligible = [d for d in decisions if d.would_escalate]
         assert len(eligible) == CONFIG.daily_cap
-        assert await count_escalations_on(conn, guild_id=GUILD_A, day="2026-07-24") == CONFIG.daily_cap
+        assert (
+            await count_escalations_on(conn, guild_id=GUILD_A, day="2026-07-24") == CONFIG.daily_cap
+        )
 
 
 class TestConfigValidation:
@@ -756,7 +746,11 @@ class TestWithTheRealModel:
         query = "Is there no file size cap in trading today?"
 
         fact = await add_fact(
-            conn, embedding_model, guild_id=GUILD_A, channel_id=CHANNEL_1, message_id=900,
+            conn,
+            embedding_model,
+            guild_id=GUILD_A,
+            channel_id=CHANNEL_1,
+            message_id=900,
             content=canonical,
         )
         detector = await QuestionDetector.create(embedding_model)
@@ -773,7 +767,9 @@ class TestWithTheRealModel:
         # AFTER: store the audited variant on the same fact.
         [variant_embedding] = await embed_texts(embedding_model, [variant])
         await store_fact_variants(
-            conn, fact_id=fact.id, contents=[variant],
+            conn,
+            fact_id=fact.id,
+            contents=[variant],
             embeddings=[variant_embedding.astype(EMBEDDING_DTYPE, copy=False).tobytes()],
         )
 
@@ -971,7 +967,9 @@ class TestKnowledgeModelIsReadOnly:
         # Word boundaries, not a substring search: the fact columns include
         # "created_at" and "superseded_at", so matching "CREATE" loosely would
         # classify every ordinary SELECT as a write.
-        mutating = re.compile(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE)\b", re.IGNORECASE)
+        mutating = re.compile(
+            r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE)\b", re.IGNORECASE
+        )
         writes = [statement for statement in statements if mutating.search(statement)]
         assert writes, "the eligible path must have written its escalation"
         for statement in writes:

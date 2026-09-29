@@ -8,6 +8,7 @@ handler directly against mocked discord.Interaction objects and a real
 in-memory database -- never a live Discord connection, matching
 test_facts_commands.py's approach and CLAUDE.md's testing philosophy.
 """
+
 from __future__ import annotations
 
 import logging
@@ -68,9 +69,7 @@ def _make_interaction(
     return interaction
 
 
-async def _invoke(
-    interaction: discord.Interaction, old_fact_id: int, new_fact_id: int
-) -> None:
+async def _invoke(interaction: discord.Interaction, old_fact_id: int, new_fact_id: int) -> None:
     """Call supersede_command's callback directly, bypassing its checks."""
     await supersede_command.callback(interaction, old_fact_id, new_fact_id)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
@@ -85,7 +84,12 @@ async def _add(
     message_id: int = 1,
 ):
     return await add_fact(
-        conn, model, guild_id=guild_id, channel_id=channel_id, message_id=message_id, content=content
+        conn,
+        model,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        message_id=message_id,
+        content=content,
     )
 
 
@@ -338,7 +342,12 @@ class TestSupersedeConfirmView:
 
         # Simulate a second mod's concurrent supersession winning the race.
         view = SupersedeConfirmView(
-            db=conn, guild_id=GUILD_A, old_fact=old, new_fact=second_new, locale="en-US", invoker_id=1
+            db=conn,
+            guild_id=GUILD_A,
+            old_fact=old,
+            new_fact=second_new,
+            locale="en-US",
+            invoker_id=1,
         )
         from aura.db.repository import supersede_fact_with_existing_successor
 
@@ -364,7 +373,12 @@ class TestSupersedeConfirmView:
         even_newer = await _add(conn, embedding_model, content="an even newer fact")
 
         view = SupersedeConfirmView(
-            db=conn, guild_id=GUILD_A, old_fact=old, new_fact=chosen_new, locale="en-US", invoker_id=1
+            db=conn,
+            guild_id=GUILD_A,
+            old_fact=old,
+            new_fact=chosen_new,
+            locale="en-US",
+            invoker_id=1,
         )
         from aura.db.repository import supersede_fact_with_existing_successor
 
@@ -474,7 +488,9 @@ class TestEndToEndExclusionFromSimilaritySearch:
         old = await _add(conn, embedding_model, content="the event is in room 204")
         new = await _add(conn, embedding_model, content="the event is in room 305")
 
-        before = await find_similar_facts(conn, embedding_model, guild_id=GUILD_A, query="what room is the event in?")
+        before = await find_similar_facts(
+            conn, embedding_model, guild_id=GUILD_A, query="what room is the event in?"
+        )
         assert old.id in {fact.id for fact, _ in before}
 
         view = SupersedeConfirmView(
@@ -483,7 +499,9 @@ class TestEndToEndExclusionFromSimilaritySearch:
         interaction = _make_interaction(db=conn, user_id=1)
         await view.confirm.callback(interaction)
 
-        after = await find_similar_facts(conn, embedding_model, guild_id=GUILD_A, query="what room is the event in?")
+        after = await find_similar_facts(
+            conn, embedding_model, guild_id=GUILD_A, query="what room is the event in?"
+        )
         after_ids = {fact.id for fact, _ in after}
         assert old.id not in after_ids
         assert new.id in after_ids

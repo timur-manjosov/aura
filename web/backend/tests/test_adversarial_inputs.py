@@ -11,10 +11,12 @@ The bar throughout is the same: a hostile request must produce a clean refusal
 -- never a 500, never a session, never a crash, never a header this service did
 not intend to send.
 """
+
 from __future__ import annotations
 
 import httpx
 import pytest
+
 from fake_discord import FakeDiscordState
 from helpers import complete_login, set_cookie_header, start_login
 
@@ -41,9 +43,7 @@ class TestHostileStateParameter:
         await start_login(app_client)
         code = discord_state.issue_code("5000")
 
-        response = await app_client.get(
-            "/api/auth/callback", params={"code": code, "state": state}
-        )
+        response = await app_client.get("/api/auth/callback", params={"code": code, "state": state})
 
         assert response.status_code == 400
         assert response.json() == {"error": "invalid_state"}
@@ -167,9 +167,7 @@ class TestHostileAuthorizationCode:
         """
         state = await start_login(app_client)
 
-        response = await app_client.get(
-            "/api/auth/callback", params={"code": code, "state": state}
-        )
+        response = await app_client.get("/api/auth/callback", params={"code": code, "state": state})
 
         assert response.status_code in (400, 503)
         assert not app_client.cookies.get("aura_session")
@@ -361,8 +359,6 @@ class TestSessionIsolationUnderAbuse:
         # version of this test proves nothing about the truncated value.
         app_client.cookies.clear()
 
-        response = await app_client.get(
-            "/api/me", headers={"Cookie": f"aura_session={valid[:-1]}"}
-        )
+        response = await app_client.get("/api/me", headers={"Cookie": f"aura_session={valid[:-1]}"})
 
         assert response.status_code == 401

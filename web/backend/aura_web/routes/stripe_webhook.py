@@ -31,6 +31,7 @@ event that concerns no Aura subscription). 400 means the request itself is not
 acceptable. 503 means "could not process it now, redeliver" -- Stripe retries
 for up to three days in live mode, and every retry is safe.
 """
+
 from __future__ import annotations
 
 import logging
@@ -64,8 +65,25 @@ SIGNATURE_TOLERANCE_SECONDS = 300
 
 
 @router.post("/webhook")
-async def stripe_webhook(request: Request, context: ServiceContext = Depends(get_context)) -> Response:
-    """Verify, then process, one Stripe webhook delivery. See the module docstring for the order."""
+async def stripe_webhook(
+    request: Request, context: ServiceContext = Depends(get_context)
+) -> Response:
+    """Verify, then process, one Stripe webhook delivery. See the module docstring for the order.
+
+    Parameters
+    ----------
+    request
+        The incoming request.
+    context
+        The shared context: settings, stores and clients.
+
+    Returns
+    -------
+    Response
+        200 once the delivery has been handled or deliberately ignored; a 4xx
+        only for a body that failed signature verification or could not be
+        parsed. Anything Stripe should retry is answered with 5xx.
+    """
     signature_headers = request.headers.getlist("stripe-signature")
     if len(signature_headers) != 1 or not signature_headers[0].strip():
         logger.warning(
@@ -90,13 +108,17 @@ async def stripe_webhook(request: Request, context: ServiceContext = Depends(get
     except Exception as exc:
         # The exception's class only. SignatureVerificationError carries the
         # header and the payload, and neither belongs in a log line.
-        logger.warning("Rejected a Stripe webhook: signature verification failed (%s)", type(exc).__name__)
+        logger.warning(
+            "Rejected a Stripe webhook: signature verification failed (%s)", type(exc).__name__
+        )
         return error_response(ErrorCode.INVALID_SIGNATURE, status_code=400)
 
     try:
         event = parse_verified_event(payload)
     except InvalidEventError as exc:
-        logger.warning("Rejected a correctly signed Stripe webhook that is not a usable event: %s", exc)
+        logger.warning(
+            "Rejected a correctly signed Stripe webhook that is not a usable event: %s", exc
+        )
         return error_response(ErrorCode.INVALID_EVENT, status_code=400)
 
     if event.livemode != context.settings.stripe_live_mode:

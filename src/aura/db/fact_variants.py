@@ -11,6 +11,7 @@ relief, or the extraction dedup check is Part 2 (out of scope here) -- see
 CLAUDE.md's Multi-Representation Indexing note and the phase brief this module
 was built against.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -27,6 +28,22 @@ _VARIANT_COLUMNS = "id, fact_id, content, embedding, created_at"
 class FactVariant(BaseModel):
     """One stored, audited paraphrase of an active fact's canonical sentence.
 
+    Attributes
+    ----------
+    id
+        Database primary key.
+    fact_id
+        The fact this paraphrases.
+    content
+        The paraphrase itself, audited for fidelity before it was stored.
+    embedding
+        `content`'s vector, same dtype as a fact's (see
+        `aura.embeddings.EMBEDDING_DTYPE`).
+    created_at
+        When it was generated.
+
+    Notes
+    -----
     Carries no status of its own -- see schema.sql's fact_variants comment for
     why a variant's lifecycle is entirely derived from the fact it paraphrases
     rather than tracked independently.
@@ -57,19 +74,41 @@ async def store_fact_variants(
     contents: list[str],
     embeddings: list[bytes],
 ) -> list[FactVariant]:
-    """Insert every (content, embedding) pair for fact_id in one transaction.
+    """Insert every (content, embedding) pair for one fact, in one transaction.
 
-    All-or-nothing: either every variant this call was given lands, or (on any
-    failure, including the foreign key check if fact_id does not exist) none
-    of them do. A partial write here would mean some of one generation
-    episode's variants exist and some don't, with nothing in the data to
-    explain why -- worse than the caller simply not calling this at all.
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    fact_id
+        The fact being paraphrased. Must exist: the foreign key is enforced.
+    contents
+        The audited paraphrases. Must be non-empty.
+    embeddings
+        One vector per paraphrase, in the same order. Must be the same length
+        as `contents`.
 
-    Requires contents and embeddings to be the same length and non-empty: the
-    caller (aura.variants_service) always has at least one audited variant by
-    the time it calls this, and a mismatched or empty pair of lists is a bug
-    upstream, not a legitimate "store nothing" request -- callers that mean
-    "nothing survived the audit" simply don't call this function at all.
+    Returns
+    -------
+    list[FactVariant]
+        The stored rows, in insertion order.
+
+    Raises
+    ------
+    ValueError
+        If `contents` is empty or the two lists differ in length.
+
+    Notes
+    -----
+    All-or-nothing: either every variant this call was given lands, or -- on any
+    failure, the foreign key check included -- none of them do. A partial write
+    would mean some of one generation episode's variants exist and some do not,
+    with nothing in the data to explain why, which is worse than the caller
+    simply not calling this at all.
+
+    An empty or mismatched pair of lists is a bug upstream, not a legitimate
+    "store nothing" request: a caller that means "nothing survived the audit"
+    does not call this function at all.
     """
     if not contents:
         raise ValueError("store_fact_variants requires at least one variant")
@@ -108,11 +147,23 @@ async def store_fact_variants(
     return stored
 
 
-async def get_variants_for_fact(
-    conn: aiosqlite.Connection, fact_id: int
-) -> list[FactVariant]:
-    """Return every stored variant for fact_id, regardless of the fact's own status.
+async def get_variants_for_fact(conn: aiosqlite.Connection, fact_id: int) -> list[FactVariant]:
+    """Return every stored variant for one fact, whatever that fact's status.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    fact_id
+        The fact whose variants to read.
+
+    Returns
+    -------
+    list[FactVariant]
+        Every stored variant, oldest first. Empty if the fact has none.
+
+    Notes
+    -----
     Deliberately unfiltered by the fact's status -- this is the raw storage
     view used by tests and by any future admin/debug surface that wants to see
     everything that was ever generated for one specific fact. Callers that need
@@ -128,11 +179,24 @@ async def get_variants_for_fact(
     return [_row_to_variant(row) for row in rows]
 
 
-async def get_active_fact_variants(
-    conn: aiosqlite.Connection, guild_id: int
-) -> list[FactVariant]:
+async def get_active_fact_variants(conn: aiosqlite.Connection, guild_id: int) -> list[FactVariant]:
     """Return every stored variant whose fact is still active, for one guild.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read. Passed explicitly so no call site can search across
+        guilds by accident.
+
+    Returns
+    -------
+    list[FactVariant]
+        Variants of that guild's ACTIVE facts only.
+
+    Notes
+    -----
     The join this whole schema decision was built around (see schema.sql's
     fact_variants comment): a fact retired via /aura-supersede drops its
     variants out of this result the instant its own `status` flips, with no

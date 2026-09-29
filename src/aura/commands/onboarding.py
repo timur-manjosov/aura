@@ -14,6 +14,7 @@ aura.onboarding.listener), so the only choices are "where" and "on or off".
 Mod-gated on manage_guild, the same permission every other Aura configuration
 and fact command uses.
 """
+
 from __future__ import annotations
 
 import logging
@@ -91,6 +92,23 @@ async def onboarding_command(
 ) -> None:
     """Set onboarding's channel, or switch it off, mirroring /aura-digest's option handling.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    channel
+        Where onboarding summaries should be posted, or None to keep the
+        configured one.
+    enabled
+        Turn onboarding on or off, or None to leave it unchanged.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     The same two rules /aura-digest documents apply here, for the same
     reasons: naming a channel turns onboarding ON unless `enabled` says
     otherwise, and anything not named keeps its current value. A call with no
@@ -164,5 +182,15 @@ onboarding_command.error(_handle_onboarding_command_error)
 
 
 def register_onboarding_command(tree: app_commands.CommandTree) -> None:
-    """Register /aura-onboarding onto tree."""
+    """Register /aura-onboarding onto tree.
+
+    Parameters
+    ----------
+    tree
+        The command tree to register into.
+
+    Returns
+    -------
+    None
+    """
     tree.add_command(onboarding_command)

@@ -29,6 +29,7 @@ Two things are measured, and they are equally important:
      on both sides -- the basis on which the extra wait can actually be judged
      rather than guessed at.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,23 +40,25 @@ import statistics
 import sys
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from grounding_verification_cases import ALL_CASES  # noqa: E402
-
-from aura.config import ModelComponent, Settings, load_settings  # noqa: E402
-from aura.db.models import Fact, FactStatus  # noqa: E402
-from aura.grounding import (  # noqa: E402
+from aura.config import ModelComponent, Settings, load_settings
+from aura.db.models import Fact, FactStatus
+from aura.grounding import (
     ASK_GROUNDING_TIMEOUT_SECONDS,
     PROACTIVE_GROUNDING_TIMEOUT_SECONDS,
     GroundingOutcome,
     verify_answer_grounded,
 )
-from aura.synthesis import synthesize_answer  # noqa: E402
+from aura.synthesis import synthesize_answer
+from grounding_verification_cases import ALL_CASES
 
 RUN_REAL_LLM_ENV = "AURA_RUN_REAL_LLM"
 
@@ -134,7 +137,7 @@ def _fact(index: int, content: str) -> Fact:
         embedding=b"",
         status=FactStatus.ACTIVE,
         superseded_by_id=None,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -352,9 +355,7 @@ def _summarize(verdicts: list[VerdictResult], latencies: list[LatencyResult]) ->
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--dry-run", action="store_true", help="estimate cost and make no calls"
-    )
+    parser.add_argument("--dry-run", action="store_true", help="estimate cost and make no calls")
     parser.add_argument(
         "--output",
         default="reports/grounding-verification.json",
@@ -396,7 +397,7 @@ async def main() -> int:
     output.write_text(
         json.dumps(
             {
-                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generated_at": datetime.now(UTC).isoformat(),
                 "grounding_model": settings.resolve_model(ModelComponent.GROUNDING_CHECK),
                 "synthesis_model": settings.resolve_model(ModelComponent.SYNTHESIS),
                 "proactive_model": settings.resolve_model(ModelComponent.PROACTIVE),

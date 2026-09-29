@@ -1,4 +1,5 @@
 """Discord-facing command registration, grouped by knowledge-model area."""
+
 from aura.commands.ask import register_ask_command
 from aura.commands.backfill import register_backfill_command
 from aura.commands.config import register_config_command

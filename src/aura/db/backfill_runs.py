@@ -36,6 +36,7 @@ on the advance is what makes that impossible rather than unlikely: a worker that
 affects no rows has been overruled and stops, and the batch it had already
 staged simply gets re-processed if the run is ever resumed.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -121,13 +122,24 @@ class BackfillRun(BaseModel):
     def resume_after_id(self) -> int | None:
         """The exclusive lower bound the next fetch must start from.
 
+        Returns
+        -------
+        int or None
+            The exclusive lower bound the next page should start from: the cursor
+            if the run has made progress, otherwise the run's own configured start,
+            which is None for "from the beginning of the channel".
+
+        Notes
+        -----
         The cursor once there is one, and the run's original `since:` bound
         before that. Expressed here rather than at the call site because getting
         it the wrong way round is the exact bug that would make a resumed run
         re-read a channel from the beginning, and it should be impossible to
         write that bug twice.
         """
-        return self.cursor_message_id if self.cursor_message_id is not None else self.after_message_id
+        return (
+            self.cursor_message_id if self.cursor_message_id is not None else self.after_message_id
+        )
 
 
 def _row_to_run(row: sqlite3.Row) -> BackfillRun:
@@ -175,8 +187,41 @@ async def start_backfill_run(
     requested_by_id: int,
     now: datetime,
 ) -> BackfillRun:
-    """Open a new run over channel_id, or raise if one is already live there.
+    """Open a new backfill run over one channel.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id, channel_id
+        The channel to walk.
+    until_message_id
+        The newest message the run may reach -- fixed at start so live traffic
+        arriving afterwards belongs to live extraction, not to this run.
+    after_message_id
+        The exclusive lower bound, or None to start from the beginning of the
+        channel.
+    requested_by_id
+        The moderator who asked for the run.
+    now
+        When it was opened. Must be timezone-aware.
+
+    Returns
+    -------
+    BackfillRun
+        The newly opened run.
+
+    Raises
+    ------
+    BackfillAlreadyActiveError
+        If the channel already has a running or paused run. One live run per
+        channel, enforced at write time so two concurrent requests cannot both
+        succeed.
+    ValueError
+        If `now` is naive.
+
+    Notes
+    -----
     The uniqueness is enforced by the partial index on (channel_id) WHERE state
     IN ('running', 'paused') -- see schema.sql -- and NOT by the read this
     function does first. That read exists only to hand the caller the existing
@@ -191,9 +236,7 @@ async def start_backfill_run(
     if now.tzinfo is None:
         raise ValueError(f"now must be a timezone-aware datetime, got {now!r}")
     if until_message_id <= 0:
-        raise ValueError(
-            f"until_message_id must be a positive snowflake, got {until_message_id}"
-        )
+        raise ValueError(f"until_message_id must be a positive snowflake, got {until_message_id}")
     if after_message_id is not None and after_message_id <= 0:
         # A snowflake is never zero or negative. discord.utils.time_snowflake is
         # arithmetic against Discord's epoch and returns a large negative number
@@ -270,7 +313,21 @@ async def start_backfill_run(
 async def _active_run_unlocked(
     conn: aiosqlite.Connection, *, channel_id: int
 ) -> BackfillRun | None:
-    """The running or paused run for channel_id. THE CALLER MUST HOLD THE LOCK."""
+    """Return the running or paused run for a channel.
+
+    Parameters
+    ----------
+    conn
+        Open database connection. THE CALLER MUST ALREADY HOLD ITS LOCK.
+    channel_id
+        Channel to check.
+
+    Returns
+    -------
+    BackfillRun or None
+        The live run, or None if the channel has neither a running nor a paused
+        one.
+    """
     async with conn.execute(
         f"""
         SELECT {_RUN_COLUMNS} FROM backfill_runs
@@ -282,11 +339,24 @@ async def _active_run_unlocked(
     return _row_to_run(row) if row is not None else None
 
 
-async def get_active_run(
-    conn: aiosqlite.Connection, *, channel_id: int
-) -> BackfillRun | None:
-    """The running or paused run for channel_id, or None if it has neither.
+async def get_active_run(conn: aiosqlite.Connection, *, channel_id: int) -> BackfillRun | None:
+    """Return the running or paused run for a channel, taking the lock.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    channel_id
+        Channel to check.
+
+    Returns
+    -------
+    BackfillRun or None
+        The live run, or None if the channel has neither a running nor a paused
+        one.
+
+    Notes
+    -----
     At most one can exist, guaranteed by the partial unique index rather than by
     this query's shape -- so a second row appearing here would be a schema
     problem, not something callers need to disambiguate.
@@ -296,8 +366,20 @@ async def get_active_run(
 
 
 async def get_running_runs(conn: aiosqlite.Connection) -> list[BackfillRun]:
-    """Every run a worker may advance, oldest first.
+    """Return every run a worker may advance, oldest first.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+
+    Returns
+    -------
+    list[BackfillRun]
+        Runs in the RUNNING state across every guild, oldest first.
+
+    Notes
+    -----
     Oldest first because this is a work queue, the same reasoning
     get_pending_facts gives for its own ordering: a run started last week must
     not sit behind one started this morning forever just because the newer one
@@ -322,8 +404,30 @@ async def get_running_runs(conn: aiosqlite.Connection) -> list[BackfillRun]:
 async def get_recent_runs(
     conn: aiosqlite.Connection, *, guild_id: int, limit: int
 ) -> list[BackfillRun]:
-    """A guild's most recent runs, newest first, for /aura-backfill status.
+    """Return a guild's most recent runs, newest first.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to read.
+    limit
+        Maximum rows. Must not be negative -- SQLite reads LIMIT -1 as "no
+        limit".
+
+    Returns
+    -------
+    list[BackfillRun]
+        Up to `limit` runs of any state, newest first.
+
+    Raises
+    ------
+    ValueError
+        If `limit` is negative.
+
+    Notes
+    -----
     Newest first, unlike the work queue above and like every other diagnostic
     read in this project: the question this answers is "what has backfill been
     doing lately", and the useful end of that is the recent one.
@@ -360,8 +464,35 @@ async def advance_cursor(
     calls_spent: int,
     now: datetime,
 ) -> bool:
-    """Move a running run's cursor forward and add to its counters. Returns whether it moved.
+    """Move a running run's cursor forward and add to its counters.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    run_id
+        The run to advance.
+    cursor_message_id, cursor_message_at
+        The new cursor position.
+    messages_scanned, candidates_staged, calls_spent
+        Increments to add to the run's running totals.
+    now
+        When the batch finished. Must be timezone-aware.
+
+    Returns
+    -------
+    bool
+        Whether the run actually moved. False when the run is no longer RUNNING
+        -- paused or cancelled between the batch starting and finishing -- so
+        the work of a run somebody stopped is not silently re-committed.
+
+    Raises
+    ------
+    ValueError
+        If `now` is naive.
+
+    Notes
+    -----
     Two guards, and both are load-bearing rather than defensive:
 
       * `state = 'running'` -- a moderator who paused or cancelled during the
@@ -427,8 +558,35 @@ async def set_run_state(
     now: datetime,
     from_states: tuple[BackfillState, ...],
 ) -> bool:
-    """Move one run into `state`, but only from one of `from_states`. Returns whether it moved.
+    """Move one run into a new state, but only from an allowed current state.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    run_id
+        The run to move.
+    state
+        The state to move it into.
+    now
+        When the transition happened. Must be timezone-aware.
+    from_states
+        The states the run may currently be in. The guard lives in the UPDATE's
+        own WHERE clause, so two concurrent transitions cannot both succeed.
+
+    Returns
+    -------
+    bool
+        Whether the run actually moved. False when it was in none of
+        `from_states`.
+
+    Raises
+    ------
+    ValueError
+        If `now` is naive.
+
+    Notes
+    -----
     Every transition in this module's state machine goes through here, and every
     caller has to name what it believes the run currently is. That is deliberate
     friction: an unguarded UPDATE would let a worker mark a run 'completed'

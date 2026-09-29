@@ -9,6 +9,7 @@ The guiding rule these pin down: a bad response must become a typed error,
 never a plausible-looking value. An empty guild list invented from a broken
 payload is indistinguishable, downstream, from a correct one.
 """
+
 from __future__ import annotations
 
 import json
@@ -77,7 +78,12 @@ class TestTokenExchange:
             seen["content_type"] = request.headers.get("Content-Type")
             return httpx.Response(
                 200,
-                json={"access_token": "at", "refresh_token": "rt", "expires_in": 10, "scope": "identify guilds"},
+                json={
+                    "access_token": "at",
+                    "refresh_token": "rt",
+                    "expires_in": 10,
+                    "scope": "identify guilds",
+                },
             )
 
         await client_with(handler).exchange_code("code", "https://frontend.test/cb")
@@ -326,9 +332,7 @@ class TestGuildListing:
 
         guilds = await discord.fetch_user_guilds("at")
 
-        assert [(g.id, g.name, g.icon, g.permissions) for g in guilds] == [
-            ("1", "One", "aa", "32")
-        ]
+        assert [(g.id, g.name, g.icon, g.permissions) for g in guilds] == [("1", "One", "aa", "32")]
 
     async def test_the_bot_token_is_sent_for_the_membership_lookup(self) -> None:
         seen: dict[str, str] = {}
@@ -385,14 +389,19 @@ class TestGuildListing:
 
     async def test_pagination_follows_the_after_cursor(self) -> None:
         pages = [
-            [{"id": str(index), "name": f"G{index}", "permissions": "32"} for index in range(1, 201)],
+            [
+                {"id": str(index), "name": f"G{index}", "permissions": "32"}
+                for index in range(1, 201)
+            ],
             [{"id": "201", "name": "G201", "permissions": "32"}],
         ]
         seen_queries: list[str] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             seen_queries.append(str(request.url.params))
-            return httpx.Response(200, json=pages[len(seen_queries) - 1] if len(seen_queries) <= 2 else [])
+            return httpx.Response(
+                200, json=pages[len(seen_queries) - 1] if len(seen_queries) <= 2 else []
+            )
 
         guilds = await client_with(handler).fetch_user_guilds("at")
 

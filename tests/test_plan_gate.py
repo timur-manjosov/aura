@@ -1,15 +1,23 @@
 """aura.billing.plan_gate: the runtime Free/Pro answer, its modes, and its in-memory view."""
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from aura.billing import GracePolicy, PlanBasis, PlanGate, PlanTier, SubscriptionRecord, SubscriptionStatus
+from aura.billing import (
+    GracePolicy,
+    PlanBasis,
+    PlanGate,
+    PlanTier,
+    SubscriptionRecord,
+    SubscriptionStatus,
+)
 from aura.billing.entitlement import InvoiceStatus
 from aura.config import BillingMode, Settings
 
-NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
 POLICY = GracePolicy(renewal_grace=timedelta(hours=72), payment_failure_grace=timedelta(days=7))
 GUILD_A = 100000000000000001
 GUILD_B = 200000000000000002
@@ -44,9 +52,16 @@ class Clock:
         return self.moment
 
 
-def gate(*records: SubscriptionRecord, clock: Clock | None = None, complimentary: frozenset[int] = frozenset()) -> PlanGate:
+def gate(
+    *records: SubscriptionRecord,
+    clock: Clock | None = None,
+    complimentary: frozenset[int] = frozenset(),
+) -> PlanGate:
     return PlanGate(
-        enforced=True, policy=POLICY, complimentary_guild_ids=complimentary, records=records,
+        enforced=True,
+        policy=POLICY,
+        complimentary_guild_ids=complimentary,
+        records=records,
         clock=clock or Clock(NOW),
     )
 
@@ -104,7 +119,10 @@ class TestRecordApplied:
     def test_an_equal_or_older_version_is_ignored(self, version: int) -> None:
         view = gate(record(version=1))
 
-        assert view.record_applied(record(version=version, status=SubscriptionStatus.CANCELED)) is False
+        assert (
+            view.record_applied(record(version=version, status=SubscriptionStatus.CANCELED))
+            is False
+        )
         assert view.allows_pro(GUILD_A)
 
     def test_out_of_order_bookkeeping_cannot_move_the_view_backwards(self) -> None:
@@ -127,7 +145,10 @@ class TestRecordApplied:
         older = record(subscription_id="sub_old", current_period_end=NOW + timedelta(days=1))
         newer = record(subscription_id="sub_new", current_period_end=NOW + timedelta(days=40))
 
-        assert [r.subscription_id for r in gate(older, newer).records_for(GUILD_A)] == ["sub_new", "sub_old"]
+        assert [r.subscription_id for r in gate(older, newer).records_for(GUILD_A)] == [
+            "sub_new",
+            "sub_old",
+        ]
 
 
 class TestFromSettings:

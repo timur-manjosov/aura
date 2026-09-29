@@ -5,6 +5,7 @@ constraint that absorbs a redelivered gateway event, LIMIT's treatment of a
 negative value, guild isolation, nullable stage columns) is SQLite's, and
 mocking it away would test nothing.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -211,9 +212,7 @@ class TestRecordAndRead:
 
         assert [s.message_id for s in signals] == list(reversed(range(30)))
 
-    async def test_limit_caps_the_number_of_rows_returned(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_limit_caps_the_number_of_rows_returned(self, conn: aiosqlite.Connection) -> None:
         for message_id in range(10):
             await _record(conn, message_id=message_id)
 
@@ -436,9 +435,7 @@ class TestConcurrency:
     async def test_a_burst_of_concurrent_writes_records_every_distinct_message(
         self, conn: aiosqlite.Connection
     ) -> None:
-        await asyncio.gather(
-            *(_record(conn, message_id=message_id) for message_id in range(50))
-        )
+        await asyncio.gather(*(_record(conn, message_id=message_id) for message_id in range(50)))
 
         signals = await get_recent_signals(conn, guild_id=GUILD_A, limit=100)
         assert len(signals) == 50
@@ -453,9 +450,7 @@ class TestConcurrency:
 
 
 class TestSchemaVerification:
-    async def test_a_freshly_initialized_database_passes(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_a_freshly_initialized_database_passes(self, conn: aiosqlite.Connection) -> None:
         await verify_signal_schema(conn)  # must not raise
 
     async def test_a_database_with_no_such_table_passes(self) -> None:
@@ -520,9 +515,7 @@ class TestSchemaVerification:
         for _ in range(3):
             await verify_signal_schema(conn)
 
-    async def test_verification_never_writes_anything(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_verification_never_writes_anything(self, conn: aiosqlite.Connection) -> None:
         await _record(conn, message_id=1)
 
         await verify_signal_schema(conn)
@@ -779,7 +772,9 @@ class TestSynthesisOutcome:
             conn, channel_id=1, message_id=1, answers_question=True, posted=True
         )
 
-        signals = {s.message_id: s for s in await get_recent_signals(conn, guild_id=GUILD_A, limit=10)}
+        signals = {
+            s.message_id: s for s in await get_recent_signals(conn, guild_id=GUILD_A, limit=10)
+        }
         assert signals[1].synthesis_posted is True
         assert signals[2].synthesis_posted is None  # untouched
 
@@ -806,9 +801,7 @@ class TestSynthesisOutcome:
 
 
 class TestKnowledgeModelIsolation:
-    async def test_recording_signals_never_creates_a_fact(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_recording_signals_never_creates_a_fact(self, conn: aiosqlite.Connection) -> None:
         for message_id in range(5):
             await _record(conn, message_id=message_id)
 

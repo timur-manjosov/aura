@@ -16,6 +16,7 @@ Each case carries an English `note` describing what it is probing, so the
 report can say *why* a case exists rather than printing an unreadable string
 and leaving the reader to guess.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

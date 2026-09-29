@@ -24,6 +24,7 @@ error below: unlike the embed's content, that message can be seen by any
 member who tries this command out of curiosity, not only the operator, so it
 goes through the same t() seam every other command's permission error does.
 """
+
 from __future__ import annotations
 
 import logging
@@ -84,6 +85,18 @@ async def _handle_operator_budget_error(
 async def operator_budget_command(interaction: discord.Interaction[AuraClient]) -> None:
     """Show today's cross-guild call counts, the rough estimated spend, and the combined total.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     Read-only, and reads exactly the numbers aura.proactive.gate,
     aura.extraction.pipeline, aura.variants_service and aura.backfill.worker
     each check before claiming a per-guild slot (see
@@ -141,5 +154,15 @@ operator_budget_command.error(_handle_operator_budget_error)
 
 
 def register_operator_commands(tree: app_commands.CommandTree) -> None:
-    """Register the operator-only cross-guild budget command onto tree."""
+    """Register the operator-only cross-guild budget command onto tree.
+
+    Parameters
+    ----------
+    tree
+        The command tree to register into.
+
+    Returns
+    -------
+    None
+    """
     tree.add_command(operator_budget_command)

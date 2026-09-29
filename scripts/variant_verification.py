@@ -32,6 +32,7 @@ WHAT IT MEASURES:
   * how many variants get rejected in practice, and why (the audit's own
     reasoning sentence, printed verbatim).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,17 +43,20 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import numpy as np  # noqa: E402
-from fastembed import TextEmbedding  # noqa: E402
+import numpy as np
+from fastembed import TextEmbedding
 
-from aura.config import load_settings  # noqa: E402
-from aura.embeddings import cosine_similarity, embed_texts  # noqa: E402
-from aura.variants_service import (  # noqa: E402
+from aura.config import load_settings
+from aura.embeddings import cosine_similarity, embed_texts
+from aura.variants_service import (
     _audit_variants,
     _generate_variants,
 )
@@ -106,8 +110,7 @@ CASES: list[VerificationCase] = [
         name="exception-en-US",
         locale="en-US",
         canonical=(
-            "Uploads in #trading are capped at 5MB, except on Saturdays "
-            "when the limit is lifted."
+            "Uploads in #trading are capped at 5MB, except on Saturdays when the limit is lifted."
         ),
         required_substrings=("saturday",),
     ),
@@ -134,8 +137,7 @@ CASES: list[VerificationCase] = [
         name="scope-en-US",
         locale="en-US",
         canonical=(
-            "Voice channel #late-night-lounge is reserved for members with "
-            "the Night Owl role only."
+            "Voice channel #late-night-lounge is reserved for members with the Night Owl role only."
         ),
         scope_substring="late-night-lounge",
     ),
@@ -151,10 +153,7 @@ CASES: list[VerificationCase] = [
     VerificationCase(
         name="scope-ja",
         locale="ja",
-        canonical=(
-            "ボイスチャンネル #夜更かしラウンジ は「夜型」ロールを"
-            "持つメンバー専用です。"
-        ),
+        canonical=("ボイスチャンネル #夜更かしラウンジ は「夜型」ロールを持つメンバー専用です。"),
         scope_substring="夜更かしラウンジ",
     ),
     # --- Case C: plain baseline, no special risk ----------------------------
@@ -203,9 +202,7 @@ class CaseResult:
     @property
     def dropped_qualifier_undetected(self) -> bool:
         """A variant missing the required exception that the audit still approved."""
-        return any(
-            o.faithful and not o.has_required_substrings for o in self.outcomes
-        )
+        return any(o.faithful and not o.has_required_substrings for o in self.outcomes)
 
     @property
     def over_generalised_undetected(self) -> bool:
@@ -242,14 +239,18 @@ async def _run_case(case: VerificationCase, embedding_model: TextEmbedding) -> C
     result = CaseResult(case=case)
 
     started = time.monotonic()
-    generated = await _generate_variants(case.canonical, count=VARIANT_COUNT, model=GENERATION_MODEL)
+    generated = await _generate_variants(
+        case.canonical, count=VARIANT_COUNT, model=GENERATION_MODEL
+    )
     result.generation_latency = time.monotonic() - started
     if not generated:
         return result
     result.generated = generated
 
     started = time.monotonic()
-    verdicts = await _audit_variants(canonical=case.canonical, variants=generated, model=AUDIT_MODEL)
+    verdicts = await _audit_variants(
+        canonical=case.canonical, variants=generated, model=AUDIT_MODEL
+    )
     result.audit_latency = time.monotonic() - started
     if verdicts is None:
         result.audit_failed = True
@@ -269,9 +270,7 @@ async def _run_case(case: VerificationCase, embedding_model: TextEmbedding) -> C
     stored_contents = [o.content for o in result.outcomes if o.faithful]
     if len(stored_contents) >= 2:
         embeddings = await embed_texts(embedding_model, stored_contents)
-        pairs = [
-            cosine_similarity(a, b) for a, b in itertools.combinations(embeddings, 2)
-        ]
+        pairs = [cosine_similarity(a, b) for a, b in itertools.combinations(embeddings, 2)]
         result.mean_pairwise_similarity = float(np.mean(pairs))
         result.max_pairwise_similarity = float(np.max(pairs))
 
@@ -349,7 +348,9 @@ async def main() -> int:
     if args.dry_run:
         print("DRY RUN -- nothing was spent.\n")
         print(f"  cases              {len(CASES)}")
-        print(f"  calls              {len(CASES) * 2} ({len(CASES)} generation + {len(CASES)} audit)")
+        print(
+            f"  calls              {len(CASES) * 2} ({len(CASES)} generation + {len(CASES)} audit)"
+        )
         print(f"  generation model   {GENERATION_MODEL}")
         print(f"  audit model        {AUDIT_MODEL}")
         print(f"  estimated cost     ${cost:.4f}")
@@ -375,8 +376,10 @@ async def main() -> int:
     for case in CASES:
         result = await _run_case(case, embedding_model)
         status = (
-            "GEN-FAILED" if not result.generated
-            else "AUDIT-FAILED" if result.audit_failed
+            "GEN-FAILED"
+            if not result.generated
+            else "AUDIT-FAILED"
+            if result.audit_failed
             else f"{len(result.stored)}/{len(result.generated)} stored"
         )
         print(f"  {case.name:<16} {status}", flush=True)
@@ -388,7 +391,7 @@ async def main() -> int:
     args.out.write_text(
         json.dumps(
             {
-                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generated_at": datetime.now(UTC).isoformat(),
                 "generation_model": GENERATION_MODEL,
                 "audit_model": AUDIT_MODEL,
                 "variant_count_requested": VARIANT_COUNT,

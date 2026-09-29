@@ -13,6 +13,7 @@ snapshot could let an older event land after a newer one and win. Every
 handled event is therefore only a signal to fetch the subscription from Stripe
 and store what it says now (aura_web.billing_sync).
 """
+
 from __future__ import annotations
 
 import json
@@ -87,9 +88,27 @@ def _subscription_reference(value: object) -> str | None:
 
 
 def subscription_id_for(event_type: str, data_object: dict[str, Any]) -> str | None:
-    """Which subscription a handled event concerns, from the object shape its type implies."""
+    """Which subscription a handled event concerns, from the object shape its type implies.
+
+    Parameters
+    ----------
+    event_type
+        The Stripe event type, which implies the shape of its data object.
+    data_object
+        The event's ``data.object``.
+
+    Returns
+    -------
+    str or None
+        The subscription the event concerns, or None when the object does not
+        carry one in the shape this type implies -- which the caller treats as
+        'nothing to sync', never as an error.
+    """
     if event_type.startswith("checkout.session."):
-        if data_object.get("object") != "checkout.session" or data_object.get("mode") != "subscription":
+        if (
+            data_object.get("object") != "checkout.session"
+            or data_object.get("mode") != "subscription"
+        ):
             return None
         return _subscription_reference(data_object.get("subscription"))
     if event_type.startswith("customer.subscription."):
@@ -112,7 +131,26 @@ def subscription_id_for(event_type: str, data_object: dict[str, Any]) -> str | N
 
 
 def parse_verified_event(payload: bytes) -> VerifiedEvent:
-    """Parse a body whose Stripe-Signature has ALREADY been verified."""
+    """Parse a body whose Stripe-Signature has ALREADY been verified.
+
+    Parameters
+    ----------
+    payload
+        The raw request body, whose Stripe-Signature has ALREADY been verified
+        by the caller. Parsing an unverified body here would make this function
+        a way to feed arbitrary JSON into the sync path.
+
+    Returns
+    -------
+    VerifiedEvent
+        The event's ID, type, livemode flag and data object.
+
+    Raises
+    ------
+    StripeEventError
+        If the body is not a JSON object or is missing a field the caller
+        needs.
+    """
     try:
         event = json.loads(
             payload.decode("utf-8"),

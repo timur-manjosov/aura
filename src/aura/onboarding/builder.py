@@ -30,6 +30,7 @@ milestones are retrospectively interesting to existing members, not
 actionable for someone who has no context for what changed or why, which is
 what CLAUDE.md's onboarding trigger exists to give.
 """
+
 from __future__ import annotations
 
 import aiosqlite
@@ -68,22 +69,39 @@ class OnboardingContent(BaseModel):
 
     @property
     def shown_count(self) -> int:
-        """How many facts this message actually lists, across all sections."""
+        """Return how many facts this message actually lists.
+
+        Returns
+        -------
+        int
+            Across all three sections.
+        """
         return len(self.rules) + len(self.status_changes) + len(self.other)
 
     @property
     def omitted_count(self) -> int:
-        """How many eligible facts the global cap left out entirely.
+        """Return how many eligible facts the global cap left out entirely.
 
-        Zero whenever every eligible fact fit under the cap -- the common case
-        on a small server, and the only case a brand-new server can be in.
+        Returns
+        -------
+        int
+            Never negative. Zero whenever every eligible fact fit under the cap --
+            the common case on a small server, and the only case a brand-new server
+            can be in.
         """
         return max(0, self.total_eligible - self.shown_count)
 
     @property
     def is_empty(self) -> bool:
-        """Whether this guild currently has nothing worth onboarding a member with.
+        """Report whether this guild has nothing worth onboarding a member with.
 
+        Returns
+        -------
+        bool
+            True only when all three sections are empty.
+
+        Notes
+        -----
         The same "deliberately conservative" stance the digest's is_empty and
         Trigger 2 both take: a guild with zero eligible active facts (a brand
         new server, or one where every fact happens to be a milestone) gets no
@@ -93,7 +111,20 @@ class OnboardingContent(BaseModel):
 
 
 def _take(facts: list[Fact], remaining: int) -> tuple[list[Fact], int]:
-    """Take up to `remaining` facts off the front of `facts`. Returns (taken, still-remaining)."""
+    """Take up to `remaining` facts off the front of a list.
+
+    Parameters
+    ----------
+    facts
+        The bucket to take from. Not modified.
+    remaining
+        How many may still be taken from the global budget.
+
+    Returns
+    -------
+    tuple[list[Fact], int]
+        What was taken, and how much budget is left afterwards.
+    """
     taken = facts[:remaining]
     return taken, remaining - len(taken)
 
@@ -103,6 +134,34 @@ async def build_onboarding_content(
 ) -> OnboardingContent:
     """Assemble one guild's onboarding content: its active facts, bucketed and capped.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to build for.
+    limit
+        The TOTAL number of facts shown across all three sections combined,
+        spent in priority order -- rules, then status changes, then everything
+        else. See `aura.config.Settings.onboarding_fact_limit` for why a single
+        total is the right shape rather than a per-section cap. Must not be
+        negative.
+
+    Returns
+    -------
+    OnboardingContent
+        The bucketed facts and the eligible total, so how many were omitted
+        stays knowable. Possibly empty -- see `OnboardingContent.is_empty`.
+
+    Raises
+    ------
+    ValueError
+        If `limit` is negative. Rejected rather than silently taking zero, the
+        same defensive posture `get_pending_facts` and `get_recent_signals` both
+        use for the same kind of parameter.
+
+    Notes
+    -----
     Read-only from start to finish, exactly like aura.digest.build_digest:
     nothing here writes to the knowledge model or records that onboarding was
     shown to anyone -- that bookkeeping is aura.db.onboarding_state's job, and
@@ -114,14 +173,6 @@ async def build_onboarding_content(
     of current state, and if the cap has to cut a bucket short, the most
     recently established rule or the most recently changed status is a better
     thing to keep than the oldest one.
-
-    `limit` bounds the TOTAL number of facts shown across all three sections
-    combined, spent in priority order (rules, then status changes, then
-    everything else) -- see aura.config.Settings.onboarding_fact_limit for why
-    a single total is the right shape rather than a per-section cap. Rejects a
-    negative limit rather than silently taking zero, the same defensive
-    posture get_pending_facts and get_recent_signals both use for the same
-    kind of parameter.
     """
     if limit < 0:
         raise ValueError(f"limit must not be negative, got {limit}")

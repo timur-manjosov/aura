@@ -14,10 +14,11 @@ reimplementation of that math; and that the permission error (unlike the
 embed itself) goes through the same translated t() seam every other command's
 does, since unlike the embed it can be seen by any member.
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -38,7 +39,7 @@ OPERATOR_ID = 999
 OTHER_USER_ID = 111
 GUILD_A = 100000000000000001
 
-NOW = datetime(2026, 9, 12, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 12, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -137,8 +138,13 @@ class TestCommandBody:
         self, conn: aiosqlite.Connection
     ) -> None:
         await try_acquire_escalation_slot(
-            conn, guild_id=GUILD_A, channel_id=1, message_id=1,
-            cooldown_seconds=0.0, daily_cap=1_000_000, now=NOW,
+            conn,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            cooldown_seconds=0.0,
+            daily_cap=1_000_000,
+            now=NOW,
         )
         interaction = _make_interaction(db=conn)
 
@@ -155,8 +161,13 @@ class TestCommandBody:
 
     async def test_over_budget_is_visibly_flagged(self, conn: aiosqlite.Connection) -> None:
         await try_acquire_escalation_slot(
-            conn, guild_id=GUILD_A, channel_id=1, message_id=1,
-            cooldown_seconds=0.0, daily_cap=1_000_000, now=NOW,
+            conn,
+            guild_id=GUILD_A,
+            channel_id=1,
+            message_id=1,
+            cooldown_seconds=0.0,
+            daily_cap=1_000_000,
+            now=NOW,
         )
         interaction = _make_interaction(db=conn, cross_guild_daily_budget_usd=0.001)
 

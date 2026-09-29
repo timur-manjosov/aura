@@ -12,6 +12,7 @@ proactive_channel_config.py gives.
 is opt-in per channel, not opt-out, and is_extraction_enabled returns False
 for an unconfigured channel rather than assuming a default.
 """
+
 from __future__ import annotations
 
 import aiosqlite
@@ -27,9 +28,29 @@ async def set_extraction_enabled(
     enabled: bool,
     updated_by_id: int,
 ) -> None:
-    """Turn automatic fact extraction on or off for one channel, recording who did it.
+    """Turn automatic fact extraction on or off for one channel.
 
-    An upsert keyed on channel_id, identical shape to
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild the channel belongs to, stored so a guild-wide read needs no
+        Discord lookup.
+    channel_id
+        Channel to configure. The table's primary key.
+    enabled
+        The new state.
+    updated_by_id
+        The moderator who made the change, recorded for accountability.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Idempotent per channel. An upsert keyed on channel_id, identical shape to
     proactive_channel_config.set_channel_enabled: toggling the same channel
     repeatedly leaves exactly one row, always reflecting the most recent
     decision. Writes through the shared per-connection lock like every other
@@ -52,8 +73,23 @@ async def set_extraction_enabled(
 
 
 async def is_extraction_enabled(conn: aiosqlite.Connection, *, channel_id: int) -> bool:
-    """Whether automatic fact extraction is enabled for channel_id. False if never configured.
+    """Report whether automatic fact extraction is enabled for one channel.
 
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    channel_id
+        Channel to check.
+
+    Returns
+    -------
+    bool
+        The configured state, or False when the channel has no row. Extraction
+        is opt-in: an unconfigured channel is OFF, never a default-on.
+
+    Notes
+    -----
     Not called from any live path yet in Phase 3a-1 -- the filter this gate
     will guard is built and tested but unwired (see aura.extraction) -- but it
     is written to the same cheap, single-indexed-lookup standard

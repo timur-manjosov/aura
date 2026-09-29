@@ -11,6 +11,7 @@ It is also where the two questions a stored channel ID can fail on are answered
 once, rather than at the send: the channel may no longer exist or be visible,
 and it may not be a text channel at all any more.
 """
+
 from __future__ import annotations
 
 import logging
@@ -25,7 +26,19 @@ class DigestGateway(Protocol):
     """Resolves a digest's target channel. Implemented against the real client below."""
 
     async def resolve_channel(self, channel_id: int) -> discord.TextChannel | None:
-        """Return the text channel to post into, or None if it cannot be used."""
+        """Return the text channel to post into, or None if it cannot be used.
+
+        Parameters
+        ----------
+        channel_id
+            The stored channel ID configured for this guild.
+
+        Returns
+        -------
+        discord.TextChannel or None
+            The channel to post into, or None when it cannot be used. None is an
+            ordinary outcome here, not an error: it means "no digest this time".
+        """
         ...
 
 
@@ -43,8 +56,22 @@ class ClientDigestGateway:
         self._client = client
 
     async def resolve_channel(self, channel_id: int) -> discord.TextChannel | None:
-        """Return channel_id as a postable text channel, or None with a logged reason.
+        """Return a channel ID as a postable text channel, or None with a logged reason.
 
+        Parameters
+        ----------
+        channel_id
+            The stored channel ID configured for this guild.
+
+        Returns
+        -------
+        discord.TextChannel or None
+            The resolved channel, from the client cache when possible and over HTTP
+            otherwise; None when it was deleted, made inaccessible, or is no longer
+            a text channel, each logged with its reason and fixable with /aura-digest.
+
+        Notes
+        -----
         Returns None rather than raising for every way this can fail, because
         none of them is exceptional from the scheduler's point of view: a
         moderator can delete the digest channel, revoke Aura's access to it, or

@@ -36,7 +36,10 @@ moderator originally named, which is what lets a link outlive both of the
 facts it was drawn between without ever needing to be rewritten. A link that
 resolves to nothing contributes nothing.
 """
+
 from __future__ import annotations
+
+from typing import Final
 
 import aiosqlite
 
@@ -62,7 +65,7 @@ from aura.db.repository import get_linked_fact_ids, resolve_active_successors
 # (~40k characters, since fact content is capped at 4000 by the entry modal),
 # and the realistic case at nowhere near it -- a real fact is one distilled
 # sentence.
-LINKED_FACT_LIMIT = 5
+LINKED_FACT_LIMIT: Final = 5
 
 
 async def expand_with_linked_facts(
@@ -74,27 +77,43 @@ async def expand_with_linked_facts(
 ) -> list[Fact]:
     """Return `facts` followed by up to `limit` active facts linked to them.
 
-    `facts` are the citation candidates similarity search already selected, in
-    its ranking order, and they are returned first and unchanged -- this only
-    ever appends. Never raises for ordinary sparse data: no facts, no links, or
-    links that all resolve to nothing each just give back what was passed in.
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        Guild to resolve links within. Links never cross a guild boundary.
+    facts
+        The citation candidates similarity search selected, in its ranking
+        order. Returned first and unchanged: this only ever appends.
+    limit
+        How many linked facts may be appended. A limit of 0 or less appends
+        nothing.
 
-    The appended facts are ordered deterministically, and that matters for the
-    same reason find_similar_facts breaks its ties explicitly: this list
-    decides what a paid model sees, so two identical calls must produce two
-    identical prompts or an odd answer cannot be reproduced, let alone
-    diagnosed. The order is "neighbours of the best-ranked candidate first,
-    then by fact ID" -- the highest-ranked fact's links are the ones most
-    likely to matter, and ID ascending settles the rest without appealing to
-    SQLite's row order.
+    Returns
+    -------
+    list[Fact]
+        `facts`, then up to `limit` distinct active facts linked to them,
+        ordered neighbours-of-the-best-ranked-candidate first and then by
+        ascending fact ID.
 
-    Duplicates are impossible among the APPENDED facts: one already among
-    `facts` is never appended (the common case for two candidates linked to
-    each other), and two links that resolve through supersession onto the same
-    successor contribute it once. `facts` itself is echoed back exactly as
-    given, duplicates included -- deduplicating a caller's own ranking would be
-    a surprising thing for an expansion to do, and neither caller can produce
-    one anyway, since both build the list from find_similar_facts.
+    Notes
+    -----
+    Never raises for ordinary sparse data: no facts, no links, or links that all
+    resolve to nothing each just give back what was passed in.
+
+    Deterministic, and that matters for the same reason `find_similar_facts`
+    breaks its ties explicitly: this list decides what a paid model sees, so two
+    identical calls must produce two identical prompts or an odd answer cannot be
+    reproduced, let alone diagnosed.
+
+    Duplicates are impossible among the APPENDED facts: one already among `facts`
+    is never appended (the common case for two candidates linked to each other),
+    and two links that resolve through supersession onto the same successor
+    contribute it once. `facts` itself is echoed back exactly as given,
+    duplicates included -- deduplicating a caller's own ranking would be a
+    surprising thing for an expansion to do, and neither caller can produce one
+    anyway, since both build the list from `find_similar_facts`.
     """
     if not facts or limit <= 0:
         return list(facts)

@@ -47,6 +47,7 @@ whether the candidate changes the same fact's value (CONTRADICTION-1) or
 changes the subject entirely while reusing the wording (INDEPENDENT-1) -- the
 "Attack It" case the phase brief specifically asked for.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -103,8 +104,7 @@ SUPERSESSION_CASES: list[SupersessionCase] = [
         predecessor_locale="en-US",
         predecessor="The winter tournament starts Saturday.",
         candidate_locale="en-US",
-        candidate="The winter tournament originally set for Saturday has been "
-        "moved to Sunday.",
+        candidate="The winter tournament originally set for Saturday has been moved to Sunday.",
         rationale="Explicit reschedule language ('originally set for ... has been "
         "moved to') names the old value and replaces it outright -- not a "
         "refinement, a correction. Matched against COMPLEMENTARY-1, which shares "
@@ -158,8 +158,7 @@ SUPERSESSION_CASES: list[SupersessionCase] = [
         predecessor_locale="ja",
         predecessor="トーナメントは8月15日に開催される。",
         candidate_locale="en-US",
-        candidate="The tournament originally set for August 15 has been "
-        "rescheduled to August 22.",
+        candidate="The tournament originally set for August 15 has been rescheduled to August 22.",
         rationale="The candidate explicitly names the predecessor's date (August "
         "15) and states it moved to August 22 -- an unambiguous, cross-locale "
         "supersession of the same event.",
@@ -192,11 +191,9 @@ SUPERSESSION_CASES: list[SupersessionCase] = [
         name="supersession-channel-closed",
         category=SUPERSESSION,
         predecessor_locale="pt-BR",
-        predecessor="O canal #sugestões está aberto para todos os membros "
-        "enviarem ideias.",
+        predecessor="O canal #sugestões está aberto para todos os membros enviarem ideias.",
         candidate_locale="pt-BR",
-        candidate="O canal #sugestões foi fechado permanentemente e não aceita "
-        "mais sugestões.",
+        candidate="O canal #sugestões foi fechado permanentemente e não aceita mais sugestões.",
         rationale="A status_change from open to closed on the same channel. "
         "CLAUDE.md names retirement of a rule/feature as itself a current, "
         "checkable fact that replaces the prior state -- the predecessor's "
@@ -214,8 +211,7 @@ COMPLEMENTARY_CASES: list[SupersessionCase] = [
         predecessor_locale="en-US",
         predecessor="The winter tournament starts Saturday.",
         candidate_locale="en-US",
-        candidate="The winter tournament starts Saturday at 18:00 UTC in the "
-        "#events channel.",
+        candidate="The winter tournament starts Saturday at 18:00 UTC in the #events channel.",
         rationale="CLAUDE.md's own worked example: a refinement that adds detail "
         "(exact time, channel) without changing or contradicting the original "
         "claim (the day). Matched against SUPERSESSION-1, which shares this "
@@ -255,8 +251,7 @@ COMPLEMENTARY_CASES: list[SupersessionCase] = [
         predecessor_locale="es-ES",
         predecessor="El servidor alcanzó el nivel 2 de boost en julio.",
         candidate_locale="es-ES",
-        candidate="Gracias al nivel 2 de boost, ahora hay 100 emojis "
-        "personalizados disponibles.",
+        candidate="Gracias al nivel 2 de boost, ahora hay 100 emojis personalizados disponibles.",
         rationale="The candidate is a consequence of the predecessor, not a "
         "replacement of it -- both remain simultaneously true and a synthesis "
         "answer benefits from citing both together.",
@@ -290,11 +285,9 @@ COMPLEMENTARY_CASES: list[SupersessionCase] = [
         name="complementary-onboarding-two-steps-cross",
         category=COMPLEMENTARY,
         predecessor_locale="pt-BR",
-        predecessor="Novos membros recebem um cargo temporário 'Visitante' ao "
-        "entrar.",
+        predecessor="Novos membros recebem um cargo temporário 'Visitante' ao entrar.",
         candidate_locale="en-US",
-        candidate="New members must react to the rules message to receive the "
-        "full member role.",
+        candidate="New members must react to the rules message to receive the full member role.",
         rationale="Two sequential steps of the same onboarding flow (temporary "
         "role on join, then a separate action to earn the full role) -- both "
         "true, neither replaces the other. Cross-locale: Portuguese "
@@ -471,11 +464,9 @@ INDEPENDENT_CASES: list[SupersessionCase] = [
         name="independent-two-tournaments-same-weekend",
         category=INDEPENDENT,
         predecessor_locale="fr",
-        predecessor="Le tournoi d'échecs aura lieu ce week-end dans le salon "
-        "#echecs.",
+        predecessor="Le tournoi d'échecs aura lieu ce week-end dans le salon #echecs.",
         candidate_locale="fr",
-        candidate="Le tournoi de belote aura lieu ce week-end dans le salon "
-        "#cartes.",
+        candidate="Le tournoi de belote aura lieu ce week-end dans le salon #cartes.",
         rationale="Two distinct tournaments (chess, belote) in two distinct "
         "channels that merely share a weekend and sentence structure -- not "
         "the same event under any reading.",
@@ -510,8 +501,7 @@ INDEPENDENT_CASES: list[SupersessionCase] = [
         name="independent-prohibited-sharing-different-topic-cross",
         category=INDEPENDENT,
         predecessor_locale="pt-BR",
-        predecessor="É proibido compartilhar links de outros servidores no chat "
-        "geral.",
+        predecessor="É proibido compartilhar links de outros servidores no chat geral.",
         candidate_locale="en-US",
         candidate="Sharing spoilers about ongoing anime series is prohibited in "
         "the #anime channel.",
@@ -523,8 +513,7 @@ INDEPENDENT_CASES: list[SupersessionCase] = [
         name="independent-decision-closure-different-channel",
         category=INDEPENDENT,
         predecessor_locale="es-ES",
-        predecessor="Se decidió que el canal de música se cerrará los domingos "
-        "por mantenimiento.",
+        predecessor="Se decidió que el canal de música se cerrará los domingos por mantenimiento.",
         candidate_locale="es-ES",
         candidate="Se decidió que el canal de arte se cerrará los domingos para "
         "revisión de contenido.",
@@ -562,8 +551,7 @@ PHASE_3A3_ATTACK_CASES: list[SupersessionCase] = [
         predecessor_locale="de",
         predecessor="Mitglieder dürfen maximal 3 Haustier-Rollen gleichzeitig haben.",
         candidate_locale="de",
-        candidate="Ab sofort dürfen Mitglieder maximal 5 Haustier-Rollen "
-        "gleichzeitig haben.",
+        candidate="Ab sofort dürfen Mitglieder maximal 5 Haustier-Rollen gleichzeitig haben.",
         rationale="Word-for-word CONTRADICTION-2 (contradiction-pet-role-limit, "
         "the case that decided the model bake-off) with 'Ab sofort' added and "
         "nothing else changed. The pair isolates exactly one variable: the "
@@ -580,8 +568,7 @@ PHASE_3A3_ATTACK_CASES: list[SupersessionCase] = [
         predecessor_locale="en-US",
         predecessor="The upload limit in the #resources channel is 25 MB.",
         candidate_locale="en-US",
-        candidate="From now on, the upload limit in the #screenshots channel is "
-        "10 MB.",
+        candidate="From now on, the upload limit in the #screenshots channel is 10 MB.",
         rationale="INDEPENDENT-1 with 'From now on' added. The changed word is "
         "still the CHANNEL, so these remain two separate rules about two "
         "separate channels -- but the sentence now contains the strongest "

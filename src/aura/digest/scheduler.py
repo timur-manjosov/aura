@@ -30,6 +30,7 @@ is the whole mechanism: see try_claim_digest_run for why "one catch-up" is a
 structural property of a half-open window rather than a rule that had to be
 implemented.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -58,8 +59,24 @@ logger = logging.getLogger(__name__)
 
 
 def window_start(config: DigestConfig, last_finished: str | None) -> str:
-    """Where this guild's next digest window begins.
+    """Return where this guild's next digest window begins.
 
+    Parameters
+    ----------
+    config
+        The guild's digest settings; `enabled_at` is the boundary that matters.
+    last_finished
+        The end of the last window that actually advanced the schedule, or None
+        if the guild has none.
+
+    Returns
+    -------
+    str
+        The LATER of `enabled_at` and `last_finished`, as fixed-width UTC
+        ISO-8601 text.
+
+    Notes
+    -----
     The later of two boundaries, and it needs both:
 
       * the end of the last window that finished, so consecutive digests neither
@@ -88,8 +105,28 @@ def window_start(config: DigestConfig, last_finished: str | None) -> str:
 async def send_due_digests(
     db: aiosqlite.Connection, gateway: DigestGateway, *, now: datetime, plan_gate: PlanGate
 ) -> int:
-    """Post a digest for every guild whose interval has elapsed. Returns how many posted.
+    """Post a digest for every guild whose interval has elapsed.
 
+    Parameters
+    ----------
+    db
+        Open database connection.
+    gateway
+        Resolves each guild's configured channel.
+    now
+        The moment to evaluate dueness at.
+    plan_gate
+        Decides whether each guild may use this Pro trigger.
+
+    Returns
+    -------
+    int
+        How many digests were actually posted. A guild that was not due, was
+        empty, was refused by the plan gate, or whose send failed contributes
+        nothing.
+
+    Notes
+    -----
     One guild at a time, sequentially rather than concurrently, for the same
     reasons flush_due_batches gives: the per-connection lock serializes the
     database work anyway, nobody is waiting on a digest, and a sequential sweep
@@ -243,8 +280,7 @@ async def _post_guild_digest(
         # Another evaluation of this guild claimed the same window first. It is
         # posting (or has posted) the same content; this one must not.
         logger.info(
-            "Digest window for guild %s was already claimed by a concurrent run; "
-            "staying silent",
+            "Digest window for guild %s was already claimed by a concurrent run; staying silent",
             config.guild_id,
         )
         return False
@@ -328,9 +364,7 @@ async def _send(
     message actually reached Discord.
     """
     locale = digest_locale(channel.guild)
-    embed = build_digest_embed(
-        content, locale=locale, interval_seconds=config.interval_seconds
-    )
+    embed = build_digest_embed(content, locale=locale, interval_seconds=config.interval_seconds)
     try:
         # Mentions are suppressed explicitly even though Discord does not
         # resolve them inside an embed: a fact's text is written by a server
@@ -360,6 +394,24 @@ async def run_digest_scheduler(
 ) -> None:
     """Wake periodically and post whatever digests are due. Runs for the process's life.
 
+    Parameters
+    ----------
+    db
+        Open database connection.
+    gateway
+        Resolves each guild's configured channel.
+    settings
+        Loaded configuration.
+    plan_gate
+        Decides whether each guild may use this Pro trigger.
+
+    Returns
+    -------
+    None
+        Runs until cancelled.
+
+    Notes
+    -----
     Never dies of a failure it can survive, for the same reason the extraction
     sweeper does not: a scheduler task that exits silently leaves a bot that
     looks healthy while its digests simply never arrive again, which is the

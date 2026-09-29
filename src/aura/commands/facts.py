@@ -1,4 +1,5 @@
 """Manual fact entry: a message context menu to create facts, and a list command."""
+
 from __future__ import annotations
 
 import logging
@@ -77,7 +78,7 @@ class AddFactModal(discord.ui.Modal):
         self._message_id = message_id
 
         default = _truncate(prefill_content, _TEXT_INPUT_MAX_LENGTH) if prefill_content else None
-        self.content_input = discord.ui.TextInput(
+        self.content_input: discord.ui.TextInput[discord.ui.Modal] = discord.ui.TextInput(
             style=discord.TextStyle.paragraph,
             default=default,
             max_length=_TEXT_INPUT_MAX_LENGTH,
@@ -87,7 +88,17 @@ class AddFactModal(discord.ui.Modal):
         self.add_item(discord.ui.Label(text=label_text, component=self.content_input))
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        """Validate and store the submitted content, replying ephemerally either way."""
+        """Validate and store the submitted content, replying ephemerally either way.
+
+        Parameters
+        ----------
+        interaction
+            The modal submission. Its locale decides the reply's language.
+
+        Returns
+        -------
+        None
+        """
         locale = str(interaction.locale)
         content = (self.content_input.value or "").strip()
 
@@ -109,9 +120,24 @@ class AddFactModal(discord.ui.Modal):
             t("fact_add_success", locale, fact_id=fact.id), ephemeral=True
         )
 
-    async def on_error(self, _interaction: discord.Interaction, error: Exception) -> None:
+    async def on_error(  # type: ignore[override]
+        self, _interaction: discord.Interaction, error: Exception
+    ) -> None:
         """Log unexpected failures through Aura's own logger.
 
+        Parameters
+        ----------
+        _interaction
+            The submission that failed. Unused: nothing is sent to the user here.
+        error
+            The exception discord.py caught.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
         Attaching a local error handler (this method, or the command-level
         ones below) suppresses discord.py's own default logging for that
         interaction, so this replaces it rather than adding to it.
@@ -151,7 +177,21 @@ async def _handle_fact_command_error(
 async def add_fact_context_menu(
     interaction: discord.Interaction[AuraClient], message: discord.Message
 ) -> None:
-    """Open a pre-filled modal to turn the right-clicked message into a fact."""
+    """Open a pre-filled modal to turn the right-clicked message into a fact.
+
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    message
+        The message a moderator invoked the context menu on. Its text prefills
+        the modal and its permalink becomes the fact's origin reference.
+
+    Returns
+    -------
+    None
+    """
     assert message.guild is not None  # guaranteed by guild_only()
     db = interaction.client.db
     assert db is not None  # setup_hook always finishes before commands go live
@@ -171,7 +211,9 @@ async def add_fact_context_menu(
     await interaction.response.send_modal(modal)
 
 
-@app_commands.command(name="aura-facts", description="List Aura's current active facts for this server.")
+@app_commands.command(
+    name="aura-facts", description="List Aura's current active facts for this server."
+)
 @app_commands.describe(
     query="Optional: find facts similar to this text instead of listing all of them."
 )
@@ -182,6 +224,21 @@ async def list_facts_command(
 ) -> None:
     """List the guild's active facts, or -- if query is given -- rank them by similarity to it.
 
+    Parameters
+    ----------
+    interaction
+        The command invocation. Carries the invoker's locale, the guild it was
+        run in, and the client the database, models and plan gate hang off.
+    query
+        Optional text to rank the guild's facts against; None lists the most
+        recent ones instead.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
     query omitted or blank: unchanged Phase 1c behavior, newest-first,
     capped at _LIST_DISPLAY_LIMIT. query given: a raw debug view over
     find_similar_facts's ranking (fact content alongside its similarity
@@ -199,7 +256,12 @@ async def list_facts_command(
         model = interaction.client.embedding_model
         assert model is not None  # setup_hook always finishes before commands go live
         await _respond_with_search_results(
-            interaction, db, model, guild_id=interaction.guild_id, query=stripped_query, locale=locale
+            interaction,
+            db,
+            model,
+            guild_id=interaction.guild_id,
+            query=stripped_query,
+            locale=locale,
         )
         return
 
@@ -261,6 +323,16 @@ list_facts_command.error(_handle_fact_command_error)
 
 
 def register_fact_commands(tree: app_commands.CommandTree) -> None:
-    """Register the fact-related context menu and slash command onto tree."""
+    """Register the fact-related context menu and slash command onto tree.
+
+    Parameters
+    ----------
+    tree
+        The command tree to register into.
+
+    Returns
+    -------
+    None
+    """
     tree.add_command(add_fact_context_menu)
     tree.add_command(list_facts_command)

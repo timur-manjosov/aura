@@ -13,6 +13,7 @@ the value written to the database is always one a human recognised, and the
 range check in aura.db.digest_config only ever has to defend against a
 hand-edited row rather than against a typo in a slash command.
 """
+
 from __future__ import annotations
 
 from enum import IntEnum
@@ -45,10 +46,25 @@ class DigestInterval(IntEnum):
 
 
 def describe_interval(interval_seconds: int, locale: str) -> str:
-    """Name an interval in the reader's language: "weekly", "alle zwei Wochen", ...
+    """Name an interval in the reader's language.
 
-    Falls back to a localized "every N seconds" for a value that matches no
-    member, which is unreachable through the slash command and reachable only
+    Parameters
+    ----------
+    interval_seconds
+        The stored `digest_config.interval_seconds` value.
+    locale
+        Locale to name it in.
+
+    Returns
+    -------
+    str
+        The localized name of the matching `DigestInterval` ("weekly", "alle
+        zwei Wochen", ...), or a localized "every N seconds" for a value that
+        matches no member.
+
+    Notes
+    -----
+    The fallback is unreachable through the slash command and reachable only
     through a hand-edited database. Reporting the raw number rather than
     rounding it to the nearest named cadence is deliberate: a moderator reading
     "weekly" about a row that actually says 900 seconds would have no way to

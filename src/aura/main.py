@@ -1,4 +1,5 @@
 """Entry point for the Aura Discord bot."""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +12,9 @@ import discord
 from discord import app_commands
 from fastembed import TextEmbedding
 
+from aura.backfill import ClientBackfillGateway, run_backfill_worker
+from aura.billing import PlanGate
+from aura.billing.internal_api import InternalApiServer, start_internal_api
 from aura.commands import (
     register_ask_command,
     register_backfill_command,
@@ -25,9 +29,6 @@ from aura.commands import (
     register_proactive_commands,
     register_supersede_command,
 )
-from aura.backfill import ClientBackfillGateway, run_backfill_worker
-from aura.billing import PlanGate
-from aura.billing.internal_api import InternalApiServer, start_internal_api
 from aura.config import ConfigurationError, ModelComponent, Settings, load_settings
 from aura.db import init_schema
 from aura.db.pending_facts import verify_pending_facts_schema
@@ -167,9 +168,7 @@ class AuraClient(discord.Client):
         # as self.db, and the same lesson Phase 1c's modal redesign already
         # applied (constructor argument over reaching into interaction.client
         # from a generic base-class override).
-        self.embedding_model = await asyncio.to_thread(
-            TextEmbedding, self.settings.embedding_model
-        )
+        self.embedding_model = await asyncio.to_thread(TextEmbedding, self.settings.embedding_model)
         logger.info("Embedding model ready: %s", self.settings.embedding_model)
 
         # Embeds the question exemplars once, here, for the same reason the
@@ -182,9 +181,7 @@ class AuraClient(discord.Client):
         # running with have to be visible without reading its .env.
         gate_config = ProactiveGateConfig.from_settings(self.settings)
         self.gate_config = gate_config
-        proactive_llm = (
-            "on" if self.settings.is_llm_configured(ModelComponent.PROACTIVE) else "off"
-        )
+        proactive_llm = "on" if self.settings.is_llm_configured(ModelComponent.PROACTIVE) else "off"
         logger.info(
             "Proactive gate ready: question>=%.3f, similarity>=%.2f, "
             "cooldown %.0fs/channel, cap %d/guild/UTC-day, grace %.0fs, LLM %s "
@@ -200,9 +197,7 @@ class AuraClient(discord.Client):
         # Phase 3a-2: the second detector, built here for exactly the reasons
         # the first one is -- one-time exemplar embedding that must be finished
         # before the first message arrives, not repeated per event.
-        self.fact_worthiness_detector = await create_fact_worthiness_detector(
-            self.embedding_model
-        )
+        self.fact_worthiness_detector = await create_fact_worthiness_detector(self.embedding_model)
         extraction_llm = (
             "on" if self.settings.is_llm_configured(ModelComponent.EXTRACTION) else "off"
         )
@@ -359,6 +354,17 @@ class AuraClient(discord.Client):
     async def on_message(self, message: discord.Message) -> None:
         """Hand each message to the two passive paths: proactive relief, then extraction.
 
+        Parameters
+        ----------
+        message
+            The incoming Discord message, as dispatched by the gateway.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
         A thin adapter, on purpose: every decision about what to evaluate and
         what to do with a failure lives in aura.proactive.listener and
         aura.extraction.pipeline, where each is testable without a gateway
@@ -432,27 +438,45 @@ class AuraClient(discord.Client):
         three Discord events that mean "this message changed" each notify both
         without any of them growing a second copy of the same two calls.
         """
-        self.grace_registry.notice_message_gone(
-            channel_id=channel_id, message_id=message_id
-        )
+        self.grace_registry.notice_message_gone(channel_id=channel_id, message_id=message_id)
         if self.db is not None:
             await withdraw_message(self.db, channel_id=channel_id, message_id=message_id)
 
     async def on_message_delete(self, message: discord.Message) -> None:
         """Withdraw a deleted message from both passive paths.
 
+        Parameters
+        ----------
+        message
+            The deleted message, when discord.py had it cached.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
         discord.py's cache only guarantees `message` is populated for messages
         it had cached (see on_raw_message_delete below for the uncached case)
         -- but the only two fields this needs, channel and message ID, survive
         on an uncached partial message too.
         """
-        await self._notice_message_withdrawn(
-            channel_id=message.channel.id, message_id=message.id
-        )
+        await self._notice_message_withdrawn(channel_id=message.channel.id, message_id=message.id)
 
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
         """Withdraw a deleted message discord.py's cache missed.
 
+        Parameters
+        ----------
+        payload
+            The raw delete event, which arrives for uncached messages too.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
         on_message_delete only fires for a message discord.py already had
         cached; a message deleted after falling out of that cache (or one Aura
         never saw created, in principle) still needs its grace period cancelled
@@ -467,11 +491,23 @@ class AuraClient(discord.Client):
             channel_id=payload.channel_id, message_id=payload.message_id
         )
 
-    async def on_message_edit(
-        self, _before: discord.Message, after: discord.Message
-    ) -> None:
+    async def on_message_edit(self, _before: discord.Message, after: discord.Message) -> None:
         """Treat an edit exactly like a deletion, for both passive paths.
 
+        Parameters
+        ----------
+        _before
+            The message as it was. Unused: an edit is treated as a withdrawal
+            regardless of what changed.
+        after
+            The message as it now is.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
         An edit may have changed the message into something the original scores
         no longer describe -- a question that is no longer that question, or a
         candidate whose text no longer says what cleared the fact-worthiness
@@ -480,13 +516,22 @@ class AuraClient(discord.Client):
         relief risks answering a question nobody asked, and extraction risks
         distilling a claim nobody made.
         """
-        await self._notice_message_withdrawn(
-            channel_id=after.channel.id, message_id=after.id
-        )
+        await self._notice_message_withdrawn(channel_id=after.channel.id, message_id=after.id)
 
     async def on_member_join(self, member: discord.Member) -> None:
         """Hand a new member's arrival to Phase 3d's onboarding trigger.
 
+        Parameters
+        ----------
+        member
+            The member who just joined.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
         A thin adapter, exactly like on_message above and for the same
         reason: every decision about whether to post, what to say and how to
         guard against duplicates lives in aura.onboarding.listener, where it
@@ -520,20 +565,27 @@ class AuraClient(discord.Client):
 def build_intents() -> discord.Intents:
     """Build the gateway intents Aura requires.
 
-    Message Content Intent and Server Members Intent are both privileged and
-    both requested here, and BOTH must ALSO be enabled for this bot in the
-    Discord Developer Portal, under Bot > Privileged Gateway Intents --
-    checked and enabled *before* deploying code that requests either one, not
-    after a failed deploy. Discord's gateway refuses the ENTIRE connection
-    (discord.errors.PrivilegedIntentsRequired) if a privileged intent is
-    requested in code but not approved on the portal side. This takes down
-    the whole bot, not just the feature that depends on the missing intent
-    (Message Content for reading message text at all; Server Members for
-    on_member_join, Phase 3d's onboarding trigger) -- under
-    `restart: unless-stopped` this becomes a crash-loop. Confirmed in
-    production on 2026-08-27 when Server Members was requested here but not
-    yet enabled on the portal (see reports/deployment-2026-08-27.txt); the
-    same failure mode applies to Message Content.
+    Returns
+    -------
+    discord.Intents
+        The default intents plus Message Content and Server Members, both
+        privileged.
+
+    Notes
+    -----
+    BOTH privileged intents must ALSO be enabled for this bot in the Discord
+    Developer Portal, under Bot > Privileged Gateway Intents -- checked and
+    enabled *before* deploying code that requests either one, not after a failed
+    deploy. Discord's gateway refuses the ENTIRE connection
+    (`discord.errors.PrivilegedIntentsRequired`) if a privileged intent is
+    requested in code but not approved on the portal side. That takes down the
+    whole bot, not just the feature depending on the missing intent (Message
+    Content for reading message text at all; Server Members for `on_member_join`,
+    Phase 3d's onboarding trigger) -- under `restart: unless-stopped` it becomes
+    a crash-loop. Confirmed in production on 2026-08-27 when Server Members was
+    requested here but not yet enabled on the portal (see
+    reports/deployment-2026-08-27.txt); the same failure mode applies to Message
+    Content.
     """
     intents = discord.Intents.default()
     intents.message_content = True
@@ -542,7 +594,21 @@ def build_intents() -> discord.Intents:
 
 
 def create_client(translator: Translator, settings: Settings) -> AuraClient:
-    """Construct the Aura Discord client and register its slash commands."""
+    """Construct the Aura Discord client and register its slash commands.
+
+    Parameters
+    ----------
+    translator
+        Resolves the command names and descriptions registered with Discord.
+    settings
+        Loaded configuration, handed to the client for its lifetime.
+
+    Returns
+    -------
+    AuraClient
+        A client with every command registered but not yet connected. Connecting
+        is the caller's step, so construction stays testable without a gateway.
+    """
     client = AuraClient(intents=build_intents(), settings=settings)
 
     # Command name/description are only resolved for en-US here. Localizing
@@ -558,7 +624,17 @@ def create_client(translator: Translator, settings: Settings) -> AuraClient:
         description=translator.t("ping_command_description", DEFAULT_LOCALE),
     )
     async def ping(interaction: discord.Interaction) -> None:
-        """Reply with a translated pong so users can confirm Aura is responsive."""
+        """Reply with a translated pong so users can confirm Aura is responsive.
+
+        Parameters
+        ----------
+        interaction
+            The command invocation. Only its locale is read.
+
+        Returns
+        -------
+        None
+        """
         locale = str(interaction.locale)
         await interaction.response.send_message(translator.t("ping_response", locale))
 

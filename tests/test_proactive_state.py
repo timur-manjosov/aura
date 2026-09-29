@@ -12,11 +12,12 @@ day.
 No Discord anywhere in this file, and no embedding model: the budget logic is
 pure data access and is verified as such.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -41,7 +42,7 @@ GUILD_B = 200000000000000002
 CHANNEL_1 = 5551
 CHANNEL_2 = 5552
 
-NOON = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+NOON = datetime(2026, 7, 24, 12, 0, 0, tzinfo=UTC)
 COOLDOWN = 900.0
 # Mirrors PROACTIVE_DAILY_CAP's production default (raised 20 -> 60 in
 # Phase 2b-3; see config.py), so the restart-durability tests below that use
@@ -115,7 +116,7 @@ class TestUtcDay:
         # The point of choosing UTC: every deployment, on any host, agrees on
         # when the cap resets. Lord Howe has a 30-minute DST shift and
         # Kiritimati is UTC+14, both of which would move a local boundary.
-        boundary = datetime(2026, 7, 25, 0, 0, tzinfo=timezone.utc)
+        boundary = datetime(2026, 7, 25, 0, 0, tzinfo=UTC)
         local = boundary.astimezone(ZoneInfo(zone))
         assert utc_day(local) == "2026-07-25"
         assert utc_day(local - timedelta(microseconds=1)) == "2026-07-24"
@@ -131,14 +132,14 @@ class TestUtcDay:
         # offset entirely when both operands share one tzinfo object -- the
         # difference of the two local midnights reads as a tidy 1 day until
         # you ask what actually elapsed.
-        local_day = datetime(2026, 3, 30, tzinfo=berlin).astimezone(timezone.utc) - datetime(
+        local_day = datetime(2026, 3, 30, tzinfo=berlin).astimezone(UTC) - datetime(
             2026, 3, 29, tzinfo=berlin
-        ).astimezone(timezone.utc)
+        ).astimezone(UTC)
         assert local_day == timedelta(hours=23)
 
         # Under UTC the same calendar day is exactly 24 hours, with the
         # boundary in one unambiguous place.
-        midnight = datetime(2026, 3, 29, tzinfo=timezone.utc)
+        midnight = datetime(2026, 3, 29, tzinfo=UTC)
         assert utc_day(midnight) == "2026-03-29"
         assert utc_day(midnight + timedelta(hours=24, microseconds=-1)) == "2026-03-29"
         assert utc_day(midnight + timedelta(hours=24)) == "2026-03-30"
@@ -153,9 +154,7 @@ class TestUtcDay:
 
 
 class TestFirstAcquisition:
-    async def test_the_first_eligible_message_gets_a_slot(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_the_first_eligible_message_gets_a_slot(self, conn: aiosqlite.Connection) -> None:
         attempt = await _acquire(conn)
 
         assert attempt.outcome is EscalationOutcome.GRANTED
@@ -283,9 +282,7 @@ class TestThreadScoping:
 
 
 class TestDailyCap:
-    async def test_the_cap_halts_escalation_once_reached(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_the_cap_halts_escalation_once_reached(self, conn: aiosqlite.Connection) -> None:
         # Deliberately engineered to exhaust the budget as fast as possible:
         # a distinct channel per message so the cooldown never interferes, and
         # nothing between them.
@@ -355,7 +352,9 @@ class TestDailyCap:
         # the guild-wide cap stands between them and 40 paid calls.
         results = await asyncio.gather(
             *(
-                _acquire(conn, guild_id=GUILD_A, channel_id=9000 + index, message_id=index, daily_cap=5)
+                _acquire(
+                    conn, guild_id=GUILD_A, channel_id=9000 + index, message_id=index, daily_cap=5
+                )
                 for index in range(40)
             )
         )
@@ -401,8 +400,8 @@ class TestDailyReset:
         self, conn: aiosqlite.Connection
     ) -> None:
         # The reset moment itself, from both sides, one microsecond apart.
-        last_moment = datetime(2026, 7, 24, 23, 59, 59, 999999, tzinfo=timezone.utc)
-        first_moment = datetime(2026, 7, 25, 0, 0, 0, tzinfo=timezone.utc)
+        last_moment = datetime(2026, 7, 24, 23, 59, 59, 999999, tzinfo=UTC)
+        first_moment = datetime(2026, 7, 25, 0, 0, 0, tzinfo=UTC)
 
         for index in range(CAP):
             await _acquire(conn, channel_id=9000 + index, message_id=index, now=last_moment)
@@ -420,8 +419,8 @@ class TestDailyReset:
     ) -> None:
         # Two independent protections: rolling over into a new day must not
         # hand a channel permission to interrupt again seconds later.
-        before_midnight = datetime(2026, 7, 24, 23, 59, 30, tzinfo=timezone.utc)
-        after_midnight = datetime(2026, 7, 25, 0, 0, 30, tzinfo=timezone.utc)
+        before_midnight = datetime(2026, 7, 24, 23, 59, 30, tzinfo=UTC)
+        after_midnight = datetime(2026, 7, 25, 0, 0, 30, tzinfo=UTC)
 
         await _acquire(conn, message_id=1, now=before_midnight)
         attempt = await _acquire(conn, message_id=2, now=after_midnight)
@@ -533,9 +532,7 @@ class TestConcurrency:
         # task, so a burst in one channel really does arrive as N coroutines
         # interleaving. A check-then-set implementation passes a sequential
         # test and fails this one.
-        results = await asyncio.gather(
-            *(_acquire(conn, message_id=index) for index in range(50))
-        )
+        results = await asyncio.gather(*(_acquire(conn, message_id=index) for index in range(50)))
 
         granted = [attempt for attempt in results if attempt.granted]
         assert len(granted) == 1
@@ -638,9 +635,7 @@ class TestTheGuardLivesInTheWrite:
 
     @staticmethod
     def _blind_precheck(monkeypatch: pytest.MonkeyPatch) -> None:
-        clear_reading = _LedgerState(
-            already_escalated=False, last_escalated_at=None, daily_count=0
-        )
+        clear_reading = _LedgerState(already_escalated=False, last_escalated_at=None, daily_count=0)
 
         async def always_clear(*_args: object, **_kwargs: object) -> _LedgerState:
             return clear_reading
@@ -766,9 +761,7 @@ class TestRestartDurability:
         finally:
             await second.close()
 
-    async def test_a_restart_loop_cannot_hand_out_extra_escalations(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_a_restart_loop_cannot_hand_out_extra_escalations(self, tmp_path: Path) -> None:
         # The failure this whole design exists to prevent: with in-memory
         # state, a crash-looping container would grant one escalation per
         # restart while every log line still claimed the cap was enforced.
@@ -777,9 +770,7 @@ class TestRestartDurability:
         for restart in range(10):
             connection = await self._open(database)
             try:
-                await _acquire(
-                    connection, channel_id=CHANNEL_1, message_id=restart, daily_cap=3
-                )
+                await _acquire(connection, channel_id=CHANNEL_1, message_id=restart, daily_cap=3)
             finally:
                 await connection.close()
 
@@ -789,9 +780,7 @@ class TestRestartDurability:
         finally:
             await connection.close()
 
-    async def test_a_restart_after_the_cap_is_reached_stays_capped(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_a_restart_after_the_cap_is_reached_stays_capped(self, tmp_path: Path) -> None:
         database = tmp_path / "aura.db"
 
         first = await self._open(database)
@@ -808,9 +797,7 @@ class TestRestartDurability:
         finally:
             await second.close()
 
-    async def test_a_restart_after_midnight_starts_the_new_day_clean(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_a_restart_after_midnight_starts_the_new_day_clean(self, tmp_path: Path) -> None:
         database = tmp_path / "aura.db"
 
         first = await self._open(database)
@@ -881,9 +868,7 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="daily_cap"):
             await _acquire(conn, daily_cap=cap)
 
-    async def test_the_bounds_themselves_are_accepted(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_the_bounds_themselves_are_accepted(self, conn: aiosqlite.Connection) -> None:
         # An inclusive bound that rejects its own limit would be an off-by-one
         # in the direction nobody tests.
         attempt = await _acquire(
@@ -951,9 +936,7 @@ class TestKnowledgeModelIsolation:
         async with conn.execute("PRAGMA foreign_key_list(proactive_escalations)") as cursor:
             assert await cursor.fetchall() == []
 
-    async def test_the_ledger_stores_no_message_content(
-        self, conn: aiosqlite.Connection
-    ) -> None:
+    async def test_the_ledger_stores_no_message_content(self, conn: aiosqlite.Connection) -> None:
         # Same rule as the signals table: origin is referenced by ID, raw text
         # is never duplicated into Aura's database.
         async with conn.execute("PRAGMA table_info(proactive_escalations)") as cursor:
@@ -977,9 +960,7 @@ class TestIsStillFreshestEscalation:
     ) -> None:
         await _acquire(conn, channel_id=CHANNEL_1, message_id=1)
 
-        assert await is_still_freshest_escalation(
-            conn, channel_id=CHANNEL_1, message_id=1
-        ) is True
+        assert await is_still_freshest_escalation(conn, channel_id=CHANNEL_1, message_id=1) is True
 
     async def test_a_later_grant_in_the_same_channel_supersedes_the_earlier_one(
         self, conn: aiosqlite.Connection
@@ -997,12 +978,8 @@ class TestIsStillFreshestEscalation:
             now=NOON + timedelta(seconds=1),
         )
 
-        assert await is_still_freshest_escalation(
-            conn, channel_id=CHANNEL_1, message_id=1
-        ) is False
-        assert await is_still_freshest_escalation(
-            conn, channel_id=CHANNEL_1, message_id=2
-        ) is True
+        assert await is_still_freshest_escalation(conn, channel_id=CHANNEL_1, message_id=1) is False
+        assert await is_still_freshest_escalation(conn, channel_id=CHANNEL_1, message_id=2) is True
 
     async def test_a_later_grant_in_a_different_channel_does_not_affect_this_one(
         self, conn: aiosqlite.Connection
@@ -1010,9 +987,7 @@ class TestIsStillFreshestEscalation:
         await _acquire(conn, channel_id=CHANNEL_1, message_id=1, now=NOON)
         await _acquire(conn, channel_id=CHANNEL_2, message_id=2, now=NOON + timedelta(seconds=1))
 
-        assert await is_still_freshest_escalation(
-            conn, channel_id=CHANNEL_1, message_id=1
-        ) is True
+        assert await is_still_freshest_escalation(conn, channel_id=CHANNEL_1, message_id=1) is True
 
     async def test_a_later_grant_in_a_different_guild_does_not_affect_this_one(
         self, conn: aiosqlite.Connection
@@ -1029,15 +1004,13 @@ class TestIsStillFreshestEscalation:
             now=NOON + timedelta(seconds=1),
         )
 
-        assert await is_still_freshest_escalation(
-            conn, channel_id=CHANNEL_1, message_id=1
-        ) is True
+        assert await is_still_freshest_escalation(conn, channel_id=CHANNEL_1, message_id=1) is True
 
     async def test_a_message_with_no_escalation_row_at_all_is_not_fresh(
         self, conn: aiosqlite.Connection
     ) -> None:
         # Unreachable in production (a granted slot is never deleted), but the
         # honest failure direction for a row this function cannot find.
-        assert await is_still_freshest_escalation(
-            conn, channel_id=CHANNEL_1, message_id=999
-        ) is False
+        assert (
+            await is_still_freshest_escalation(conn, channel_id=CHANNEL_1, message_id=999) is False
+        )

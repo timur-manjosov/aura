@@ -17,6 +17,7 @@ model's current quality into the suite or asserting nothing at all.
 It drives the real production distill_facts, not a copy of its prompt, so what
 gets measured is the schema, system prompt and validation that actually ship.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,17 +28,19 @@ import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+# These scripts run as `python scripts/<name>.py`, so nothing has put the
+# repository's import roots on sys.path yet. Every import below this line
+# depends on that bootstrap, which is why they sit here and not at the top.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from extraction_eval_cases import ALL_BATCHES, EvalBatch, section_for  # noqa: E402
-
-from aura.config import ModelComponent, load_settings  # noqa: E402
-from aura.db.extraction_queue import QueuedMessage  # noqa: E402
-from aura.extraction.distiller import DistilledFact, distill_facts  # noqa: E402
+from aura.config import ModelComponent, load_settings
+from aura.db.extraction_queue import QueuedMessage
+from aura.extraction.distiller import DistilledFact, distill_facts
+from extraction_eval_cases import ALL_BATCHES, EvalBatch, section_for
 
 RUN_REAL_LLM_ENV = "AURA_RUN_REAL_LLM"
 
@@ -54,7 +57,7 @@ _OUTPUT_TOKENS_PER_MESSAGE = 35
 
 # A fixed batch timestamp so relative-time resolution ("tomorrow", "at 2") has
 # a stable anchor and the report's before/after examples stay reproducible.
-_BATCH_TIME = datetime(2026, 7, 30, 11, 0, 0, tzinfo=timezone.utc)
+_BATCH_TIME = datetime(2026, 7, 30, 11, 0, 0, tzinfo=UTC)
 
 
 @dataclass
@@ -266,7 +269,9 @@ def _print_report(results: list[RunResult]) -> None:
             for fact in outcome.extracted:
                 print(f"    -> [{fact.category.value}] {fact.content}")
         for content, needle in result.forbidden_hits:
-            label = "CONTEXT BLEED" if "context-bleed" in result.batch.name else "FORBIDDEN SUBSTRING"
+            label = (
+                "CONTEXT BLEED" if "context-bleed" in result.batch.name else "FORBIDDEN SUBSTRING"
+            )
             print(f"  {label}: {needle!r} appeared in: {content}")
     if not any_wrong:
         print("\n  none.")
@@ -282,7 +287,9 @@ def _print_report(results: list[RunResult]) -> None:
         print(f"\n[{result.batch.name}]")
         for outcome in result.outcomes:
             for fact in outcome.extracted:
-                verbatim = " <<< VERBATIM COPY" if fact.content.strip() == outcome.text.strip() else ""
+                verbatim = (
+                    " <<< VERBATIM COPY" if fact.content.strip() == outcome.text.strip() else ""
+                )
                 print(f"  before: {outcome.text}")
                 print(f"  after : {fact.content}  [{fact.category.value}]{verbatim}")
                 print()
@@ -312,7 +319,7 @@ async def main() -> int:
     )
     args = parser.parse_args()
 
-    global ALL_BATCHES  # noqa: PLW0603 -- one filter applied before anything runs
+    global ALL_BATCHES
     if args.only:
         ALL_BATCHES = tuple(b for b in ALL_BATCHES if b.name.startswith(args.only))
         if not ALL_BATCHES:
@@ -345,10 +352,11 @@ async def main() -> int:
         for run_index in range(1, batch.repeats + 1):
             result = await run_batch(batch, run_index, model)
             results.append(result)
-            status = "FAILED" if result.call_failed else f"{result.correct_count}/{len(result.outcomes)}"
+            status = (
+                "FAILED" if result.call_failed else f"{result.correct_count}/{len(result.outcomes)}"
+            )
             print(
-                f"  {batch.name:<34} run {run_index}  {status:>8}  "
-                f"{result.latency_seconds:5.2f}s"
+                f"  {batch.name:<34} run {run_index}  {status:>8}  {result.latency_seconds:5.2f}s"
             )
 
     _print_report(results)
@@ -358,7 +366,7 @@ async def main() -> int:
         json.dumps(
             {
                 "model": model,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generated_at": datetime.now(UTC).isoformat(),
                 "estimated_cost_usd": estimated,
                 "summary": _summarize(results),
                 "runs": [
