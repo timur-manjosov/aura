@@ -50,6 +50,7 @@ from aura.db.extraction_queue import count_queued, enqueue_message
 from aura.db.extraction_state import count_extraction_calls_on
 from aura.db.onboarding_config import get_onboarding_config
 from aura.db.proactive_channel_config import set_channel_enabled
+from aura.db.proactive_state import try_acquire_escalation_slot
 from aura.db.repository import init_schema
 from aura.digest.scheduler import send_due_digests
 from aura.extraction.pipeline import flush_due_batches, handle_extraction_message
@@ -147,12 +148,44 @@ class TestProactiveRelief:
 
         evaluate.assert_awaited_once()
 
-    async def test_a_plan_that_ends_during_the_grace_period_stands_the_answer_down(self) -> None:
-        stood_down = await _still_fresh_enough_for_synthesis(
-            MagicMock(), guild_id=GUILD, channel_id=CHANNEL, message_id=1, plan_gate=free_gate()
+    async def _grant_the_freshest_escalation(self, conn) -> int:
+        """A real database in which only the plan can still say no after the wait."""
+        message_id = 900000000000000009
+        await set_channel_enabled(
+            conn, guild_id=GUILD, channel_id=CHANNEL, enabled=True, updated_by_id=1
+        )
+        attempt = await try_acquire_escalation_slot(
+            conn,
+            guild_id=GUILD,
+            channel_id=CHANNEL,
+            message_id=message_id,
+            cooldown_seconds=60.0,
+            daily_cap=10,
+            now=NOW,
+        )
+        assert attempt.granted
+        return message_id
+
+    async def test_a_plan_that_ends_during_the_grace_period_stands_the_answer_down(
+        self, conn
+    ) -> None:
+        message_id = await self._grant_the_freshest_escalation(conn)
+
+        fresh = await _still_fresh_enough_for_synthesis(
+            conn, guild_id=GUILD, channel_id=CHANNEL, message_id=message_id, plan_gate=free_gate()
         )
 
-        assert stood_down is False
+        assert fresh is False
+
+    async def test_the_same_escalation_on_pro_proceeds(self, conn) -> None:
+        """The positive control: everything but the plan already says yes."""
+        message_id = await self._grant_the_freshest_escalation(conn)
+
+        fresh = await _still_fresh_enough_for_synthesis(
+            conn, guild_id=GUILD, channel_id=CHANNEL, message_id=message_id, plan_gate=pro_gate()
+        )
+
+        assert fresh is True
 
 
 class TestExtraction:
@@ -495,6 +528,7 @@ def record(**overrides: object) -> SubscriptionRecord:
         "current_period_start": NOW - timedelta(days=1),
         "current_period_end": NOW + timedelta(days=29),
         "livemode": False,
+        "on_pro_price": True,
         "version": 1,
         "confirmed_at": NOW,
     }
@@ -532,6 +566,10 @@ class TestPlanDescription:
             ),
             ([record(cancel_at_period_end=True)], "plan_state_canceling"),
             (
+                [record(latest_invoice_status=InvoiceStatus.OPEN)],
+                "plan_state_payment_pending",
+            ),
+            (
                 [
                     record(
                         status=SubscriptionStatus.PAST_DUE,
@@ -559,6 +597,21 @@ class TestPlanDescription:
         text = describe_plan(plan([record()]), locale="en-US", dashboard_url=None)
 
         assert discord_timestamp(NOW + timedelta(days=29)) in text
+
+    @pytest.mark.parametrize("locale", SUPPORTED_LOCALES)
+    def test_a_period_not_yet_paid_is_never_described_as_paid_through(self, locale: str) -> None:
+        """F-05: the same subscription, before and after its invoice is paid."""
+        period_end = discord_timestamp(NOW + timedelta(days=29))
+        pending = describe_plan(
+            plan([record(latest_invoice_status=InvoiceStatus.OPEN)]),
+            locale=locale,
+            dashboard_url=None,
+        )
+        paid = describe_plan(plan([record()]), locale=locale, dashboard_url=None)
+
+        assert t("plan_state_payment_pending", locale) in pending
+        assert period_end not in pending
+        assert t("plan_state_active", locale, date=period_end) in paid
 
     def test_payment_grace_shows_the_date_pro_ends(self) -> None:
         failing = record(

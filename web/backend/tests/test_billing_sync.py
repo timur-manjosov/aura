@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from unittest.mock import patch
@@ -10,6 +11,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 import pytest_asyncio
+from pydantic import SecretStr
 
 from aura_web.billing_sync import (
     MAX_SYNC_ATTEMPTS,
@@ -50,14 +52,14 @@ async def clients(
             stripe=StripeClient(
                 stripe_http,
                 api_base="https://stripe.test",
-                secret_key=stripe_state.secret_key,
+                secret_key=SecretStr(stripe_state.secret_key),
                 price_id=stripe_state.price_id,
                 checkout_success_url="https://f/",
                 checkout_cancel_url="https://f/",
                 portal_return_url="https://f/",
             ),
             bot=BotBillingClient(
-                bot_http, base_url="https://bot.test", secret=bot_billing_state.secret
+                bot_http, base_url="https://bot.test", secret=SecretStr(bot_billing_state.secret)
             ),
         )
 
@@ -165,13 +167,13 @@ class TestSync:
                 stripe=StripeClient(
                     stripe_http,
                     api_base="https://s",
-                    secret_key=stripe_state.secret_key,
+                    secret_key=SecretStr(stripe_state.secret_key),
                     price_id="price_x",
                     checkout_success_url="https://f/",
                     checkout_cancel_url="https://f/",
                     portal_return_url="https://f/",
                 ),
-                bot=BotBillingClient(bot_http, base_url="https://b", secret="x" * 40),
+                bot=BotBillingClient(bot_http, base_url="https://b", secret=SecretStr("x" * 40)),
             )
             with pytest.raises(BotBillingError):
                 await sync(broken, subscription.id)
@@ -256,3 +258,65 @@ class TestReconciliation:
                 await task
 
         assert passes >= 3
+
+
+class TestWhatIsPushedAndWhatIsLogged:
+    """F-07 and F-22: the two cases where a subscription is not a plain Pro subscription."""
+
+    async def test_a_subscription_off_the_pro_price_is_pushed_as_granting_nothing(
+        self, clients, stripe_state, bot_billing_state, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW, price_id="price_cheap"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="aura_web.billing_sync"):
+            outcome = await sync(clients, subscription.id)
+
+        assert outcome is SyncOutcome.APPLIED
+        assert bot_billing_state.snapshots[subscription.id]["on_pro_price"] is False
+        (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert subscription.id in warning.getMessage()
+
+    async def test_a_subscription_on_the_pro_price_is_pushed_as_one(
+        self, clients, stripe_state, bot_billing_state, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+
+        with caplog.at_level(logging.WARNING, logger="aura_web.billing_sync"):
+            await sync(clients, subscription.id)
+
+        assert bot_billing_state.snapshots[subscription.id]["on_pro_price"] is True
+        assert caplog.records == []
+
+    async def test_metadata_removed_from_a_subscription_the_bot_holds_is_an_error(
+        self, clients, stripe_state, bot_billing_state, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+        await sync(clients, subscription.id, event_id="evt_First")
+        subscription.metadata = {}
+
+        with caplog.at_level(logging.INFO, logger="aura_web.billing_sync"):
+            outcome = await sync(clients, subscription.id, event_id="evt_Stripped")
+
+        assert outcome is SyncOutcome.NOT_AURA
+        (error,) = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert subscription.id in error.getMessage()
+        # No behaviour change beyond the log: nothing new is pushed.
+        assert bot_billing_state.versions[subscription.id] == 1
+
+    async def test_a_subscription_that_was_never_aura_is_only_noted(
+        self, clients, stripe_state, bot_billing_state, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        subscription = stripe_state.add_subscription(guild_id=None, purchaser_user_id=None, now=NOW)
+
+        with caplog.at_level(logging.INFO, logger="aura_web.billing_sync"):
+            outcome = await sync(clients, subscription.id)
+
+        assert outcome is SyncOutcome.NOT_AURA
+        assert [r.levelno for r in caplog.records] == [logging.INFO]
+        assert bot_billing_state.applied_snapshots == []

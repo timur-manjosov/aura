@@ -446,7 +446,7 @@ async def main() -> int:
     if not settings.llm_api_key:
         print("Refusing to run: no LLM_API_KEY configured.", file=sys.stderr)
         return 1
-    api_key = settings.llm_api_key
+    api_key = settings.llm_api_key.get_secret_value()
 
     calls_per_model, cost_per_model = estimate_cost()
     total_cost = sum(cost_per_model[m] for m in args.models if m in cost_per_model)

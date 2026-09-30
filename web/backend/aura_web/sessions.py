@@ -30,7 +30,7 @@ import logging
 import secrets
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -72,10 +72,14 @@ def _digest(token: str) -> str:
 
 @dataclass(frozen=True)
 class DiscordTokens:
-    """An OAuth2 token pair and its expiry. Never serialised toward the browser."""
+    """An OAuth2 token pair and its expiry. Never serialised toward the browser.
 
-    access_token: str
-    refresh_token: str | None
+    Both tokens are excluded from the repr, so a Session printed in a log line
+    or a traceback shows the expiry but never a credential of the user's.
+    """
+
+    access_token: str = field(repr=False)
+    refresh_token: str | None = field(repr=False)
     expires_at: datetime
 
     def is_expired(self, *, now: datetime, leeway_seconds: float = 60.0) -> bool:

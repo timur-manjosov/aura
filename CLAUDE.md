@@ -256,14 +256,19 @@ Therefore, for every implementation, without exception:
 - **Whoever holds `INTERNAL_API_SECRET` decides plans (Phase 4c).** The bot's
   internal billing API trusts the web backend's snapshots; it cannot re-verify
   them against Stripe because it deliberately holds no Stripe credential. The
-  secret lives only in the bot's and the web backend's environment, and the API
-  is reachable only on the internal `aura-billing` network. The web container
+  secret lives only in the bot's and the web backend's environment. The API
+  publishes no host port, but the host itself can still reach the container's
+  IPs, so the secret, not the network, is the control. The web container
   now holds, besides the bot token, the Stripe key and this secret.
 
-- **The billing portal must not allow switching plans (Phase 4c).** The
-  entitlement rules do not check which Price a subscription is on — there is
-  exactly one. Enabling product switching in Stripe's customer portal settings
-  would let a customer move to another price while keeping Aura's metadata.
+- **The billing portal and plan switching — RESOLVED in the Phase 4c audit
+  fixes.** The entitlement rules used to ignore which Price a subscription was
+  on. Now every item must be on `AURA_WEB_STRIPE_PRICE_ID` at quantity ≥ 1, or
+  the subscription is pushed to the bot as granting nothing
+  (`on_pro_price=false`). Portal sessions can additionally be pinned to a
+  configuration without plan switching
+  (`AURA_WEB_STRIPE_PORTAL_CONFIGURATION_ID`). A permissive portal now costs
+  only the customer who switches, never the operator.
 
 # GitHub-Workflow
 - Arbeite bei GitHub-Aufgaben eigenständig über gh-CLI/GitHub-MCP-Tools, wie ein Senior Developer.

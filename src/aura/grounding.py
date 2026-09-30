@@ -597,7 +597,7 @@ async def verify_answer_grounded(
         answer=answer,
         cited_facts=cited_facts,
         model=model,
-        api_key=settings.llm_api_key,
+        api_key=settings.llm_api_key.get_secret_value(),
         timeout_seconds=timeout_seconds,
     )
     if grounded is None:

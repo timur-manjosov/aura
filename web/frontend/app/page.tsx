@@ -90,6 +90,8 @@ function planDescription(plan: GuildPlan, translate: Translate, locale: string):
       return dated("plan_standing_active", plan.paid_through);
     case "renewal_pending":
       return dated("plan_standing_renewal_pending", plan.access_until);
+    case "payment_pending":
+      return translate("plan_standing_payment_pending");
     case "canceling":
       return dated("plan_standing_canceling", plan.access_until);
     case "payment_grace":

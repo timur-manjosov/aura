@@ -382,7 +382,7 @@ async def synthesize_answer(
     try:
         response = await litellm.acompletion(
             model=model,
-            api_key=settings.llm_api_key,
+            api_key=settings.llm_api_key.get_secret_value(),
             messages=messages,
             response_format={"type": "json_object"},
             timeout=_REQUEST_TIMEOUT_SECONDS,

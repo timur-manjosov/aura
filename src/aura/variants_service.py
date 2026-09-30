@@ -288,7 +288,7 @@ async def _generate_variants(canonical: str, *, count: int, model: str) -> list[
     try:
         response = await litellm.acompletion(
             model=model,
-            api_key=settings.llm_api_key,
+            api_key=settings.llm_api_key.get_secret_value(),
             messages=messages,
             response_format={"type": "json_object"},
             timeout=_GENERATION_TIMEOUT_SECONDS,
@@ -390,7 +390,7 @@ async def _audit_variants(
     try:
         response = await litellm.acompletion(
             model=model,
-            api_key=settings.llm_api_key,
+            api_key=settings.llm_api_key.get_secret_value(),
             messages=messages,
             response_format={"type": "json_object"},
             timeout=_AUDIT_TIMEOUT_SECONDS,

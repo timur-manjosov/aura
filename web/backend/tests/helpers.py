@@ -64,6 +64,7 @@ def build_app(
             checkout_success_url=settings.checkout_success_url,
             checkout_cancel_url=settings.checkout_cancel_url,
             portal_return_url=settings.billing_portal_return_url,
+            portal_configuration_id=settings.stripe_portal_configuration_id,
         )
 
     def bot_factory(_: httpx.AsyncClient, settings: WebSettings) -> BotBillingClient:

@@ -23,6 +23,7 @@ import aiosqlite
 import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient, TestServer
+from pydantic import SecretStr
 
 from aura.billing import GracePolicy, PlanGate
 from aura.billing.internal_api import (
@@ -55,6 +56,7 @@ def snapshot(**overrides: Any) -> dict[str, Any]:
         "current_period_start": int(NOW.timestamp()),
         "current_period_end": int((NOW + timedelta(days=30)).timestamp()),
         "livemode": False,
+        "on_pro_price": True,
     }
     values.update(overrides)
     return values
@@ -82,7 +84,7 @@ async def setup():
         records=[],
         clock=lambda: NOW,
     )
-    app = create_internal_api_app(conn, gate, secret=SECRET, clock=lambda: NOW)
+    app = create_internal_api_app(conn, gate, secret=SecretStr(SECRET), clock=lambda: NOW)
     client = TestClient(TestServer(app))
     await client.start_server()
     try:
@@ -124,17 +126,20 @@ class TestAuthentication:
         assert await response.json() == {"error": "unauthorized"}
         assert await nothing_was_written(conn)
 
-    async def test_two_authorization_headers_are_refused_even_if_one_is_right(self, setup) -> None:
+    @pytest.mark.parametrize("right_first", [False, True], ids=["wrong-first", "right-first"])
+    async def test_two_authorization_headers_are_refused_even_if_one_is_right(
+        self, setup, right_first: bool
+    ) -> None:
+        """Both orders: with the wrong header first, "check the first" fails on its own too."""
         client, conn, _ = setup
+        authorizations = [("Authorization", "Bearer wrong"), ("Authorization", f"Bearer {SECRET}")]
+        if right_first:
+            authorizations.reverse()
 
         response = await client.post(
             "/internal/v1/subscriptions/apply",
             data=json.dumps(apply_body()),
-            headers=[
-                ("Authorization", "Bearer wrong"),
-                ("Authorization", f"Bearer {SECRET}"),
-                ("Content-Type", "application/json"),
-            ],
+            headers=[*authorizations, ("Content-Type", "application/json")],
         )
 
         assert response.status == 401
@@ -455,7 +460,7 @@ class TestListener:
         conn = await aiosqlite.connect(":memory:")
         await init_schema(conn)
         server = await start_internal_api(
-            conn, PlanGate.unenforced(), secret=SECRET, host="127.0.0.1", port=0
+            conn, PlanGate.unenforced(), secret=SecretStr(SECRET), host="127.0.0.1", port=0
         )
         port = server.bound_port
         try:
@@ -484,10 +489,122 @@ class TestListener:
                 await start_internal_api(
                     conn,
                     PlanGate.unenforced(),
-                    secret=SECRET,
+                    secret=SecretStr(SECRET),
                     host="127.0.0.1",
                     port=blocker.getsockname()[1],
                 )
         finally:
             blocker.close()
             await conn.close()
+
+
+# --- Phase 4c audit fixes -----------------------------------------------------
+
+
+class TestOnProPriceOnTheWire:
+    """The web backend must SAY whether a subscription is on the Pro price; it is never assumed."""
+
+    async def test_a_snapshot_that_does_not_say_is_refused(self, setup) -> None:
+        client, conn, _ = setup
+        silent = snapshot()
+        del silent["on_pro_price"]
+
+        response = await client.post(
+            "/internal/v1/subscriptions/apply", json=apply_body(snapshot=silent), headers=AUTH
+        )
+
+        assert response.status == 400
+        assert await nothing_was_written(conn)
+
+    @pytest.mark.parametrize("value", [None, 0, 1, "true", "false", [], {}])
+    async def test_anything_but_a_json_boolean_is_refused(self, setup, value: object) -> None:
+        client, conn, _ = setup
+
+        response = await client.post(
+            "/internal/v1/subscriptions/apply",
+            json=apply_body(snapshot=snapshot(on_pro_price=value)),
+            headers=AUTH,
+        )
+
+        assert response.status == 400
+        assert await nothing_was_written(conn)
+
+    async def test_a_subscription_off_the_pro_price_is_stored_and_grants_nothing(
+        self, setup
+    ) -> None:
+        client, conn, gate = setup
+
+        response = await client.post(
+            "/internal/v1/subscriptions/apply",
+            json=apply_body(snapshot=snapshot(on_pro_price=False)),
+            headers=AUTH,
+        )
+        plans = await client.post(
+            "/internal/v1/guilds/plans", json={"guild_ids": [GUILD]}, headers=AUTH
+        )
+
+        assert response.status == 200
+        (record,) = await load_subscription_records(conn)
+        assert record.on_pro_price is False
+        assert gate.allows_pro(int(GUILD)) is False
+        plan = (await plans.json())["plans"][GUILD]
+        assert (plan["tier"], plan["standing"], plan["in_force_subscription_count"]) == (
+            "free",
+            "ended",
+            0,
+        )
+
+
+class TestPaymentPendingOnTheWire:
+    async def test_an_unpaid_period_is_payment_pending_with_no_paid_through(self, setup) -> None:
+        client, _, _ = setup
+        await client.post(
+            "/internal/v1/subscriptions/apply",
+            json=apply_body(snapshot=snapshot(latest_invoice_status="open")),
+            headers=AUTH,
+        )
+
+        response = await client.post(
+            "/internal/v1/guilds/plans", json={"guild_ids": [GUILD]}, headers=AUTH
+        )
+
+        plan = (await response.json())["plans"][GUILD]
+        assert plan["tier"] == "pro"
+        assert plan["standing"] == "payment_pending"
+        assert plan["paid_through"] is None
+        assert plan["access_until"] is not None
+
+
+class TestNoListenerRunsOpen:
+    """F-08: the API refuses a weak secret itself, whatever its caller already checked."""
+
+    @pytest.mark.parametrize(
+        "weak",
+        ["", " ", "\t" * 40, "x" * 31, "x" * 31 + " ", "sécrét-" + "x" * 30, "x" * 20 + "\n" * 12],
+        ids=["empty", "space", "tabs", "31-chars", "31-plus-space", "non-ascii", "newlines"],
+    )
+    async def test_a_weak_secret_is_refused_by_every_construction_path(self, weak: str) -> None:
+        conn = await aiosqlite.connect(":memory:")
+        await init_schema(conn)
+        try:
+            with pytest.raises(ValueError) as built:
+                create_internal_api_app(conn, PlanGate.unenforced(), secret=SecretStr(weak))
+            with pytest.raises(ValueError) as started:
+                await start_internal_api(
+                    conn, PlanGate.unenforced(), secret=SecretStr(weak), host="127.0.0.1", port=0
+                )
+        finally:
+            await conn.close()
+
+        for refusal in (built.value, started.value):
+            assert weak.strip() == "" or weak not in str(refusal)
+
+    async def test_thirty_two_characters_is_enough(self) -> None:
+        conn = await aiosqlite.connect(":memory:")
+        await init_schema(conn)
+        try:
+            app = create_internal_api_app(conn, PlanGate.unenforced(), secret=SecretStr("x" * 32))
+        finally:
+            await conn.close()
+
+        assert app.router is not None

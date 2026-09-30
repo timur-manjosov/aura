@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import httpx
+from pydantic import SecretStr
 
 from aura_web.config import DISCORD_GUILD_PAGE_SIZE
 from aura_web.permissions import (
@@ -237,8 +238,8 @@ class DiscordClient:
         *,
         api_base: str,
         client_id: str,
-        client_secret: str,
-        bot_token: str,
+        client_secret: SecretStr,
+        bot_token: SecretStr,
     ) -> None:
         self._http = http
         self._api_base = api_base.rstrip("/")
@@ -345,7 +346,7 @@ class DiscordClient:
             response = await self._http.post(
                 f"{self._api_base}/oauth2/token/revoke",
                 data={"token": token, "token_type_hint": "access_token"},
-                auth=(self._client_id, self._client_secret),
+                auth=(self._client_id, self._client_secret.get_secret_value()),
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             if response.status_code >= 400:
@@ -436,7 +437,7 @@ class DiscordClient:
         documented in web/README.md.
         """
         guilds = await self._paginate_guilds(
-            headers={"Authorization": f"Bot {self._bot_token}"},
+            headers={"Authorization": f"Bot {self._bot_token.get_secret_value()}"},
             context="/users/@me/guilds (bot)",
         )
         return frozenset(guild.id for guild in guilds)
@@ -446,7 +447,7 @@ class DiscordClient:
             response = await self._http.post(
                 f"{self._api_base}/oauth2/token",
                 data=data,
-                auth=(self._client_id, self._client_secret),
+                auth=(self._client_id, self._client_secret.get_secret_value()),
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
         except httpx.HTTPError as exc:

@@ -33,7 +33,7 @@ from aura.config import ConfigurationError, ModelComponent, Settings, load_setti
 from aura.db import init_schema
 from aura.db.pending_facts import verify_pending_facts_schema
 from aura.db.proactive_signals import OutdatedDiagnosticTableError, verify_signal_schema
-from aura.db.subscriptions import load_subscription_records
+from aura.db.subscriptions import load_subscription_records, verify_subscriptions_schema
 from aura.digest import ClientDigestGateway, run_digest_scheduler
 from aura.extraction import (
     create_fact_worthiness_detector,
@@ -123,6 +123,10 @@ class AuraClient(discord.Client):
         # additive, so it migrates in place instead of asking an operator to
         # decide anything.
         await verify_pending_facts_schema(self.db)
+        # And for the two columns the Phase 4c audit fixes added to
+        # guild_subscriptions: additive, so migrated in place before the plan
+        # gate below reads a single row.
+        await verify_subscriptions_schema(self.db)
         logger.info("Database ready at %s", self.settings.database_path)
 
         # Phase 4c: the plan gate is built from every stored subscription
@@ -669,7 +673,7 @@ def main() -> None:
     client = create_client(translator, settings)
 
     try:
-        client.run(settings.discord_token, log_handler=None)
+        client.run(settings.discord_token.get_secret_value(), log_handler=None)
     except discord.LoginFailure:
         logger.critical(
             "Discord rejected the bot token. Check DISCORD_TOKEN in .env — "

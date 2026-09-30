@@ -17,6 +17,7 @@
   "plan_badge_pro": "Pro",
   "plan_standing_active": "Payé jusqu'au {date}, renouvelé automatiquement.",
   "plan_standing_renewal_pending": "Le renouvellement n'est pas encore confirmé. Pro reste actif jusqu'au {date}.",
+  "plan_standing_payment_pending": "Le paiement de la période en cours n'est pas encore confirmé.",
   "plan_standing_canceling": "Pro jusqu'au {date}, puis Free.",
   "plan_standing_payment_grace": "Le dernier paiement a échoué. Pro reste actif jusqu'au {date}, sauf si le moyen de paiement est mis à jour.",
   "plan_standing_ended": "L'abonnement Pro a pris fin.",

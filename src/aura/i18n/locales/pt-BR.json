@@ -187,6 +187,7 @@
     "plan_state_ended": "Este servidor está no plano **Free**: a assinatura Pro terminou. As configurações feitas no Pro são mantidas e voltam a valer se o Pro for renovado.",
     "plan_state_active": "Este servidor está no **Pro**. O período atual está pago até {date} e é renovado automaticamente.",
     "plan_state_renewal_pending": "Este servidor está no **Pro**. A renovação ainda não foi confirmada, então enquanto isso o Pro continua ativo até {date}.",
+    "plan_state_payment_pending": "Este servidor está no **Pro**. O pagamento do período atual ainda não foi confirmado.",
     "plan_state_canceling": "Este servidor está no **Pro** até {date}. A assinatura termina nessa data e não será renovada.",
     "plan_state_payment_grace": "⚠️ O último pagamento da assinatura Pro deste servidor falhou. O Pro continua ativo até {date}. Quem fez a assinatura pode atualizar a forma de pagamento no portal de cobrança antes disso; caso contrário, este servidor passa para o Free.",
     "plan_free_includes": "O Free inclui o /aura-ask e o gerenciamento manual de fatos. Respostas proativas, extração automática de fatos, resumos periódicos, mensagens de boas-vindas e leitura do histórico precisam do Pro.",

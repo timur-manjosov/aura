@@ -187,6 +187,7 @@
     "plan_state_ended": "이 서버는 **Free** 플랜이에요. Pro 구독이 끝났어요. Pro에서 해 둔 설정은 유지되고 Pro를 갱신하면 다시 적용돼요.",
     "plan_state_active": "이 서버는 **Pro**예요. 현재 기간은 {date}까지 결제되어 있고 자동으로 갱신돼요.",
     "plan_state_renewal_pending": "이 서버는 **Pro**예요. 갱신이 아직 확인되지 않아서, 그동안 {date}까지 Pro가 유지돼요.",
+    "plan_state_payment_pending": "이 서버는 **Pro**예요. 현재 기간의 결제가 아직 확인되지 않았어요.",
     "plan_state_canceling": "이 서버는 {date}까지 **Pro**예요. 구독은 그때 끝나고 갱신되지 않아요.",
     "plan_state_payment_grace": "⚠️ 이 서버의 Pro 구독 최근 결제가 실패했어요. Pro는 {date}까지 유지돼요. 그 전에 구독한 사람이 결제 포털에서 결제 수단을 업데이트하지 않으면 이 서버는 Free로 바뀌어요.",
     "plan_free_includes": "Free에는 /aura-ask와 팩트 직접 관리가 포함돼요. 능동적 답변, 자동 팩트 추출, 정기 요약, 온보딩 메시지, 기록 읽기에는 Pro가 필요해요.",

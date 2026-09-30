@@ -37,6 +37,7 @@ def record(**overrides: object) -> SubscriptionRecord:
         "current_period_start": NOW - timedelta(days=1),
         "current_period_end": NOW + timedelta(days=29),
         "livemode": False,
+        "on_pro_price": True,
         "version": 1,
         "confirmed_at": NOW,
     }

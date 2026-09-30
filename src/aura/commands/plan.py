@@ -44,6 +44,7 @@ _STANDING_KEYS: dict[Standing, str] = {
     Standing.ENDED: "plan_state_ended",
     Standing.ACTIVE: "plan_state_active",
     Standing.RENEWAL_PENDING: "plan_state_renewal_pending",
+    Standing.PAYMENT_PENDING: "plan_state_payment_pending",
     Standing.CANCELING: "plan_state_canceling",
     Standing.PAYMENT_GRACE: "plan_state_payment_grace",
 }
@@ -97,6 +98,22 @@ def pro_feature_refusal(interaction: discord.Interaction[AuraClient]) -> str | N
     return "\n".join(lines)
 
 
+def _shown_date(plan: GuildPlan) -> datetime | None:
+    """The one date the standing's sentence carries, or None for a sentence without one.
+
+    "Paid through" is only ever said of `paid_through`, which the entitlement
+    rules set exactly when the period's invoice is paid; a payment still being
+    confirmed has no date to promise, and every other standing names the moment
+    Pro ends.
+    """
+    standing = plan.standing
+    if standing.standing is Standing.ACTIVE:
+        return standing.paid_through
+    if standing.standing is Standing.PAYMENT_PENDING:
+        return None
+    return standing.access_until
+
+
 def describe_plan(plan: GuildPlan, *, locale: str, dashboard_url: str | None) -> str:
     """Build the /aura-plan reply text.
 
@@ -127,9 +144,7 @@ def describe_plan(plan: GuildPlan, *, locale: str, dashboard_url: str | None) ->
     # complimentary guild with a forgotten subscription could never find out.
     if plan.basis is PlanBasis.SUBSCRIPTION or standing.grants_access:
         key = _STANDING_KEYS[standing.standing]
-        shown_date = (
-            standing.paid_through if standing.standing is Standing.ACTIVE else standing.access_until
-        )
+        shown_date = _shown_date(plan)
         if shown_date is None:
             lines.append(t(key, locale))
         else:

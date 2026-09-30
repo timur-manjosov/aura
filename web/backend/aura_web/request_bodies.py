@@ -36,7 +36,7 @@ async def read_bounded_body(request: Request, limit: int) -> bytes:
 
     Raises
     ------
-    BodyTooLarge
+    BodyTooLargeError
         The moment the stream exceeds `limit`, so an oversized body is never
         fully buffered.
 

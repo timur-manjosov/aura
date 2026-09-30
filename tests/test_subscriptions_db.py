@@ -19,7 +19,12 @@ from unittest.mock import patch
 import aiosqlite
 import pytest
 
-from aura.billing.entitlement import InvoiceStatus, SubscriptionStatus
+from aura.billing.entitlement import (
+    GracePolicy,
+    InvoiceStatus,
+    SubscriptionStatus,
+    access_window,
+)
 from aura.db.repository import init_schema
 from aura.db.subscriptions import (
     ApplyOutcome,
@@ -28,6 +33,7 @@ from aura.db.subscriptions import (
     count_processed_events,
     get_sync_state,
     load_subscription_records,
+    verify_subscriptions_schema,
 )
 
 NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
@@ -57,6 +63,7 @@ def snapshot(**overrides: object) -> SubscriptionSnapshot:
         "current_period_start": NOW,
         "current_period_end": NOW + timedelta(days=30),
         "livemode": False,
+        "on_pro_price": True,
     }
     values.update(overrides)
     return SubscriptionSnapshot(**values)  # type: ignore[arg-type]
@@ -292,3 +299,283 @@ class TestRefusedInput:
                 "livemode, version, first_seen_at, confirmed_at) "
                 "VALUES ('sub_X', 1, 'cus_X', 'free_forever', 0, 0, 0, 1, 0, 1, 'x', 'x')"
             )
+
+
+# --- Phase 4c audit fixes: the payment-grace anchor and on_pro_price ----------
+
+PERIOD = timedelta(days=30)
+
+
+async def apply_unpaid(conn, *, expected: int, event: str, period_start: datetime, **overrides):
+    return await apply(
+        conn,
+        expected=expected,
+        event=event,
+        status=SubscriptionStatus.PAST_DUE,
+        latest_invoice_status=InvoiceStatus.OPEN,
+        current_period_start=period_start,
+        current_period_end=period_start + PERIOD,
+        **overrides,
+    )
+
+
+class TestThePaymentGraceAnchorIsStored:
+    async def test_the_first_past_due_write_anchors_at_its_period_start(self, conn) -> None:
+        result = await apply_unpaid(conn, expected=0, event="evt_Fail", period_start=NOW)
+
+        assert result.record.past_due_since == NOW
+        (stored,) = await load_subscription_records(conn)
+        assert stored.past_due_since == NOW
+
+    async def test_rolling_into_the_next_unpaid_period_keeps_the_anchor(self, conn) -> None:
+        await apply_unpaid(conn, expected=0, event="evt_Fail", period_start=NOW)
+
+        result = await apply_unpaid(conn, expected=1, event="evt_Next", period_start=NOW + PERIOD)
+
+        assert result.record.past_due_since == NOW
+        assert result.record.current_period_start == NOW + PERIOD
+
+    async def test_a_payment_clears_it_and_the_next_failure_anchors_afresh(self, conn) -> None:
+        await apply_unpaid(conn, expected=0, event="evt_Fail", period_start=NOW)
+        paid = await apply(conn, expected=1, event="evt_Paid", current_period_start=NOW)
+        assert paid.record.past_due_since is None
+
+        again = await apply_unpaid(conn, expected=2, event="evt_Again", period_start=NOW + PERIOD)
+
+        assert again.record.past_due_since == NOW + PERIOD
+
+    @pytest.mark.parametrize("invoice", [InvoiceStatus.UNCOLLECTIBLE, InvoiceStatus.VOID])
+    async def test_a_write_off_that_stripe_answers_with_active_keeps_it(
+        self, conn, invoice: InvoiceStatus
+    ) -> None:
+        await apply_unpaid(conn, expected=0, event="evt_Fail", period_start=NOW)
+        await apply(conn, expected=1, event="evt_WrittenOff", latest_invoice_status=invoice)
+
+        next_failure = await apply_unpaid(
+            conn, expected=2, event="evt_NextFailure", period_start=NOW + PERIOD
+        )
+
+        assert next_failure.record.past_due_since == NOW
+
+    async def test_the_anchor_survives_a_restart(self, tmp_path: Path) -> None:
+        path = tmp_path / "aura.db"
+        first = await aiosqlite.connect(path)
+        await init_schema(first)
+        await apply_unpaid(first, expected=0, event="evt_Fail", period_start=NOW)
+        await first.close()
+
+        second = await aiosqlite.connect(path)
+        await init_schema(second)
+        try:
+            result = await apply_unpaid(
+                second, expected=1, event="evt_Next", period_start=NOW + PERIOD
+            )
+        finally:
+            await second.close()
+
+        assert result.record.past_due_since == NOW
+
+    async def test_sub_second_period_starts_anchor_at_the_second_that_is_stored(self, conn) -> None:
+        await apply_unpaid(
+            conn, expected=0, event="evt_Fail", period_start=NOW + timedelta(microseconds=999_999)
+        )
+
+        (stored,) = await load_subscription_records(conn)
+
+        assert stored.past_due_since == NOW == stored.current_period_start
+
+
+class TestOnProPriceIsStored:
+    @pytest.mark.parametrize("on_pro_price", [True, False])
+    async def test_it_round_trips(self, conn, on_pro_price: bool) -> None:
+        result = await apply(conn, expected=0, on_pro_price=on_pro_price)
+
+        (stored,) = await load_subscription_records(conn)
+        assert result.record.on_pro_price is on_pro_price
+        assert stored.on_pro_price is on_pro_price
+
+    async def test_the_schema_refuses_anything_but_zero_or_one(self, conn) -> None:
+        await apply(conn, expected=0)
+
+        with pytest.raises(sqlite3.IntegrityError):
+            await conn.execute("UPDATE guild_subscriptions SET on_pro_price = 2")
+
+
+# The table exactly as the Phase 4c deploy created it (schema.sql at 892a8c5),
+# comments stripped: what verify_subscriptions_schema meets on the live server.
+PRE_FIX_TABLE = """
+CREATE TABLE guild_subscriptions (
+    subscription_id TEXT PRIMARY KEY,
+    guild_id INTEGER NOT NULL,
+    customer_id TEXT NOT NULL,
+    purchaser_user_id INTEGER,
+    status TEXT NOT NULL CHECK (status IN (
+        'active', 'trialing', 'past_due', 'unpaid', 'canceled',
+        'incomplete', 'incomplete_expired', 'paused'
+    )),
+    cancel_at_period_end INTEGER NOT NULL CHECK (cancel_at_period_end IN (0, 1)),
+    cancel_at INTEGER,
+    collection_paused INTEGER NOT NULL CHECK (collection_paused IN (0, 1)),
+    latest_invoice_status TEXT CHECK (latest_invoice_status IS NULL OR latest_invoice_status IN (
+        'draft', 'open', 'paid', 'uncollectible', 'void'
+    )),
+    current_period_start INTEGER NOT NULL,
+    current_period_end INTEGER NOT NULL,
+    livemode INTEGER NOT NULL CHECK (livemode IN (0, 1)),
+    version INTEGER NOT NULL CHECK (version >= 1),
+    first_seen_at TEXT NOT NULL,
+    confirmed_at TEXT NOT NULL,
+    CHECK (current_period_end >= current_period_start)
+)
+"""
+
+
+async def pre_fix_database(path: Path, *, legacy_rows: bool) -> aiosqlite.Connection:
+    """The pre-fix table, then init_schema -- the order setup_hook meets it in on the live server."""
+    connection = await aiosqlite.connect(path)
+    await connection.execute(PRE_FIX_TABLE)
+    await connection.commit()
+    await init_schema(connection)
+    if legacy_rows:
+        start = int(NOW.timestamp())
+        for subscription_id, status, invoice in (
+            ("sub_LegacyActive", "active", "paid"),
+            ("sub_LegacyPastDue", "past_due", "open"),
+        ):
+            await connection.execute(
+                "INSERT INTO guild_subscriptions VALUES "
+                "(?, ?, 'cus_Legacy', 5000, ?, 0, NULL, 0, ?, ?, ?, 0, 1, ?, ?)",
+                (
+                    subscription_id,
+                    GUILD_A,
+                    status,
+                    invoice,
+                    start,
+                    start + int(PERIOD.total_seconds()),
+                    NOW.isoformat(),
+                    NOW.isoformat(),
+                ),
+            )
+    await connection.commit()
+    return connection
+
+
+async def column_info(connection: aiosqlite.Connection) -> list[tuple[object, ...]]:
+    async with connection.execute("PRAGMA table_info(guild_subscriptions)") as cursor:
+        return [tuple(row) for row in await cursor.fetchall()]
+
+
+class TestTheSchemaMigration:
+    async def test_a_pre_fix_table_gains_both_columns_with_the_fresh_definitions(
+        self, tmp_path: Path
+    ) -> None:
+        migrated = await pre_fix_database(tmp_path / "old.db", legacy_rows=False)
+        fresh = await aiosqlite.connect(tmp_path / "new.db")
+        await init_schema(fresh)
+        try:
+            await verify_subscriptions_schema(migrated)
+
+            assert await column_info(migrated) == await column_info(fresh)
+        finally:
+            await migrated.close()
+            await fresh.close()
+
+    async def test_running_it_again_changes_nothing(self, tmp_path: Path) -> None:
+        connection = await pre_fix_database(tmp_path / "old.db", legacy_rows=True)
+        try:
+            await verify_subscriptions_schema(connection)
+            after_first = await column_info(connection)
+            rows_after_first = await load_subscription_records(connection)
+
+            await verify_subscriptions_schema(connection)
+
+            assert await column_info(connection) == after_first
+            assert await load_subscription_records(connection) == rows_after_first
+        finally:
+            await connection.close()
+
+    async def test_legacy_rows_keep_exactly_the_meaning_they_were_stored_with(
+        self, tmp_path: Path
+    ) -> None:
+        connection = await pre_fix_database(tmp_path / "old.db", legacy_rows=True)
+        try:
+            await verify_subscriptions_schema(connection)
+            records = {r.subscription_id: r for r in await load_subscription_records(connection)}
+        finally:
+            await connection.close()
+
+        assert set(records) == {"sub_LegacyActive", "sub_LegacyPastDue"}
+        assert all(record.on_pro_price for record in records.values())
+        assert all(record.past_due_since is None for record in records.values())
+        # The pre-fix rule for a stored past_due row, unchanged by the migration.
+        policy = GracePolicy(
+            renewal_grace=timedelta(hours=72), payment_failure_grace=timedelta(days=7)
+        )
+        window = access_window(records["sub_LegacyPastDue"], policy)
+        assert window is not None and window.access_until == NOW + timedelta(days=7)
+
+    async def test_a_legacy_past_due_row_carries_its_start_into_the_next_write(
+        self, tmp_path: Path
+    ) -> None:
+        connection = await pre_fix_database(tmp_path / "old.db", legacy_rows=True)
+        try:
+            await verify_subscriptions_schema(connection)
+            result = await apply_unpaid(
+                connection,
+                expected=1,
+                event="evt_AfterMigration",
+                period_start=NOW + PERIOD,
+                subscription_id="sub_LegacyPastDue",
+            )
+        finally:
+            await connection.close()
+
+        assert result.outcome is ApplyOutcome.APPLIED
+        assert result.record.past_due_since == NOW
+
+    async def test_a_half_migrated_table_is_completed(self, tmp_path: Path) -> None:
+        connection = await pre_fix_database(tmp_path / "old.db", legacy_rows=True)
+        try:
+            await connection.execute(
+                "ALTER TABLE guild_subscriptions ADD COLUMN on_pro_price "
+                "INTEGER NOT NULL DEFAULT 1 CHECK (on_pro_price IN (0, 1))"
+            )
+            await connection.commit()
+
+            await verify_subscriptions_schema(connection)
+
+            names = [row[1] for row in await column_info(connection)]
+            assert names[-2:] == ["on_pro_price", "past_due_since"]
+        finally:
+            await connection.close()
+
+    async def test_a_database_without_the_table_is_left_untouched(self, tmp_path: Path) -> None:
+        connection = await aiosqlite.connect(tmp_path / "empty.db")
+        try:
+            await verify_subscriptions_schema(connection)
+
+            async with connection.execute("SELECT COUNT(*) FROM sqlite_master") as cursor:
+                assert (await cursor.fetchone())[0] == 0
+        finally:
+            await connection.close()
+
+    async def test_a_fresh_database_needs_nothing(self, conn) -> None:
+        before = await column_info(conn)
+
+        await verify_subscriptions_schema(conn)
+
+        assert await column_info(conn) == before
+
+    async def test_a_migrated_table_accepts_the_new_writes(self, tmp_path: Path) -> None:
+        connection = await pre_fix_database(tmp_path / "old.db", legacy_rows=False)
+        try:
+            await verify_subscriptions_schema(connection)
+            result = await apply_unpaid(
+                connection, expected=0, event="evt_New", period_start=NOW, on_pro_price=False
+            )
+        finally:
+            await connection.close()
+
+        assert result.outcome is ApplyOutcome.APPLIED
+        assert result.record.on_pro_price is False
+        assert result.record.past_due_since == NOW

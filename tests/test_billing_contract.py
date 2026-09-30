@@ -32,6 +32,7 @@ import aiosqlite
 import httpx
 import pytest
 import pytest_asyncio
+from pydantic import SecretStr
 
 from aura.billing import GracePolicy, PlanGate
 from aura.billing.internal_api import InternalApiServer, start_internal_api
@@ -74,7 +75,9 @@ async def real_bot() -> AsyncIterator[RealBot]:
     await init_schema(conn)
     gate = PlanGate(enforced=True, policy=POLICY, complimentary_guild_ids=frozenset(), records=[])
     bot = RealBot(
-        conn, gate, await start_internal_api(conn, gate, secret=SECRET, host="127.0.0.1", port=0)
+        conn,
+        gate,
+        await start_internal_api(conn, gate, secret=SecretStr(SECRET), host="127.0.0.1", port=0),
     )
     try:
         yield bot
@@ -88,7 +91,9 @@ def stripe_snapshot(stripe_state: FakeStripeState, **overrides):
     subscription = stripe_state.add_subscription(
         guild_id="1000", purchaser_user_id="5000", now=int(time.time()), **overrides
     )
-    return parse_subscription(subscription.to_object(expand_invoice=True))
+    return parse_subscription(
+        subscription.to_object(expand_invoice=True), pro_price_id=stripe_state.price_id
+    )
 
 
 async def scripted_sequence(client: BotBillingClient, snapshot) -> list[tuple[str, int]]:
@@ -132,13 +137,15 @@ class TestContract:
 
         async with httpx.AsyncClient() as real_http:
             real = await scripted_sequence(
-                BotBillingClient(real_http, base_url=real_bot.base_url, secret=SECRET), snapshot
+                BotBillingClient(real_http, base_url=real_bot.base_url, secret=SecretStr(SECRET)),
+                snapshot,
             )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=create_fake_bot_billing(fake_state))
         ) as fake_http:
             fake = await scripted_sequence(
-                BotBillingClient(fake_http, base_url="https://bot.test", secret=SECRET), snapshot
+                BotBillingClient(fake_http, base_url="https://bot.test", secret=SecretStr(SECRET)),
+                snapshot,
             )
 
         assert real == fake
@@ -168,7 +175,7 @@ class TestContract:
         snapshot = stripe_snapshot(FakeStripeState(), **overrides)
 
         async with httpx.AsyncClient() as http:
-            client = BotBillingClient(http, base_url=real_bot.base_url, secret=SECRET)
+            client = BotBillingClient(http, base_url=real_bot.base_url, secret=SecretStr(SECRET))
             result = await client.apply_snapshot(
                 event_id=None, event_type=None, expected_version=0, snapshot=snapshot
             )
@@ -180,7 +187,7 @@ class TestContract:
     ) -> None:
         snapshot = stripe_snapshot(FakeStripeState())
         async with httpx.AsyncClient() as http:
-            client = BotBillingClient(http, base_url=real_bot.base_url, secret=SECRET)
+            client = BotBillingClient(http, base_url=real_bot.base_url, secret=SecretStr(SECRET))
             await client.apply_snapshot(
                 event_id=None, event_type=None, expected_version=0, snapshot=snapshot
             )
@@ -195,7 +202,7 @@ class TestContract:
     ) -> None:
         async with httpx.AsyncClient() as http:
             client = BotBillingClient(
-                http, base_url=real_bot.base_url, secret="not-the-secret-" + "0" * 30
+                http, base_url=real_bot.base_url, secret=SecretStr("not-the-secret-" + "0" * 30)
             )
             with pytest.raises(BotBillingError):
                 await client.get_guild_plans(["1000"])
@@ -439,7 +446,7 @@ class TestTheWholePath:
         assert await count_processed_events(stack.bot.conn) == 0
 
         stack.bot.server = await start_internal_api(
-            stack.bot.conn, stack.bot.gate, secret=SECRET, host="127.0.0.1", port=port
+            stack.bot.conn, stack.bot.gate, secret=SecretStr(SECRET), host="127.0.0.1", port=port
         )
         redelivered = await deliver(stack, event)
 
@@ -465,3 +472,108 @@ class TestTheWholePath:
         assert response.json() == {"status": "applied"}
         plan = stack.bot.gate.plan_for(1000)
         assert plan.is_pro and plan.standing.standing.value == "payment_grace"
+
+
+DAY = 24 * 3600
+
+
+class TestTheAuditFixesOverTheWholePath:
+    """F-04 and F-07 through both real services: HTTP, the wire contract, SQLite, the gate."""
+
+    async def test_moving_a_subscription_off_the_pro_price_ends_pro_and_moving_back_restores_it(
+        self, stack: Stack
+    ) -> None:
+        subscription = stack.stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=int(time.time())
+        )
+        updated = "customer.subscription.updated"
+        await deliver(stack, stack.stripe_state.subscription_event(updated, subscription.id))
+        assert stack.bot.gate.allows_pro(1000) is True
+
+        subscription.price_id = "price_someOtherCheaperProduct"
+        moved = await deliver(
+            stack, stack.stripe_state.subscription_event(updated, subscription.id)
+        )
+
+        assert moved.json() == {"status": "applied"}
+        (record,) = await load_subscription_records(stack.bot.conn)
+        assert record.on_pro_price is False
+        assert stack.bot.gate.allows_pro(1000) is False
+
+        subscription.price_id = stack.stripe_state.price_id
+        await deliver(stack, stack.stripe_state.subscription_event(updated, subscription.id))
+        assert stack.bot.gate.allows_pro(1000) is True
+
+    async def test_quantity_zero_on_the_pro_price_is_free_in_the_real_gate(
+        self, stack: Stack
+    ) -> None:
+        subscription = stack.stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=int(time.time()), quantity=0
+        )
+
+        await deliver(
+            stack,
+            stack.stripe_state.subscription_event("customer.subscription.created", subscription.id),
+        )
+
+        assert stack.bot.gate.allows_pro(1000) is False
+
+    async def test_an_unpaid_subscription_rolling_over_keeps_its_first_anchor_until_it_pays(
+        self, stack: Stack
+    ) -> None:
+        now = int(time.time())
+        first_unpaid_start = now - 20 * DAY
+        subscription = stack.stripe_state.add_subscription(
+            guild_id="1000",
+            purchaser_user_id="5000",
+            now=first_unpaid_start,
+            status="past_due",
+            latest_invoice_status="open",
+        )
+        await deliver(
+            stack, stack.stripe_state.invoice_event("invoice.payment_failed", subscription.id)
+        )
+        assert stack.bot.gate.allows_pro(1000) is False  # 20 days in: past the 7-day grace
+
+        # Stripe rolls the still-unpaid subscription into its next period.
+        subscription.current_period_start = now - DAY
+        subscription.current_period_end = now + 29 * DAY
+        await deliver(
+            stack,
+            stack.stripe_state.subscription_event("customer.subscription.updated", subscription.id),
+        )
+        (record,) = await load_subscription_records(stack.bot.conn)
+        assert record.past_due_since is not None
+        assert int(record.past_due_since.timestamp()) == first_unpaid_start
+        assert stack.bot.gate.allows_pro(1000) is False  # no second grace
+
+        # The customer pays: the anchor clears, and Pro is back.
+        subscription.status = "active"
+        subscription.latest_invoice_status = "paid"
+        await deliver(stack, stack.stripe_state.invoice_event("invoice.paid", subscription.id))
+        (record,) = await load_subscription_records(stack.bot.conn)
+        assert record.past_due_since is None
+        assert stack.bot.gate.allows_pro(1000) is True
+
+
+class TestTheNewStandingIsPartOfTheContract:
+    async def test_the_web_client_reads_payment_pending_from_the_real_bot(
+        self, real_bot: RealBot
+    ) -> None:
+        snapshot = stripe_snapshot(FakeStripeState(), latest_invoice_status="open")
+        async with httpx.AsyncClient() as http:
+            client = BotBillingClient(http, base_url=real_bot.base_url, secret=SecretStr(SECRET))
+            await client.apply_snapshot(
+                event_id=None, event_type=None, expected_version=0, snapshot=snapshot
+            )
+            plans = await client.get_guild_plans(["1000"])
+
+        assert plans["1000"].standing == "payment_pending"
+        assert plans["1000"].paid_through is None
+        assert plans["1000"].tier == "pro"
+
+    def test_the_web_client_knows_every_standing_the_bot_can_send(self) -> None:
+        from aura.billing import Standing
+        from aura_web.bot_billing import _KNOWN_STANDINGS
+
+        assert {standing.value for standing in Standing} == _KNOWN_STANDINGS

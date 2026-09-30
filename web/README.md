@@ -222,11 +222,18 @@ leans towards the paying guild by a fixed amount and no further.
 
 | Stripe state | Pro until |
 |---|---|
-| `active` / `trialing` | paid-through date **+ 72 h** (`BILLING_RENEWAL_GRACE_HOURS`) — the delay a renewal confirmation can have while Stripe is still retrying it |
+| `active` / `trialing` | period end **+ 72 h** (`BILLING_RENEWAL_GRACE_HOURS`) — the delay a renewal confirmation can have while Stripe is still retrying it. Shown as "paid through" only while the period's invoice is `paid`; before that (a renewal between draft and charge, a payment still processing) it is shown as **payment pending**, with the same access |
 | … set to cancel at period end, or with a cancel date | exactly that date, no grace |
-| `past_due` (a renewal payment failed) | start of the unpaid period **+ 7 days** (`BILLING_PAYMENT_GRACE_DAYS`); later failed retries cannot extend it |
+| `past_due` (a renewal payment failed) | start of the **oldest period still unpaid** **+ 7 days** (`BILLING_PAYMENT_GRACE_DAYS`), and never past a cancel date. The start is recorded the first time the bot stores the subscription `past_due` and kept until a **paid** period is seen: later failed retries, a late webhook, Stripe rolling the still-unpaid subscription into its next period, and a written-off invoice (which Stripe answers with `active`) all leave it where it is. One grace per lapsed payment, not one per period |
 | `unpaid`, `canceled`, `incomplete`, `incomplete_expired`, `paused` | Free immediately |
 | collection paused, or the invoice billing the current period (its first or a renewal invoice) `void` / `uncollectible` | Free immediately (a failed bank debit voids the invoice while the subscription still reads `active`); a voided proration or one-off invoice does not count |
+| any item not on `AURA_WEB_STRIPE_PRICE_ID`, or at quantity 0 | Free immediately, whatever the status: the subscription is pushed to the bot as granting nothing (`on_pro_price=false`) and a warning is logged |
+
+The payment-grace start is only as complete as what the bot has seen. A
+subscription first seen `past_due` in its second unpaid period is anchored at
+that period, and a payment made and missed entirely before the next failure
+does not reset it. Either needs the web backend to miss every webhook retry and
+every six-hourly reconciliation for a whole billing period.
 
 When the status cannot be established — the web backend or the bot down, events
 undelivered — the last stored snapshot keeps applying, and its own bound above
@@ -251,13 +258,26 @@ subscription store was unreachable" is not a state a Pro trigger can observe.
 | Every Stripe URL handed to a browser checked against Stripe's hosts, in the backend and again in the page | `stripe_api.py`, `lib/api.ts` | A misconfigured API base cannot become an open redirect |
 | Live keys refused unless `AURA_WEB_STRIPE_ALLOW_LIVE_MODE=true`; live events refused in test mode | `config.py`, `routes/stripe_webhook.py` | Going live is a separate, deliberate step |
 | `hide_input_in_errors` on both settings classes | `config.py`, `aura.config` | A refused setting never echoes a secret into a log |
-| Internal API: shared secret checked before routing, strict schemas, duplicate JSON keys refused | `aura.billing.internal_api` | It is the only way a plan changes |
+| Every credential typed `SecretStr`, unwrapped only where a request is authenticated | `config.py`, `aura.config`, the three clients | `repr()`/`str()` of the settings (or anything holding them) prints `**********`, never a secret |
+| Every subscription item checked against the configured Pro price, quantity ≥ 1 | `stripe_api.parse_subscription` | A portal plan switch or a hand-made subscription carrying Aura's metadata does not buy Pro |
+| Checkout offers cards only | `StripeClient.create_checkout_session` | No delayed payment method can grant Pro before money arrives |
+| Internal API: shared secret checked before routing, strict schemas, duplicate JSON keys refused; no listener can be built around a secret shorter than 32 characters | `aura.billing.internal_api` | It is the only way a plan changes |
 
 ### Stripe account settings this code relies on
 
-- **Customer portal:** allow cancellation and payment-method updates; do **not**
-  allow switching to other products or prices — the plan is Pro, and a switch
-  to an unrelated price would still carry Aura's metadata.
+- **Customer portal:** create a portal configuration that allows cancellation
+  and payment-method updates and does **not** allow switching products or
+  prices or changing the quantity, and set its `bpc_…` ID as
+  `AURA_WEB_STRIPE_PORTAL_CONFIGURATION_ID`. Every portal session is then
+  opened with it, so the portal's powers are pinned by this deployment rather
+  than by the account's default configuration. Optional, deliberately: the
+  code already refuses to count a subscription that is not on the Pro price at
+  quantity ≥ 1, so a permissive portal can only cost the customer (a switch
+  loses Pro), never the operator.
+- **Payment methods:** nothing to configure. Checkout sends
+  `payment_method_types[]=card` itself, so a bank debit enabled in the
+  dashboard is never offered: it would make a subscription `active` days
+  before its first payment settles.
 - **Revenue recovery:** enable failed-payment emails to customers (the payer's
   half of the grace-period communication; `/aura-plan` and this dashboard are
   the admins' half) and choose what happens after the last retry
@@ -282,3 +302,10 @@ subscription store was unreachable" is not a state a Pro trigger can observe.
   have no button for it. Stripe's own receipt emails link to the portal.
 - **`BILLING_MODE` defaults to `disabled`** in the bot. Turning it on is the
   operator's step (see DEPLOYMENT.md), as is switching to live Stripe keys.
+- **"Upgrade to Pro" is offered only where it changes something**: a guild
+  whose plan is decided by subscription and that has none granting yet. With
+  `BILLING_MODE=disabled`, or on a complimentary guild, the button is not shown
+  — which also means nobody can subscribe ahead of enforcement from the
+  dashboard. The checkout route itself does not refuse those guilds: only a
+  hand-crafted request reaches it, and it charges its own sender for a
+  subscription that buys nothing extra.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from urllib.parse import urlparse
 
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_EXAMPLE_HINT = "Copy .env.example to .env and fill in the required values."
@@ -14,6 +14,55 @@ ENV_EXAMPLE_HINT = "Copy .env.example to .env and fill in the required values."
 # well past brute-forcing over a network, and a floor is what stops "changeme"
 # from being the one credential that decides who is on Pro.
 MIN_INTERNAL_API_SECRET_LENGTH = 32
+
+
+def require_strong_internal_api_secret(value: str) -> str:
+    """Refuse a short secret, and one that cannot travel in an HTTP header intact.
+
+    Parameters
+    ----------
+    value
+        The raw shared secret.
+
+    Returns
+    -------
+    str
+        `value`, unchanged, when it is acceptable.
+
+    Raises
+    ------
+    ValueError
+        If it is shorter than MIN_INTERNAL_API_SECRET_LENGTH, or contains
+        anything but printable ASCII without spaces. The message never contains
+        the value.
+
+    Notes
+    -----
+    One rule for both places a secret is accepted -- the INTERNAL_API_SECRET
+    setting, and aura.billing.internal_api itself, which refuses to build a
+    listener around a weak secret whoever calls it -- so the two cannot drift
+    apart.
+
+    A space, a control character or a non-ASCII character in a bearer
+    credential is not a strong secret, it is one that some layer between the
+    two services will eventually normalise or strip -- producing a 401 on every
+    sync that looks like an outage rather than a typo.
+    """
+    if len(value) < MIN_INTERNAL_API_SECRET_LENGTH:
+        raise ValueError(
+            f"INTERNAL_API_SECRET must be at least {MIN_INTERNAL_API_SECRET_LENGTH} "
+            'characters (generate one with `python -c "import secrets; '
+            'print(secrets.token_urlsafe(48))"`).'
+        )
+    if not all(
+        character.isascii() and character.isprintable() and not character.isspace()
+        for character in value
+    ):
+        raise ValueError(
+            "INTERNAL_API_SECRET may contain only printable ASCII characters without spaces."
+        )
+    return value
+
 
 # Discord snowflakes are unsigned 64-bit, but every guild ID this project stores
 # goes into a SQLite INTEGER, which is signed 64-bit -- the binding raises past
@@ -116,7 +165,12 @@ class Settings(BaseSettings):
     # No default (would make a blank/missing token indistinguishable from a
     # deliberate empty value); validate_default=True forces the validator
     # below to run even when the variable is absent entirely.
-    discord_token: str = Field(default="", validate_default=True)
+    #
+    # Every credential in this class is a SecretStr (Phase 4c audit, F-10): its
+    # repr and str are masked, so printing the settings object -- a debug log
+    # line, a traceback renderer that shows locals -- cannot leak one. The plain
+    # value is read with .get_secret_value() only where it is actually used.
+    discord_token: SecretStr = Field(default="", validate_default=True)
     # LLM_PROVIDER, LLM_API_KEY, and SYNTHESIS_MODEL are all optional and unset
     # by default, on purpose: the bot as a whole -- every command except
     # /aura-ask -- must start and run completely normally with none of these
@@ -126,7 +180,7 @@ class Settings(BaseSettings):
     # in code while failing on every call. is_llm_configured() below is the one
     # place that decides whether enough is actually here to make a call.
     llm_provider: str | None = None
-    llm_api_key: str | None = None
+    llm_api_key: SecretStr | None = None
     synthesis_model: str | None = None
     # Proactive relief's own model (CLAUDE.md's second trigger), resolved
     # through resolve_model like every other component. Its own config value on
@@ -1086,13 +1140,18 @@ class Settings(BaseSettings):
     # while emailing the payer. Seven days covers a weekend plus a working week
     # for a server admin who does not read billing mail every day, which is the
     # realistic person on the other end of this, while keeping unpaid Pro
-    # bounded to a quarter of a monthly period.
+    # bounded to a quarter of a monthly period for each payment that lapses.
     #
-    # Anchored at the START of the unpaid period, never at "the first failure
-    # Aura heard about": a retry that fails again cannot extend it, and a
-    # webhook that arrives late cannot restart it. Stripe's own final decision
-    # -- canceled or unpaid after its last retry -- ends Pro immediately
-    # regardless of this number.
+    # Anchored at the START of the OLDEST period still unpaid, never at "the
+    # first failure Aura heard about" and never at the current period's start:
+    # a retry that fails again cannot extend it, a webhook that arrives late
+    # cannot restart it, and neither can Stripe rolling a still-unpaid
+    # subscription into its next period (which it does every cycle while the
+    # subscription stays past_due) or writing the unpaid invoice off. Only a
+    # paid period resets it (aura.billing.entitlement.next_unpaid_since). A
+    # cancellation date inside the grace still ends Pro on that date. Stripe's
+    # own final decision -- canceled or unpaid after its last retry -- ends Pro
+    # immediately regardless of this number.
     billing_payment_grace_days: float = Field(default=7.0, ge=0.0, le=60.0, allow_inf_nan=False)
 
     # Comma-separated guild IDs that are on Pro without any subscription: the
@@ -1116,7 +1175,7 @@ class Settings(BaseSettings):
     # is not started at all. Required when BILLING_MODE=enforced: an enforced
     # deployment whose subscription state can never change would move every
     # paying guild to Free the day its first period ends.
-    internal_api_secret: str | None = None
+    internal_api_secret: SecretStr | None = None
 
     # Where the internal billing API listens. 127.0.0.1 by default, so a process
     # that was never configured for billing never listens on a reachable
@@ -1129,11 +1188,11 @@ class Settings(BaseSettings):
 
     @field_validator("discord_token")
     @classmethod
-    def _require_non_blank_token(cls, value: str) -> str:
-        stripped = value.strip()
+    def _require_non_blank_token(cls, value: SecretStr) -> SecretStr:
+        stripped = value.get_secret_value().strip()
         if not stripped:
             raise ValueError(f"DISCORD_TOKEN is missing or blank. {ENV_EXAMPLE_HINT}")
-        return stripped
+        return SecretStr(stripped)
 
     @field_validator("operator_discord_user_id", mode="before")
     @classmethod
@@ -1168,6 +1227,9 @@ class Settings(BaseSettings):
         that never asked for billing at all -- the same "routine git pull
         becomes an outage" shape _blank_operator_id_means_unset exists for.
         """
+        if isinstance(value, SecretStr):
+            stripped_secret = value.get_secret_value().strip()
+            return SecretStr(stripped_secret) if stripped_secret else None
         if isinstance(value, str):
             stripped = value.strip()
             return stripped or None
@@ -1175,29 +1237,13 @@ class Settings(BaseSettings):
 
     @field_validator("internal_api_secret")
     @classmethod
-    def _internal_api_secret_is_strong_and_header_safe(cls, value: str | None) -> str | None:
-        """Refuse a short secret, and one that cannot travel in an HTTP header intact.
-
-        A space, a control character or a non-ASCII character in a bearer
-        credential is not a strong secret, it is one that some layer between
-        the two services will eventually normalise or strip -- producing a
-        401 on every sync that looks like an outage rather than a typo.
-        """
+    def _internal_api_secret_is_strong_and_header_safe(
+        cls, value: SecretStr | None
+    ) -> SecretStr | None:
+        """Apply require_strong_internal_api_secret to a configured secret."""
         if value is None:
             return None
-        if len(value) < MIN_INTERNAL_API_SECRET_LENGTH:
-            raise ValueError(
-                f"INTERNAL_API_SECRET must be at least {MIN_INTERNAL_API_SECRET_LENGTH} "
-                'characters (generate one with `python -c "import secrets; '
-                'print(secrets.token_urlsafe(48))"`).'
-            )
-        if not all(
-            character.isascii() and character.isprintable() and not character.isspace()
-            for character in value
-        ):
-            raise ValueError(
-                "INTERNAL_API_SECRET may contain only printable ASCII characters without spaces."
-            )
+        require_strong_internal_api_secret(value.get_secret_value())
         return value
 
     @field_validator("billing_dashboard_url")

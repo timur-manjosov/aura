@@ -1,9 +1,9 @@
 """The bot's internal billing API: how Stripe's news reaches the process that owns the database.
 
 WHY THIS EXISTS AT ALL (Phase 4c's architecture decision, recorded in full in
-reports/phase-4c.txt and web/README.md). Subscription state, unlike guild
-membership in Phase 4b, is not something Discord can answer -- it has to be
-persisted, and the bot has to read it on every message. Two designs were on the
+web/README.md, "Where subscription state lives, and why"). Subscription state,
+unlike guild membership in Phase 4b, is not something Discord can answer -- it
+has to be persisted, and the bot has to read it on every message. Two designs were on the
 table: let the web backend write a table in data/aura.db directly, or keep this
 process the only writer of its own database and give the web backend a narrow
 way to hand it snapshots. This module is the second. The web container keeps no
@@ -24,8 +24,12 @@ No route deletes anything, lists every guild, or reads a fact.
 AUTHENTICATION COMES FIRST. Every request -- including one for a route that does
 not exist -- must present the shared secret before anything else happens: no
 routing answer, no body read, no validation message. An unauthenticated caller
-learns only "401", so this API cannot be mapped from outside it. The listener is
-additionally bound only to the internal network in the shipped compose files.
+learns only "401", so this API cannot be mapped from outside it. And no listener
+can be built around a weak secret at all: create_internal_api_app refuses one
+itself, whatever its caller checked, so an empty secret can never turn into an
+API that accepts "Bearer " (Phase 4c audit, F-08). The shared secret is the
+control; the network placement in the compose files narrows who can try, but
+the host itself can still reach the container.
 
 Every error is a short machine-readable code, never an exception text: the
 caller is another service, and whatever it needs to diagnose a failure is in
@@ -49,6 +53,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SecretStr,
     StrictBool,
     StrictInt,
     StringConstraints,
@@ -65,6 +70,7 @@ from aura.billing.entitlement import (
     SubscriptionStatus,
 )
 from aura.billing.plan_gate import PlanGate
+from aura.config import require_strong_internal_api_secret
 from aura.db.connection import utc_now
 from aura.db.subscriptions import ApplyOutcome, SubscriptionSnapshot, get_sync_state
 
@@ -147,6 +153,9 @@ class SnapshotPayload(_RequestModel):
     current_period_start: _UnixSeconds
     current_period_end: _UnixSeconds
     livemode: StrictBool
+    # Required, never defaulted: a peer that does not say whether the
+    # subscription is on the Pro price is refused rather than assumed to be.
+    on_pro_price: StrictBool
 
     @field_validator("guild_id", "purchaser_user_id")
     @classmethod
@@ -186,6 +195,7 @@ class SnapshotPayload(_RequestModel):
             current_period_start=_datetime_from_unix(self.current_period_start),
             current_period_end=_datetime_from_unix(self.current_period_end),
             livemode=self.livemode,
+            on_pro_price=self.on_pro_price,
         )
 
 
@@ -384,8 +394,10 @@ async def _handle_plans(request: web.Request) -> web.Response:
     return web.json_response({"plans": plans})
 
 
-def _authentication_middleware(secret: str) -> Callable[..., Awaitable[web.StreamResponse]]:
-    expected = f"Bearer {secret}".encode("ascii")
+def _authentication_middleware(secret: SecretStr) -> Callable[..., Awaitable[web.StreamResponse]]:
+    # The one place the secret is unwrapped: into the bytes every request is
+    # compared against. A weak one never gets this far (create_internal_api_app).
+    expected = f"Bearer {secret.get_secret_value()}".encode("ascii")
 
     @web.middleware
     async def middleware(
@@ -449,7 +461,7 @@ def create_internal_api_app(
     conn: aiosqlite.Connection,
     gate: PlanGate,
     *,
-    secret: str,
+    secret: SecretStr,
     clock: Callable[[], datetime] = utc_now,
 ) -> web.Application:
     """Build the aiohttp application, without starting a listener.
@@ -470,10 +482,28 @@ def create_internal_api_app(
     web.Application
         A fully routed application behind the authentication middleware.
 
+    Raises
+    ------
+    TypeError
+        If `secret` is not a SecretStr.
+    ValueError
+        If the secret is shorter than aura.config.MIN_INTERNAL_API_SECRET_LENGTH
+        or is not printable ASCII without spaces -- the same rule the
+        INTERNAL_API_SECRET setting applies. The message never contains it.
+
     Notes
     -----
     Separate from starting it so tests can drive it directly, with no socket.
+
+    The secret is checked HERE, not only in the configuration, because this is
+    the function every listener is built by. Checked only upstream, an empty
+    secret handed in by any other caller would make the expected header
+    "Bearer " -- which aiohttp delivers intact -- and the API would serve every
+    guild's customer and purchaser IDs to anyone who sent it.
     """
+    if not isinstance(secret, SecretStr):
+        raise TypeError("the internal API secret must be a pydantic SecretStr")
+    require_strong_internal_api_secret(secret.get_secret_value())
     app = web.Application(
         middlewares=[_authentication_middleware(secret)],
         client_max_size=MAX_REQUEST_BYTES,
@@ -523,7 +553,7 @@ async def start_internal_api(
     conn: aiosqlite.Connection,
     gate: PlanGate,
     *,
-    secret: str,
+    secret: SecretStr,
     host: str,
     port: int,
     clock: Callable[[], datetime] = utc_now,
@@ -550,6 +580,9 @@ async def start_internal_api(
 
     Raises
     ------
+    TypeError, ValueError
+        For a secret create_internal_api_app refuses -- before anything is
+        bound, so a refused secret never leaves a socket open.
     OSError
         If the address cannot be bound. Deliberately not swallowed: a bot that
         cannot accept subscription updates should fail visibly at startup rather

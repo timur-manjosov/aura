@@ -17,6 +17,7 @@
   "plan_badge_pro": "Pro",
   "plan_standing_active": "{date} tarihine kadar ödendi, otomatik olarak yenilenir.",
   "plan_standing_renewal_pending": "Yenileme henüz onaylanmadı. Pro {date} tarihine kadar açık kalır.",
+  "plan_standing_payment_pending": "Mevcut dönemin ödemesi henüz onaylanmadı.",
   "plan_standing_canceling": "{date} tarihine kadar Pro, sonra Free.",
   "plan_standing_payment_grace": "Son ödeme başarısız oldu. Ödeme yöntemi güncellenmezse Pro {date} tarihine kadar açık kalır.",
   "plan_standing_ended": "Pro aboneliği sona erdi.",

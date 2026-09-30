@@ -17,6 +17,7 @@
   "plan_badge_pro": "Pro",
   "plan_standing_active": "{date} まで支払い済み。自動的に更新されます。",
   "plan_standing_renewal_pending": "更新はまだ確認されていません。Pro は {date} まで有効です。",
+  "plan_standing_payment_pending": "現在の期間の支払いはまだ確認されていません。",
   "plan_standing_canceling": "{date} まで Pro、その後 Free になります。",
   "plan_standing_payment_grace": "最新の支払いに失敗しました。支払い方法が更新されない限り、Pro は {date} まで有効です。",
   "plan_standing_ended": "Pro のサブスクリプションは終了しました。",

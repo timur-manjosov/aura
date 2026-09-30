@@ -428,6 +428,41 @@ topic to a member and two unrelated sentences to an embedding model.
 Billing ships switched off (`BILLING_MODE=disabled`): a redeploy with this code
 changes nothing for any guild until the steps below are taken on purpose.
 
+**Redeploying `web/` after Phase 4c needs its billing values.** The web backend
+has no mode without billing: it refuses to start unless
+`AURA_WEB_STRIPE_SECRET_KEY`, `AURA_WEB_STRIPE_WEBHOOK_SECRET`,
+`AURA_WEB_STRIPE_PRICE_ID`, `AURA_WEB_BOT_INTERNAL_API_URL` and
+`AURA_WEB_BOT_INTERNAL_API_SECRET` are all set, and the container crash-loops
+with the missing variable named in its log. A `web/` redeploy that only wants
+the Phase 4b dashboard still needs steps 1–3 below first.
+
+**The bot and the web backend move together.** They share one internal API
+contract, and the Phase 4c audit fixes changed it (a required `on_pro_price`
+field in every snapshot, a `payment_pending` standing). Deploy both from the
+same commit. While they differ nothing is corrupted — the bot answers every
+snapshot it does not understand with `400`, the web backend answers Stripe
+with `503`, and Stripe redelivers for up to three days — but no plan changes
+until both are current. The bot's own database needs no manual step: two
+columns (`on_pro_price`, `past_due_since`) are added to `guild_subscriptions`
+at startup, additively and idempotently, before the plan gate reads a row.
+As for every schema change, dry-run the new image against a copy of the live
+database backup first, twice (see the 2026-08-27 deployment report for the
+procedure).
+
+**Rolling back, and forward again.** Rolling back to an image from before these
+fixes needs no database change: the old code names its columns explicitly and
+simply ignores the two new ones. Rolling *forward* again afterwards needs one
+statement first, because the old code never maintains `past_due_since` — an
+anchor written before the rollback would survive a payment made during it and
+deny the next failed payment its grace. With the bot stopped, before starting
+the new image:
+
+    docker compose run --rm --entrypoint python aura -c "import sqlite3; c = sqlite3.connect('data/aura.db'); c.execute('UPDATE guild_subscriptions SET past_due_since = NULL'); c.commit()"
+
+Every `past_due` row then re-anchors at its own period start, exactly the
+pre-fix meaning. `on_pro_price` needs nothing: the reconciliation a minute after
+the web backend starts rewrites it for every subscription.
+
 1. **Generate one shared secret** and put it in both files:
    `python -c "import secrets; print(secrets.token_urlsafe(48))"` →
    `INTERNAL_API_SECRET=` in `.env`, `AURA_WEB_BOT_INTERNAL_API_SECRET=` in
@@ -437,11 +472,18 @@ changes nothing for any guild until the steps below are taken on purpose.
    `docker compose up -d --build`, then look for
    `Internal billing API listening on 0.0.0.0:8081` in `docker compose logs aura`.
    No host port is published; `ss -tlnp | grep 8081` on the host shows nothing.
+   That does not make it unreachable from the host: any process on the VPS can
+   still connect to the container's own IP on either network. The shared
+   secret is what keeps it closed.
 3. **Configure Stripe (test mode)** in `web/.env`: a restricted test key, the
    Pro Price ID and the webhook signing secret. Point a webhook endpoint at
    `https://<your-domain>/api/stripe/webhook` with the events listed in
    `web/.env.example`, and apply the account settings in `web/README.md`
-   ("Stripe account settings this code relies on").
+   ("Stripe account settings this code relies on"). Create a customer portal
+   configuration with plan switching and quantity changes disabled and put its
+   `bpc_…` ID in `AURA_WEB_STRIPE_PORTAL_CONFIGURATION_ID`. Checkout offers
+   cards only (wallets such as Apple Pay and Google Pay included); that is set
+   in code, not in the dashboard.
 4. **Bring the web interface up:** `docker compose -f web/docker-compose.yml up -d --build`.
    The backend log shows `Stripe billing ready: test mode, price price_…`.
 5. **Subscribe a test server** from the dashboard with a Stripe test card and

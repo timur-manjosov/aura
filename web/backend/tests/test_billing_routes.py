@@ -15,10 +15,11 @@ import json
 import httpx
 import pytest
 
-from fake_bot_billing import FakeBotBillingState, free_plan
-from fake_discord import FakeDiscordState
-from fake_stripe import FakeStripeState
-from helpers import FRONTEND_BASE, complete_login
+from aura_web.config import WebSettings
+from fake_bot_billing import FakeBotBillingState, create_fake_bot_billing, free_plan
+from fake_discord import FakeDiscordState, create_fake_discord
+from fake_stripe import FakeStripeState, create_fake_stripe
+from helpers import FAKE_BOT_BASE, FAKE_STRIPE_BASE, FRONTEND_BASE, build_app, complete_login
 
 CHECKOUT = "/api/billing/checkout"
 PORTAL = "/api/billing/portal"
@@ -81,9 +82,11 @@ class TestCheckoutHappyPath:
         assert form["subscription_data[metadata][aura_guild_id]"] == "1000"
         assert form["subscription_data[metadata][aura_discord_user_id]"] == "5000"
         assert form["success_url"] == f"{FRONTEND_BASE}/?checkout=success"
-        assert "payment_method_types[0]" not in form and not any(
-            key.startswith("payment_method_types") for key in form
-        )
+        # Cards only, sent explicitly (F-05): the dashboard's payment method
+        # settings cannot add a delayed method that grants Pro before it pays.
+        assert {key: value for key, value in form.items() if "payment_method" in key} == {
+            "payment_method_types[0]": "card"
+        }
 
     async def test_pins_the_api_version_and_sends_an_idempotency_key(
         self, moderator, stripe_state
@@ -450,3 +453,125 @@ class TestBillingGuilds:
 
     async def test_without_a_session_it_is_a_401(self, app_client) -> None:
         assert (await app_client.get("/api/billing/guilds")).status_code == 401
+
+
+# --- Phase 4c audit fixes -----------------------------------------------------
+
+
+def unpaid_plan(**overrides: object) -> dict:
+    """A guild on Pro with no subscription behind it."""
+    return {
+        "tier": "pro",
+        "basis": "subscription",
+        "standing": "no_subscription",
+        "access_until": None,
+        "paid_through": None,
+        "in_force_subscription_count": 0,
+        "subscriptions": [],
+    } | overrides
+
+
+class TestSubscribingIsOfferedOnlyWhereItChangesSomething:
+    """F-15: no "Upgrade to Pro" where paying buys nothing."""
+
+    @pytest.mark.parametrize("basis", ["billing_not_enforced", "complimentary"])
+    async def test_a_guild_already_on_pro_by_another_basis_is_not_offered_a_checkout(
+        self, moderator, bot_billing_state, basis: str
+    ) -> None:
+        bot_billing_state.plans["1000"] = unpaid_plan(basis=basis)
+
+        plan = (await moderator.get("/api/billing/guilds")).json()[0]["plan"]
+
+        assert plan["can_subscribe"] is False
+
+    async def test_a_guild_whose_plan_a_subscription_decides_is_offered_one(
+        self, moderator, bot_billing_state
+    ) -> None:
+        bot_billing_state.plans["1000"] = unpaid_plan(tier="free", standing="ended")
+
+        plan = (await moderator.get("/api/billing/guilds")).json()[0]["plan"]
+
+        assert plan["can_subscribe"] is True
+
+    async def test_a_complimentary_guild_that_is_also_paying_is_not_offered_a_second(
+        self, moderator, bot_billing_state
+    ) -> None:
+        bot_billing_state.plans["1000"] = paying_plan(purchaser="5000") | {"basis": "complimentary"}
+
+        plan = (await moderator.get("/api/billing/guilds")).json()[0]["plan"]
+
+        assert plan["can_subscribe"] is False
+        assert plan["is_billing_owner"] is True
+
+
+class TestPaymentPendingReachesTheBrowser:
+    async def test_the_standing_is_passed_through_without_a_paid_through_date(
+        self, moderator, bot_billing_state
+    ) -> None:
+        bot_billing_state.plans["1000"] = paying_plan(purchaser="5000") | {
+            "standing": "payment_pending",
+            "paid_through": None,
+        }
+
+        plan = (await moderator.get("/api/billing/guilds")).json()[0]["plan"]
+
+        assert plan["standing"] == "payment_pending"
+        assert plan["paid_through"] is None
+        assert plan["tier"] == "pro"
+
+
+class TestThePortalConfigurationReachesStripe:
+    async def test_the_configured_portal_configuration_is_what_the_route_opens(
+        self,
+        web_settings: WebSettings,
+        discord_state: FakeDiscordState,
+        stripe_state: FakeStripeState,
+        bot_billing_state: FakeBotBillingState,
+    ) -> None:
+        configured = web_settings.model_copy(
+            update={"stripe_portal_configuration_id": "bpc_noPlanSwitching"}
+        )
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=0
+        )
+        bot_billing_state.plans["1000"] = paying_plan(
+            purchaser="5000", customer=subscription.customer
+        )
+        async with (
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=create_fake_discord(discord_state)),
+                base_url="https://discord.test",
+            ) as discord_http,
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=create_fake_stripe(stripe_state)),
+                base_url=FAKE_STRIPE_BASE,
+            ) as stripe_http,
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=create_fake_bot_billing(bot_billing_state)),
+                base_url=FAKE_BOT_BASE,
+            ) as bot_http,
+        ):
+            app = build_app(configured, discord_http, stripe_http, bot_http)
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="https://testserver"
+                ) as browser:
+                    await complete_login(browser, discord_state, "5000")
+                    response = await post_json(browser, PORTAL, {"guild_id": "1000"})
+
+        assert response.status_code == 200
+        assert stripe_state.portal_sessions[-1]["configuration"] == "bpc_noPlanSwitching"
+
+    async def test_without_one_no_configuration_is_sent(
+        self, moderator, stripe_state, bot_billing_state
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=0
+        )
+        bot_billing_state.plans["1000"] = paying_plan(
+            purchaser="5000", customer=subscription.customer
+        )
+
+        await post_json(moderator, PORTAL, {"guild_id": "1000"})
+
+        assert "configuration" not in stripe_state.portal_sessions[-1]
