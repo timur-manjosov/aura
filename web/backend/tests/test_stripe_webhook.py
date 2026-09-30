@@ -151,19 +151,20 @@ class TestTheSignatureIsAbsolute:
         assert response.status_code == 400
         assert nothing_was_touched(stripe_state, bot_billing_state)
 
+    @pytest.mark.parametrize("genuine_first", [False, True], ids=["forged-first", "genuine-first"])
     async def test_two_signature_headers_are_refused_even_if_one_is_genuine(
-        self, app_client, stripe_state, bot_billing_state, event_body
+        self, app_client, stripe_state, bot_billing_state, event_body, genuine_first: bool
     ) -> None:
+        """Both orders: with the forged header first, "verify the first" fails on its own too."""
         genuine = sign_webhook(event_body, stripe_state.webhook_secret)
+        signatures = [("Stripe-Signature", "t=1,v1=00"), ("Stripe-Signature", genuine)]
+        if genuine_first:
+            signatures.reverse()
 
         response = await app_client.post(
             WEBHOOK,
             content=event_body,
-            headers=[
-                ("Content-Type", "application/json"),
-                ("Stripe-Signature", "t=1,v1=00"),
-                ("Stripe-Signature", genuine),
-            ],
+            headers=[("Content-Type", "application/json"), *signatures],
         )
 
         assert response.status_code == 400

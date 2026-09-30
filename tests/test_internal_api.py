@@ -126,17 +126,20 @@ class TestAuthentication:
         assert await response.json() == {"error": "unauthorized"}
         assert await nothing_was_written(conn)
 
-    async def test_two_authorization_headers_are_refused_even_if_one_is_right(self, setup) -> None:
+    @pytest.mark.parametrize("right_first", [False, True], ids=["wrong-first", "right-first"])
+    async def test_two_authorization_headers_are_refused_even_if_one_is_right(
+        self, setup, right_first: bool
+    ) -> None:
+        """Both orders: with the wrong header first, "check the first" fails on its own too."""
         client, conn, _ = setup
+        authorizations = [("Authorization", "Bearer wrong"), ("Authorization", f"Bearer {SECRET}")]
+        if right_first:
+            authorizations.reverse()
 
         response = await client.post(
             "/internal/v1/subscriptions/apply",
             data=json.dumps(apply_body()),
-            headers=[
-                ("Authorization", "Bearer wrong"),
-                ("Authorization", f"Bearer {SECRET}"),
-                ("Content-Type", "application/json"),
-            ],
+            headers=[*authorizations, ("Content-Type", "application/json")],
         )
 
         assert response.status == 401
