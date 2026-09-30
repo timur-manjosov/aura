@@ -4,10 +4,13 @@ services:
     env_file: .env
     environment:
       # Phase 4c: the internal billing API listens on the container's own
-      # interface so the web backend can reach it over the aura-billing network
-      # below. NO host port is published -- nothing outside that network can
-      # reach it -- and the API does not start at all unless
-      # INTERNAL_API_SECRET is set in .env.
+      # interfaces so the web backend can reach it over the aura-billing network
+      # below. No host port is published, so nothing reaches it through the
+      # host's public interfaces and containers on unrelated networks cannot
+      # reach it -- but the HOST itself (any process or user on the VPS) can,
+      # through the container's IP on either of its networks. The shared
+      # INTERNAL_API_SECRET is the real control, checked before anything else;
+      # the API does not start at all unless it is set in .env.
       INTERNAL_API_HOST: "0.0.0.0"
     volumes:
       - ./data:/app/data

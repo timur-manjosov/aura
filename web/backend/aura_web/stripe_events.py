@@ -147,7 +147,7 @@ def parse_verified_event(payload: bytes) -> VerifiedEvent:
 
     Raises
     ------
-    StripeEventError
+    InvalidEventError
         If the body is not a JSON object or is missing a field the caller
         needs.
     """

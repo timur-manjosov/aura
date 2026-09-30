@@ -1,9 +1,9 @@
 """The bot's internal billing API: how Stripe's news reaches the process that owns the database.
 
 WHY THIS EXISTS AT ALL (Phase 4c's architecture decision, recorded in full in
-reports/phase-4c.txt and web/README.md). Subscription state, unlike guild
-membership in Phase 4b, is not something Discord can answer -- it has to be
-persisted, and the bot has to read it on every message. Two designs were on the
+web/README.md, "Where subscription state lives, and why"). Subscription state,
+unlike guild membership in Phase 4b, is not something Discord can answer -- it
+has to be persisted, and the bot has to read it on every message. Two designs were on the
 table: let the web backend write a table in data/aura.db directly, or keep this
 process the only writer of its own database and give the web backend a narrow
 way to hand it snapshots. This module is the second. The web container keeps no
