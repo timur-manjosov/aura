@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
+from pydantic import SecretStr
 
 from aura_web.stripe_api import (
     StripeClient,
@@ -198,7 +199,7 @@ async def stripe_client(stripe_state: FakeStripeState) -> AsyncIterator[StripeCl
         yield StripeClient(
             http,
             api_base="https://stripe.test",
-            secret_key=stripe_state.secret_key,
+            secret_key=SecretStr(stripe_state.secret_key),
             price_id=stripe_state.price_id,
             checkout_success_url="https://frontend.test/ok",
             checkout_cancel_url="https://frontend.test/no",
@@ -214,7 +215,7 @@ class TestClientFailureClassification:
             client = StripeClient(
                 http,
                 api_base="https://stripe.test",
-                secret_key="sk_test_revoked",
+                secret_key=SecretStr("sk_test_revoked"),
                 price_id="price_x",
                 checkout_success_url="https://f/",
                 checkout_cancel_url="https://f/",
@@ -252,7 +253,7 @@ class TestClientFailureClassification:
             client = StripeClient(
                 http,
                 api_base="https://stripe.test",
-                secret_key=stripe_state.secret_key,
+                secret_key=SecretStr(stripe_state.secret_key),
                 price_id="price_x",
                 checkout_success_url="https://f/",
                 checkout_cancel_url="https://f/",
@@ -277,7 +278,7 @@ class TestClientFailureClassification:
             client = StripeClient(
                 http,
                 api_base="https://stripe.test",
-                secret_key=stripe_state.secret_key,
+                secret_key=SecretStr(stripe_state.secret_key),
                 price_id="price_x",
                 checkout_success_url="https://f/",
                 checkout_cancel_url="https://f/",
@@ -294,7 +295,7 @@ class TestClientFailureClassification:
             client = StripeClient(
                 http,
                 api_base="https://stripe.test",
-                secret_key=stripe_state.secret_key,
+                secret_key=SecretStr(stripe_state.secret_key),
                 price_id="price_x",
                 checkout_success_url="https://f/",
                 checkout_cancel_url="https://f/",

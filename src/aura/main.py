@@ -669,7 +669,7 @@ def main() -> None:
     client = create_client(translator, settings)
 
     try:
-        client.run(settings.discord_token, log_handler=None)
+        client.run(settings.discord_token.get_secret_value(), log_handler=None)
     except discord.LoginFailure:
         logger.critical(
             "Discord rejected the bot token. Check DISCORD_TOKEN in .env — "

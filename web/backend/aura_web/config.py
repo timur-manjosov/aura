@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_EXAMPLE_HINT = "Copy web/.env.example to web/.env and fill in the required values."
@@ -84,6 +84,16 @@ def _require_absolute_http_url(value: str, field_name: str) -> str:
     return value
 
 
+def _require_non_blank(value: str, field_name: str) -> str:
+    """Reject a blank required value, naming the variable and never echoing the value."""
+    if not value.strip():
+        raise ValueError(
+            f"{field_name.upper()} is required (set AURA_WEB_{field_name.upper()}). "
+            + ENV_EXAMPLE_HINT
+        )
+    return value.strip()
+
+
 def _require_stripe_token(value: str, *, field_name: str, prefixes: tuple[str, ...]) -> str:
     """Reject a Stripe credential or ID with the wrong prefix or a stray character.
 
@@ -123,14 +133,19 @@ class WebSettings(BaseSettings):
     # No defaults on the three credentials: a blank value and a missing one
     # must be indistinguishable failures, both caught by the validator below,
     # rather than one of them starting a service that 401s on every login.
+    #
+    # Every secret in this class is a SecretStr (Phase 4c audit, F-10): its repr
+    # and str are masked, so printing these settings -- or the ServiceContext
+    # that holds them -- cannot leak one. The plain value is read with
+    # .get_secret_value() only where a request is actually authenticated with it.
     discord_client_id: str = Field(default="", validate_default=True)
-    discord_client_secret: str = Field(default="", validate_default=True)
+    discord_client_secret: SecretStr = Field(default="", validate_default=True)
     # The bot's own token, used for exactly one read-only question: which
     # guilds is Aura actually in. See aura_web.discord_api.DiscordClient.
     # fetch_bot_guild_ids for why that question is asked of Discord rather
     # than of Aura's database, and web/README.md for the blast-radius
     # trade-off this choice accepts.
-    discord_bot_token: str = Field(default="", validate_default=True)
+    discord_bot_token: SecretStr = Field(default="", validate_default=True)
 
     # Must byte-for-byte match one of the redirect URIs registered on the
     # Discord application, and is sent twice (authorize, then token exchange)
@@ -182,10 +197,10 @@ class WebSettings(BaseSettings):
     # The API key this service calls Stripe with. A restricted key (rk_) with
     # only the permissions listed in web/.env.example is recommended over a
     # full secret key (sk_). Never sent to the browser, never logged.
-    stripe_secret_key: str = Field(default="", validate_default=True)
+    stripe_secret_key: SecretStr = Field(default="", validate_default=True)
     # The signing secret of the webhook endpoint (whsec_...). Every webhook
     # request is verified against it before its body is read as an event.
-    stripe_webhook_secret: str = Field(default="", validate_default=True)
+    stripe_webhook_secret: SecretStr = Field(default="", validate_default=True)
     # The recurring Price a Pro subscription is created for. Config-only: the
     # browser chooses a guild, never what it is charged.
     stripe_price_id: str = Field(default="", validate_default=True)
@@ -214,29 +229,27 @@ class WebSettings(BaseSettings):
     # This service never opens Aura's database (see web/README.md); it hands
     # subscription snapshots to the bot process, which stays the only writer.
     bot_internal_api_url: str = Field(default="", validate_default=True)
-    bot_internal_api_secret: str = Field(default="", validate_default=True)
+    bot_internal_api_secret: SecretStr = Field(default="", validate_default=True)
 
     log_level: str = "INFO"
 
+    @field_validator("discord_client_id", "stripe_price_id", "bot_internal_api_url")
+    @classmethod
+    def _reject_blank_required_values(cls, value: str, info: object) -> str:
+        return _require_non_blank(value, getattr(info, "field_name", "value"))
+
     @field_validator(
-        "discord_client_id",
         "discord_client_secret",
         "discord_bot_token",
         "stripe_secret_key",
         "stripe_webhook_secret",
-        "stripe_price_id",
-        "bot_internal_api_url",
         "bot_internal_api_secret",
     )
     @classmethod
-    def _reject_blank_credentials(cls, value: str, info: object) -> str:
-        field_name = getattr(info, "field_name", "credential")
-        if not value.strip():
-            raise ValueError(
-                f"{field_name.upper()} is required (set AURA_WEB_{field_name.upper()}). "
-                + ENV_EXAMPLE_HINT
-            )
-        return value.strip()
+    def _reject_blank_secrets(cls, value: SecretStr, info: object) -> SecretStr:
+        return SecretStr(
+            _require_non_blank(value.get_secret_value(), getattr(info, "field_name", "secret"))
+        )
 
     @field_validator("discord_client_id")
     @classmethod
@@ -292,19 +305,21 @@ class WebSettings(BaseSettings):
 
     @field_validator("stripe_secret_key")
     @classmethod
-    def _stripe_secret_key_shape(cls, value: str) -> str:
-        return _require_stripe_token(
-            value,
+    def _stripe_secret_key_shape(cls, value: SecretStr) -> SecretStr:
+        _require_stripe_token(
+            value.get_secret_value(),
             field_name="STRIPE_SECRET_KEY",
             prefixes=STRIPE_TEST_KEY_PREFIXES + STRIPE_LIVE_KEY_PREFIXES,
         )
+        return value
 
     @field_validator("stripe_webhook_secret")
     @classmethod
-    def _stripe_webhook_secret_shape(cls, value: str) -> str:
-        return _require_stripe_token(
-            value, field_name="STRIPE_WEBHOOK_SECRET", prefixes=("whsec_",)
+    def _stripe_webhook_secret_shape(cls, value: SecretStr) -> SecretStr:
+        _require_stripe_token(
+            value.get_secret_value(), field_name="STRIPE_WEBHOOK_SECRET", prefixes=("whsec_",)
         )
+        return value
 
     @field_validator("stripe_price_id")
     @classmethod
@@ -340,15 +355,16 @@ class WebSettings(BaseSettings):
 
     @field_validator("bot_internal_api_secret")
     @classmethod
-    def _bot_internal_api_secret_is_strong(cls, value: str) -> str:
-        if len(value) < MIN_BOT_INTERNAL_API_SECRET_LENGTH:
+    def _bot_internal_api_secret_is_strong(cls, value: SecretStr) -> SecretStr:
+        raw = value.get_secret_value()
+        if len(raw) < MIN_BOT_INTERNAL_API_SECRET_LENGTH:
             raise ValueError(
                 f"BOT_INTERNAL_API_SECRET must be at least {MIN_BOT_INTERNAL_API_SECRET_LENGTH} "
                 "characters and equal to INTERNAL_API_SECRET in the bot's .env. " + ENV_EXAMPLE_HINT
             )
         if not all(
             character.isascii() and character.isprintable() and not character.isspace()
-            for character in value
+            for character in raw
         ):
             raise ValueError(
                 "BOT_INTERNAL_API_SECRET may contain only printable ASCII characters without spaces."
@@ -358,10 +374,7 @@ class WebSettings(BaseSettings):
     @model_validator(mode="after")
     def _live_mode_is_a_deliberate_decision(self) -> WebSettings:
         """Refuse a live Stripe key unless live mode was switched on explicitly."""
-        if (
-            self.stripe_secret_key.startswith(STRIPE_LIVE_KEY_PREFIXES)
-            and not self.stripe_allow_live_mode
-        ):
+        if self.stripe_live_mode and not self.stripe_allow_live_mode:
             raise ValueError(
                 "STRIPE_SECRET_KEY is a LIVE key, and STRIPE_ALLOW_LIVE_MODE is not set. Live "
                 "payments are a separate, deliberate step: use a test key (sk_test_/rk_test_) "
@@ -379,7 +392,7 @@ class WebSettings(BaseSettings):
             True when the configured secret key is a live-mode key, in which case
             only live events are accepted.
         """
-        return self.stripe_secret_key.startswith(STRIPE_LIVE_KEY_PREFIXES)
+        return self.stripe_secret_key.get_secret_value().startswith(STRIPE_LIVE_KEY_PREFIXES)
 
     @property
     def frontend_origin(self) -> str:

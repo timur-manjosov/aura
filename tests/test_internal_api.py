@@ -23,6 +23,7 @@ import aiosqlite
 import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient, TestServer
+from pydantic import SecretStr
 
 from aura.billing import GracePolicy, PlanGate
 from aura.billing.internal_api import (
@@ -82,7 +83,7 @@ async def setup():
         records=[],
         clock=lambda: NOW,
     )
-    app = create_internal_api_app(conn, gate, secret=SECRET, clock=lambda: NOW)
+    app = create_internal_api_app(conn, gate, secret=SecretStr(SECRET), clock=lambda: NOW)
     client = TestClient(TestServer(app))
     await client.start_server()
     try:
@@ -455,7 +456,7 @@ class TestListener:
         conn = await aiosqlite.connect(":memory:")
         await init_schema(conn)
         server = await start_internal_api(
-            conn, PlanGate.unenforced(), secret=SECRET, host="127.0.0.1", port=0
+            conn, PlanGate.unenforced(), secret=SecretStr(SECRET), host="127.0.0.1", port=0
         )
         port = server.bound_port
         try:
@@ -484,10 +485,45 @@ class TestListener:
                 await start_internal_api(
                     conn,
                     PlanGate.unenforced(),
-                    secret=SECRET,
+                    secret=SecretStr(SECRET),
                     host="127.0.0.1",
                     port=blocker.getsockname()[1],
                 )
         finally:
             blocker.close()
             await conn.close()
+
+
+class TestNoListenerRunsOpen:
+    """F-08: the API refuses a weak secret itself, whatever its caller already checked."""
+
+    @pytest.mark.parametrize(
+        "weak",
+        ["", " ", "\t" * 40, "x" * 31, "x" * 31 + " ", "sécrét-" + "x" * 30, "x" * 20 + "\n" * 12],
+        ids=["empty", "space", "tabs", "31-chars", "31-plus-space", "non-ascii", "newlines"],
+    )
+    async def test_a_weak_secret_is_refused_by_every_construction_path(self, weak: str) -> None:
+        conn = await aiosqlite.connect(":memory:")
+        await init_schema(conn)
+        try:
+            with pytest.raises(ValueError) as built:
+                create_internal_api_app(conn, PlanGate.unenforced(), secret=SecretStr(weak))
+            with pytest.raises(ValueError) as started:
+                await start_internal_api(
+                    conn, PlanGate.unenforced(), secret=SecretStr(weak), host="127.0.0.1", port=0
+                )
+        finally:
+            await conn.close()
+
+        for refusal in (built.value, started.value):
+            assert weak.strip() == "" or weak not in str(refusal)
+
+    async def test_thirty_two_characters_is_enough(self) -> None:
+        conn = await aiosqlite.connect(":memory:")
+        await init_schema(conn)
+        try:
+            app = create_internal_api_app(conn, PlanGate.unenforced(), secret=SecretStr("x" * 32))
+        finally:
+            await conn.close()
+
+        assert app.router is not None

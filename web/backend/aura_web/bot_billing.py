@@ -20,6 +20,7 @@ from enum import StrEnum
 from typing import Any
 
 import httpx
+from pydantic import SecretStr
 
 from aura_web.stripe_api import SubscriptionSnapshot
 
@@ -145,7 +146,7 @@ def _parse_plan(raw: object) -> GuildPlanView:
 class BotBillingClient:
     """Calls the bot's internal billing API with the shared secret."""
 
-    def __init__(self, http: httpx.AsyncClient, *, base_url: str, secret: str) -> None:
+    def __init__(self, http: httpx.AsyncClient, *, base_url: str, secret: SecretStr) -> None:
         self._http = http
         self._base_url = base_url.rstrip("/")
         self._secret = secret
@@ -271,7 +272,7 @@ class BotBillingClient:
             response = await self._http.post(
                 f"{self._base_url}{INTERNAL_API_PREFIX}{path}",
                 json=payload,
-                headers={"Authorization": f"Bearer {self._secret}"},
+                headers={"Authorization": f"Bearer {self._secret.get_secret_value()}"},
             )
         except httpx.HTTPError as exc:
             raise BotBillingError(

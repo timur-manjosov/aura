@@ -49,7 +49,7 @@ class TestRequiredCredentials:
         """A trailing newline from a copy-paste must not become part of the secret."""
         settings = WebSettings(_env_file=None, **(dict(VALID) | {"discord_client_secret": " s \n"}))
 
-        assert settings.discord_client_secret == "s"
+        assert settings.discord_client_secret.get_secret_value() == "s"
 
 
 class TestClientId:

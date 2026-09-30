@@ -31,6 +31,7 @@ from typing import Any, TypeGuard
 from urllib.parse import urlparse
 
 import httpx
+from pydantic import SecretStr
 
 from aura_web.permissions import parse_snowflake
 
@@ -413,7 +414,7 @@ class StripeClient:
         http: httpx.AsyncClient,
         *,
         api_base: str,
-        secret_key: str,
+        secret_key: SecretStr,
         price_id: str,
         checkout_success_url: str,
         checkout_cancel_url: str,
@@ -623,7 +624,7 @@ class StripeClient:
         idempotency_key: str | None = None,
     ) -> object:
         headers = {
-            "Authorization": f"Bearer {self._secret_key}",
+            "Authorization": f"Bearer {self._secret_key.get_secret_value()}",
             "Stripe-Version": STRIPE_API_VERSION,
         }
         if idempotency_key is not None:

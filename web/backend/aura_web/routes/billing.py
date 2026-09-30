@@ -33,7 +33,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
@@ -101,7 +101,8 @@ async def _read_guild_id(request: Request) -> str | Response:
 @dataclass(frozen=True)
 class _Caller:
     session: Session
-    session_token: str
+    # The session cookie's value is a credential: kept out of this object's repr.
+    session_token: str = field(repr=False)
     manageable: list[ManageableGuild]
 
 

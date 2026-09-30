@@ -32,6 +32,7 @@ import aiosqlite
 import httpx
 import pytest
 import pytest_asyncio
+from pydantic import SecretStr
 
 from aura.billing import GracePolicy, PlanGate
 from aura.billing.internal_api import InternalApiServer, start_internal_api
@@ -74,7 +75,9 @@ async def real_bot() -> AsyncIterator[RealBot]:
     await init_schema(conn)
     gate = PlanGate(enforced=True, policy=POLICY, complimentary_guild_ids=frozenset(), records=[])
     bot = RealBot(
-        conn, gate, await start_internal_api(conn, gate, secret=SECRET, host="127.0.0.1", port=0)
+        conn,
+        gate,
+        await start_internal_api(conn, gate, secret=SecretStr(SECRET), host="127.0.0.1", port=0),
     )
     try:
         yield bot
@@ -132,13 +135,15 @@ class TestContract:
 
         async with httpx.AsyncClient() as real_http:
             real = await scripted_sequence(
-                BotBillingClient(real_http, base_url=real_bot.base_url, secret=SECRET), snapshot
+                BotBillingClient(real_http, base_url=real_bot.base_url, secret=SecretStr(SECRET)),
+                snapshot,
             )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=create_fake_bot_billing(fake_state))
         ) as fake_http:
             fake = await scripted_sequence(
-                BotBillingClient(fake_http, base_url="https://bot.test", secret=SECRET), snapshot
+                BotBillingClient(fake_http, base_url="https://bot.test", secret=SecretStr(SECRET)),
+                snapshot,
             )
 
         assert real == fake
@@ -168,7 +173,7 @@ class TestContract:
         snapshot = stripe_snapshot(FakeStripeState(), **overrides)
 
         async with httpx.AsyncClient() as http:
-            client = BotBillingClient(http, base_url=real_bot.base_url, secret=SECRET)
+            client = BotBillingClient(http, base_url=real_bot.base_url, secret=SecretStr(SECRET))
             result = await client.apply_snapshot(
                 event_id=None, event_type=None, expected_version=0, snapshot=snapshot
             )
@@ -180,7 +185,7 @@ class TestContract:
     ) -> None:
         snapshot = stripe_snapshot(FakeStripeState())
         async with httpx.AsyncClient() as http:
-            client = BotBillingClient(http, base_url=real_bot.base_url, secret=SECRET)
+            client = BotBillingClient(http, base_url=real_bot.base_url, secret=SecretStr(SECRET))
             await client.apply_snapshot(
                 event_id=None, event_type=None, expected_version=0, snapshot=snapshot
             )
@@ -195,7 +200,7 @@ class TestContract:
     ) -> None:
         async with httpx.AsyncClient() as http:
             client = BotBillingClient(
-                http, base_url=real_bot.base_url, secret="not-the-secret-" + "0" * 30
+                http, base_url=real_bot.base_url, secret=SecretStr("not-the-secret-" + "0" * 30)
             )
             with pytest.raises(BotBillingError):
                 await client.get_guild_plans(["1000"])
@@ -439,7 +444,7 @@ class TestTheWholePath:
         assert await count_processed_events(stack.bot.conn) == 0
 
         stack.bot.server = await start_internal_api(
-            stack.bot.conn, stack.bot.gate, secret=SECRET, host="127.0.0.1", port=port
+            stack.bot.conn, stack.bot.gate, secret=SecretStr(SECRET), host="127.0.0.1", port=port
         )
         redelivered = await deliver(stack, event)
 

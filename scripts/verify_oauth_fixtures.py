@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import os
 
+from pydantic import SecretStr
+
 from aura_web.app import create_app
 from aura_web.config import WebSettings
 from fake_discord import (
@@ -87,8 +89,8 @@ def build_backend():
         WebSettings(
             _env_file=None,
             discord_client_id=CLIENT_ID,
-            discord_client_secret=CLIENT_SECRET,
-            discord_bot_token=BOT_TOKEN,
+            discord_client_secret=SecretStr(CLIENT_SECRET),
+            discord_bot_token=SecretStr(BOT_TOKEN),
             discord_api_base=os.environ["VERIFY_DISCORD_API_BASE"],
             oauth_redirect_uri=os.environ["VERIFY_REDIRECT_URI"],
             post_login_redirect_url=os.environ["VERIFY_POST_LOGIN_URL"],
@@ -98,11 +100,11 @@ def build_backend():
             # Required since Phase 4c, and never exercised by the OAuth run:
             # obviously-fake values that could not reach a real Stripe account
             # or a real bot even if something did call them.
-            stripe_secret_key="sk_test_oauthVerificationNotARealKey",
-            stripe_webhook_secret="whsec_oauthVerificationNotARealSecret",
+            stripe_secret_key=SecretStr("sk_test_oauthVerificationNotARealKey"),
+            stripe_webhook_secret=SecretStr("whsec_oauthVerificationNotARealSecret"),
             stripe_price_id="price_oauthVerificationNotARealPrice",
             stripe_api_base="http://127.0.0.1:9",
             bot_internal_api_url="http://127.0.0.1:9",
-            bot_internal_api_secret="oauth-verification-not-a-real-internal-secret",
+            bot_internal_api_secret=SecretStr("oauth-verification-not-a-real-internal-secret"),
         )
     )

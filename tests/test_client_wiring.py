@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
+from pydantic import SecretStr
 
 from aura.backfill import ClientBackfillGateway
 from aura.billing import PlanGate
@@ -566,7 +567,11 @@ class TestBillingWiring:
         starter.assert_awaited_once()
         args, kwargs = starter.call_args
         assert args == (client.db, client.plan_gate)
-        assert kwargs == {"secret": "s" * 48, "host": "0.0.0.0", "port": 9191}
+        secret = kwargs.pop("secret")
+        # Handed over still wrapped: the internal API unwraps it where it is used.
+        assert isinstance(secret, SecretStr)
+        assert secret.get_secret_value() == "s" * 48
+        assert kwargs == {"host": "0.0.0.0", "port": 9191}
         assert client.internal_api is server
 
     async def test_the_plan_command_is_registered(self) -> None:

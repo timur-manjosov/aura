@@ -53,7 +53,7 @@ def _settings(**overrides: str) -> Settings:
 class TestDiscordTokenValidation:
     def test_valid_token_is_accepted_and_stripped(self) -> None:
         settings = _settings(discord_token="  abc123  ")
-        assert settings.discord_token == "abc123"
+        assert settings.discord_token.get_secret_value() == "abc123"
 
     def test_missing_token_raises(self) -> None:
         with pytest.raises(ValueError, match="DISCORD_TOKEN"):
@@ -635,7 +635,7 @@ class TestLoadSettings:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("DISCORD_TOKEN", "real-token-value")
         settings = load_settings()
-        assert settings.discord_token == "real-token-value"
+        assert settings.discord_token.get_secret_value() == "real-token-value"
 
     def test_reads_token_from_dotenv_file(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -643,7 +643,7 @@ class TestLoadSettings:
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".env").write_text("DISCORD_TOKEN=from-dotenv-file\n", encoding="utf-8")
         settings = load_settings()
-        assert settings.discord_token == "from-dotenv-file"
+        assert settings.discord_token.get_secret_value() == "from-dotenv-file"
 
     def test_real_env_var_takes_precedence_over_dotenv_file(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -652,4 +652,4 @@ class TestLoadSettings:
         (tmp_path / ".env").write_text("DISCORD_TOKEN=from-file\n", encoding="utf-8")
         monkeypatch.setenv("DISCORD_TOKEN", "from-real-env")
         settings = load_settings()
-        assert settings.discord_token == "from-real-env"
+        assert settings.discord_token.get_secret_value() == "from-real-env"

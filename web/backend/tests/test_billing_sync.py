@@ -10,6 +10,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 import pytest_asyncio
+from pydantic import SecretStr
 
 from aura_web.billing_sync import (
     MAX_SYNC_ATTEMPTS,
@@ -50,14 +51,14 @@ async def clients(
             stripe=StripeClient(
                 stripe_http,
                 api_base="https://stripe.test",
-                secret_key=stripe_state.secret_key,
+                secret_key=SecretStr(stripe_state.secret_key),
                 price_id=stripe_state.price_id,
                 checkout_success_url="https://f/",
                 checkout_cancel_url="https://f/",
                 portal_return_url="https://f/",
             ),
             bot=BotBillingClient(
-                bot_http, base_url="https://bot.test", secret=bot_billing_state.secret
+                bot_http, base_url="https://bot.test", secret=SecretStr(bot_billing_state.secret)
             ),
         )
 
@@ -165,13 +166,13 @@ class TestSync:
                 stripe=StripeClient(
                     stripe_http,
                     api_base="https://s",
-                    secret_key=stripe_state.secret_key,
+                    secret_key=SecretStr(stripe_state.secret_key),
                     price_id="price_x",
                     checkout_success_url="https://f/",
                     checkout_cancel_url="https://f/",
                     portal_return_url="https://f/",
                 ),
-                bot=BotBillingClient(bot_http, base_url="https://b", secret="x" * 40),
+                bot=BotBillingClient(bot_http, base_url="https://b", secret=SecretStr("x" * 40)),
             )
             with pytest.raises(BotBillingError):
                 await sync(broken, subscription.id)

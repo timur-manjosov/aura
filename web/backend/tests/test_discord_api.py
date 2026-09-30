@@ -17,6 +17,7 @@ from collections.abc import Callable
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from aura_web.discord_api import (
     MAX_GUILD_PAGES,
@@ -34,8 +35,8 @@ def client_with(handler: Callable[[httpx.Request], httpx.Response]) -> DiscordCl
         http,
         api_base=API_BASE,
         client_id="123456789012345678",
-        client_secret="secret",
-        bot_token="bot-token",
+        client_secret=SecretStr("secret"),
+        bot_token=SecretStr("bot-token"),
     )
 
 
@@ -488,7 +489,11 @@ class TestRedirectsAreNotFollowed:
 
         http = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=False)
         discord = DiscordClient(
-            http, api_base=API_BASE, client_id="1", client_secret="s", bot_token="b"
+            http,
+            api_base=API_BASE,
+            client_id="1",
+            client_secret=SecretStr("s"),
+            bot_token=SecretStr("b"),
         )
 
         with pytest.raises(DiscordUnavailableError):

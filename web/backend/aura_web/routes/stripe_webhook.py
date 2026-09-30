@@ -102,7 +102,7 @@ async def stripe_webhook(
         stripe.WebhookSignature.verify_header(
             payload,
             signature_headers[0],
-            context.settings.stripe_webhook_secret,
+            context.settings.stripe_webhook_secret.get_secret_value(),
             SIGNATURE_TOLERANCE_SECONDS,
         )
     except Exception as exc:
