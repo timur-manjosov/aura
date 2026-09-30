@@ -207,6 +207,15 @@ class WebSettings(BaseSettings):
     # Off by default, and refused at startup when a live key is configured
     # without it. See STRIPE_LIVE_KEY_PREFIXES above for why.
     stripe_allow_live_mode: bool = False
+    # The customer portal configuration (bpc_...) every portal session is
+    # opened with. Optional: without it Stripe uses the account's default
+    # configuration. Either way, the portal can do no harm to what a guild is
+    # entitled to -- a subscription moved off the Pro price or to quantity 0
+    # stops granting Pro (aura_web.stripe_api, on_pro_price) -- so a missing or
+    # permissive configuration costs the customer, never the operator. Setting
+    # it pins the portal's powers in code instead of in dashboard state: create
+    # one with plan switching and quantity changes disabled (web/README.md).
+    stripe_portal_configuration_id: str | None = None
     stripe_api_base: str = "https://api.stripe.com"
 
     # Where Stripe sends the browser back to. Config-only for the same reason
@@ -249,6 +258,23 @@ class WebSettings(BaseSettings):
     def _reject_blank_secrets(cls, value: SecretStr, info: object) -> SecretStr:
         return SecretStr(
             _require_non_blank(value.get_secret_value(), getattr(info, "field_name", "secret"))
+        )
+
+    @field_validator("stripe_portal_configuration_id", mode="before")
+    @classmethod
+    def _blank_portal_configuration_means_unset(cls, value: object) -> object:
+        """Treat `AURA_WEB_STRIPE_PORTAL_CONFIGURATION_ID=` left blank as unset."""
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @field_validator("stripe_portal_configuration_id")
+    @classmethod
+    def _stripe_portal_configuration_id_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _require_stripe_token(
+            value, field_name="STRIPE_PORTAL_CONFIGURATION_ID", prefixes=("bpc_",)
         )
 
     @field_validator("discord_client_id")

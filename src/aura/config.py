@@ -1140,13 +1140,18 @@ class Settings(BaseSettings):
     # while emailing the payer. Seven days covers a weekend plus a working week
     # for a server admin who does not read billing mail every day, which is the
     # realistic person on the other end of this, while keeping unpaid Pro
-    # bounded to a quarter of a monthly period.
+    # bounded to a quarter of a monthly period for each payment that lapses.
     #
-    # Anchored at the START of the unpaid period, never at "the first failure
-    # Aura heard about": a retry that fails again cannot extend it, and a
-    # webhook that arrives late cannot restart it. Stripe's own final decision
-    # -- canceled or unpaid after its last retry -- ends Pro immediately
-    # regardless of this number.
+    # Anchored at the START of the OLDEST period still unpaid, never at "the
+    # first failure Aura heard about" and never at the current period's start:
+    # a retry that fails again cannot extend it, a webhook that arrives late
+    # cannot restart it, and neither can Stripe rolling a still-unpaid
+    # subscription into its next period (which it does every cycle while the
+    # subscription stays past_due) or writing the unpaid invoice off. Only a
+    # paid period resets it (aura.billing.entitlement.next_unpaid_since). A
+    # cancellation date inside the grace still ends Pro on that date. Stripe's
+    # own final decision -- canceled or unpaid after its last retry -- ends Pro
+    # immediately regardless of this number.
     billing_payment_grace_days: float = Field(default=7.0, ge=0.0, le=60.0, allow_inf_nan=False)
 
     # Comma-separated guild IDs that are on Pro without any subscription: the

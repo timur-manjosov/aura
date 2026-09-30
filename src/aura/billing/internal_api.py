@@ -153,6 +153,9 @@ class SnapshotPayload(_RequestModel):
     current_period_start: _UnixSeconds
     current_period_end: _UnixSeconds
     livemode: StrictBool
+    # Required, never defaulted: a peer that does not say whether the
+    # subscription is on the Pro price is refused rather than assumed to be.
+    on_pro_price: StrictBool
 
     @field_validator("guild_id", "purchaser_user_id")
     @classmethod
@@ -192,6 +195,7 @@ class SnapshotPayload(_RequestModel):
             current_period_start=_datetime_from_unix(self.current_period_start),
             current_period_end=_datetime_from_unix(self.current_period_end),
             livemode=self.livemode,
+            on_pro_price=self.on_pro_price,
         )
 
 

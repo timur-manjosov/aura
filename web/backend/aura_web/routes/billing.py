@@ -140,6 +140,14 @@ def browser_plan(plan: GuildPlanView, *, user_id: str) -> dict[str, object]:
     dict[str, object]
         What a browser may see: the standing, and whether this caller can
         manage the subscription. Never the customer ID, never who paid.
+        `can_subscribe` is true only where paying would change the plan: the
+        plan is decided by subscription and nothing grants it yet.
+
+    Notes
+    -----
+    A guild on Pro because billing is not enforced, or because the operator
+    made it complimentary, is not offered a checkout: a subscription would buy
+    it nothing (Phase 4c audit, F-15).
     """
     return {
         "tier": plan.tier,
@@ -148,7 +156,7 @@ def browser_plan(plan: GuildPlanView, *, user_id: str) -> dict[str, object]:
         "access_until": plan.access_until,
         "paid_through": plan.paid_through,
         "active_subscription_count": plan.in_force_subscription_count,
-        "can_subscribe": plan.in_force_subscription_count == 0,
+        "can_subscribe": plan.basis == "subscription" and plan.in_force_subscription_count == 0,
         "is_billing_owner": any(
             subscription.purchaser_user_id == user_id for subscription in plan.subscriptions
         ),

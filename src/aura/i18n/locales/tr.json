@@ -187,6 +187,7 @@
     "plan_state_ended": "Bu sunucu **Free** planında: Pro aboneliği sona erdi. Pro sırasında yapılan ayarlar korunur ve Pro yenilenirse yeniden devreye girer.",
     "plan_state_active": "Bu sunucu **Pro** planında. Mevcut dönemin ödemesi {date} tarihine kadar yapıldı ve otomatik olarak yenilenir.",
     "plan_state_renewal_pending": "Bu sunucu **Pro** planında. Yenileme henüz onaylanmadı; bu arada Pro {date} tarihine kadar açık kalır.",
+    "plan_state_payment_pending": "Bu sunucu **Pro** planında. Mevcut dönemin ödemesi henüz onaylanmadı.",
     "plan_state_canceling": "Bu sunucu {date} tarihine kadar **Pro** planında. Abonelik o tarihte sona erecek ve yenilenmeyecek.",
     "plan_state_payment_grace": "⚠️ Bu sunucunun Pro aboneliği için son ödeme başarısız oldu. Pro {date} tarihine kadar açık kalır. Aboneliği başlatan kişi o zamana kadar fatura portalından ödeme yöntemini güncelleyebilir; aksi halde bu sunucu Free planına geçer.",
     "plan_free_includes": "Free planı /aura-ask'i ve bilgileri elle yönetmeyi içerir. Proaktif yanıtlar, otomatik bilgi çıkarımı, düzenli özetler, karşılama mesajları ve geçmiş taraması için Pro gerekir.",

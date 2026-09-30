@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, TypeGuard
+from typing import Any, Final, TypeGuard
 from urllib.parse import urlparse
 
 import httpx
@@ -80,6 +80,13 @@ KNOWN_SUBSCRIPTION_STATUSES = frozenset(
     }
 )
 KNOWN_INVOICE_STATUSES = frozenset({"draft", "open", "paid", "uncollectible", "void"})
+
+# The only payment method type a Checkout Session offers (F-05). Cards -- and
+# the wallets Stripe runs on top of them, Apple Pay and Google Pay -- confirm
+# while the customer is still on the page. Delayed methods (SEPA and other bank
+# debits) can make a subscription `active` days before any money arrives, so
+# they are excluded here rather than left to whatever the dashboard enables.
+CHECKOUT_PAYMENT_METHOD_TYPES: Final[tuple[str, ...]] = ("card",)
 
 # Only an invoice that bills the subscription's own period -- its first invoice
 # or a renewal -- says whether that period was paid. A voided proration or
@@ -182,6 +189,11 @@ class SubscriptionSnapshot:
     current_period_start: int
     current_period_end: int
     livemode: bool
+    # Every item on the configured Pro price at a quantity of at least one.
+    # False is still pushed to the bot -- as a subscription that grants nothing
+    # -- so a subscription the bot already holds stops granting the moment it
+    # is moved off the Pro price, rather than freezing at its last Pro copy.
+    on_pro_price: bool
 
     def internal_api_payload(self) -> dict[str, Any]:
         """The snapshot in the bot internal API's wire shape. Requires a guild.
@@ -212,6 +224,7 @@ class SubscriptionSnapshot:
             "current_period_start": self.current_period_start,
             "current_period_end": self.current_period_end,
             "livemode": self.livemode,
+            "on_pro_price": self.on_pro_price,
         }
 
 
@@ -238,18 +251,44 @@ def _discord_id_from_metadata(
     return parsed
 
 
-def parse_subscription(payload: object) -> SubscriptionSnapshot:
+def _item_is_on_pro_price(item: dict[str, Any], *, pro_price_id: str, subscription_id: str) -> bool:
+    """Whether one subscription item is the Pro price at a quantity of at least one.
+
+    A well-formed item on another price, or at quantity 0 or none (a metered
+    price has no quantity), is simply not Pro. A price or quantity of the wrong
+    TYPE is a shape this code does not understand, and is refused like every
+    other malformed field.
+    """
+    price_id = _object_id(item.get("price"), "price")
+    if price_id is None:
+        raise StripeUnavailableError(
+            f"Stripe subscription {subscription_id} has an item without a usable price"
+        )
+    raw_quantity = item.get("quantity")
+    quantity = _strict_int(raw_quantity)
+    if raw_quantity is not None and quantity is None:
+        raise StripeUnavailableError(
+            f"Stripe subscription {subscription_id} has an item with a malformed quantity"
+        )
+    return price_id == pro_price_id and quantity is not None and quantity >= 1
+
+
+def parse_subscription(payload: object, *, pro_price_id: str) -> SubscriptionSnapshot:
     """Validate a Subscription object (API version 2026-08-26.dahlia) into a snapshot.
 
     Parameters
     ----------
     payload
         A Stripe Subscription object (API version 2026-08-26.dahlia).
+    pro_price_id
+        The configured Pro price. Decides `on_pro_price`.
 
     Returns
     -------
     SubscriptionSnapshot
         The fields Aura stores, with every ID and timestamp validated.
+        `on_pro_price` is True only when EVERY item is on `pro_price_id` at a
+        quantity of at least one.
 
     Raises
     ------
@@ -262,7 +301,13 @@ def parse_subscription(payload: object) -> SubscriptionSnapshot:
     An unrecognised status is a refusal, not a guess: a status this code has
     never seen could mean "paid" or "not paid", and the caller answers Stripe
     with a retryable failure so the last known state stays in force while an
-    operator reads the log -- the asymmetric rule applied to the unknown.
+    operator reads the log -- the asymmetric rule applied to the unknown. The
+    price check follows the same split: a well-formed item on another price is
+    an answer (not Pro), a malformed one is a refusal.
+
+    Every item, not just one, has to be Pro: a subscription whose Aura metadata
+    sits beside an item for something else is not a Pro subscription, and the
+    entitlement rules have no notion of partially paying for one.
     """
     if not isinstance(payload, dict) or payload.get("object") != "subscription":
         raise StripeUnavailableError("Stripe did not return a subscription object")
@@ -321,11 +366,18 @@ def parse_subscription(payload: object) -> SubscriptionSnapshot:
         raise StripeUnavailableError(f"Stripe subscription {subscription_id} has no items")
     starts: list[int] = []
     ends: list[int] = []
+    on_pro_price = True
     for item in item_data:
         if not isinstance(item, dict):
             raise StripeUnavailableError(
                 f"Stripe subscription {subscription_id} has a malformed item"
             )
+        # Evaluated for every item, even after one has failed, so a malformed
+        # item is refused whatever position it is in.
+        item_on_pro_price = _item_is_on_pro_price(
+            item, pro_price_id=pro_price_id, subscription_id=subscription_id
+        )
+        on_pro_price = on_pro_price and item_on_pro_price
         starts.append(
             _unix_seconds(item.get("current_period_start"), field_name="current_period_start")
         )
@@ -359,6 +411,7 @@ def parse_subscription(payload: object) -> SubscriptionSnapshot:
         current_period_start=period_start,
         current_period_end=period_end,
         livemode=livemode,
+        on_pro_price=on_pro_price,
     )
 
 
@@ -419,6 +472,7 @@ class StripeClient:
         checkout_success_url: str,
         checkout_cancel_url: str,
         portal_return_url: str,
+        portal_configuration_id: str | None = None,
     ) -> None:
         self._http = http
         self._api_base = api_base.rstrip("/")
@@ -427,6 +481,7 @@ class StripeClient:
         self._checkout_success_url = checkout_success_url
         self._checkout_cancel_url = checkout_cancel_url
         self._portal_return_url = portal_return_url
+        self._portal_configuration_id = portal_configuration_id
 
     async def create_checkout_session(
         self, *, guild_id: str, purchaser_user_id: str, idempotency_key: str
@@ -469,26 +524,33 @@ class StripeClient:
         -- renewal, failure, cancellation -- is resolved through, and it cannot
         be changed by the customer, only by the operator in Stripe.
 
-        No payment_method_types: Stripe chooses eligible methods from the
-        dashboard's settings. Delayed methods (bank debits) are handled by the
-        entitlement rules, which treat a voided invoice as unpaid.
+        Cards only (CHECKOUT_PAYMENT_METHOD_TYPES), sent explicitly so the
+        dashboard's payment method settings cannot widen them: a delayed method
+        would let a subscription turn `active`, and Pro start, days before its
+        first payment settles. The entitlement rules still treat a voided
+        invoice as unpaid, and the webhook still handles the asynchronous
+        payment events -- defence for a state card-only Checkout should never
+        produce, not a path it relies on.
         """
+        data = {
+            "mode": "subscription",
+            "line_items[0][price]": self._price_id,
+            "line_items[0][quantity]": "1",
+            "success_url": self._checkout_success_url,
+            "cancel_url": self._checkout_cancel_url,
+            "client_reference_id": guild_id,
+            f"metadata[{GUILD_METADATA_KEY}]": guild_id,
+            f"metadata[{PURCHASER_METADATA_KEY}]": purchaser_user_id,
+            f"subscription_data[metadata][{GUILD_METADATA_KEY}]": guild_id,
+            f"subscription_data[metadata][{PURCHASER_METADATA_KEY}]": purchaser_user_id,
+            "integration_identifier": CHECKOUT_INTEGRATION_IDENTIFIER,
+        }
+        for index, method_type in enumerate(CHECKOUT_PAYMENT_METHOD_TYPES):
+            data[f"payment_method_types[{index}]"] = method_type
         payload = await self._request(
             "POST",
             "/v1/checkout/sessions",
-            data={
-                "mode": "subscription",
-                "line_items[0][price]": self._price_id,
-                "line_items[0][quantity]": "1",
-                "success_url": self._checkout_success_url,
-                "cancel_url": self._checkout_cancel_url,
-                "client_reference_id": guild_id,
-                f"metadata[{GUILD_METADATA_KEY}]": guild_id,
-                f"metadata[{PURCHASER_METADATA_KEY}]": purchaser_user_id,
-                f"subscription_data[metadata][{GUILD_METADATA_KEY}]": guild_id,
-                f"subscription_data[metadata][{PURCHASER_METADATA_KEY}]": purchaser_user_id,
-                "integration_identifier": CHECKOUT_INTEGRATION_IDENTIFIER,
-            },
+            data=data,
             idempotency_key=idempotency_key,
             context="checkout session creation",
         )
@@ -522,7 +584,7 @@ class StripeClient:
             params=[("expand[]", "latest_invoice")],
             context="subscription retrieval",
         )
-        snapshot = parse_subscription(payload)
+        snapshot = parse_subscription(payload, pro_price_id=self._price_id)
         if snapshot.subscription_id != subscription_id:
             raise StripeUnavailableError(
                 "Stripe returned a different subscription than was asked for"
@@ -598,13 +660,23 @@ class StripeClient:
         StripeAPIError
             For a transport failure, an error status, or a body Stripe returned in
             a shape this code refuses to guess at.
+
+        Notes
+        -----
+        Opened with the configured portal configuration when there is one, so
+        what the portal lets a customer change -- in particular, not the plan
+        and not the quantity -- is fixed by this deployment's configuration
+        rather than by whatever the account's default portal allows.
         """
         if not is_stripe_id(customer_id, "cus"):
             raise ValueError("not a customer ID")
+        data = {"customer": customer_id, "return_url": self._portal_return_url}
+        if self._portal_configuration_id is not None:
+            data["configuration"] = self._portal_configuration_id
         payload = await self._request(
             "POST",
             "/v1/billing_portal/sessions",
-            data={"customer": customer_id, "return_url": self._portal_return_url},
+            data=data,
             context="billing portal session creation",
         )
         if not isinstance(payload, dict) or payload.get("object") != "billing_portal.session":

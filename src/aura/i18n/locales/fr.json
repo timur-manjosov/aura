@@ -187,6 +187,7 @@
     "plan_state_ended": "Ce serveur est sur l'offre **Free** : son abonnement Pro a pris fin. Les réglages faits avec Pro sont conservés et reprennent si Pro est renouvelé.",
     "plan_state_active": "Ce serveur est sur **Pro**. La période en cours est payée jusqu'au {date} et se renouvelle automatiquement.",
     "plan_state_renewal_pending": "Ce serveur est sur **Pro**. Le renouvellement n'est pas encore confirmé, donc en attendant Pro reste actif jusqu'au {date}.",
+    "plan_state_payment_pending": "Ce serveur est sur **Pro**. Le paiement de la période en cours n'est pas encore confirmé.",
     "plan_state_canceling": "Ce serveur est sur **Pro** jusqu'au {date}. L'abonnement prendra fin à cette date et ne sera pas renouvelé.",
     "plan_state_payment_grace": "⚠️ Le dernier paiement de l'abonnement Pro de ce serveur a échoué. Pro reste actif jusqu'au {date}. La personne qui a souscrit peut mettre à jour le moyen de paiement dans le portail de facturation d'ici là ; sinon, ce serveur passera à Free.",
     "plan_free_includes": "Free comprend /aura-ask et la gestion manuelle des faits. Les réponses proactives, l'extraction automatique de faits, les résumés périodiques, les messages d'accueil et la lecture de l'historique nécessitent Pro.",

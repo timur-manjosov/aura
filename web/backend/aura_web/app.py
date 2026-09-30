@@ -165,6 +165,7 @@ def create_app(
                     checkout_success_url=settings.checkout_success_url,
                     checkout_cancel_url=settings.checkout_cancel_url,
                     portal_return_url=settings.billing_portal_return_url,
+                    portal_configuration_id=settings.stripe_portal_configuration_id,
                 )
             )
             bot_billing = (
@@ -208,9 +209,11 @@ def create_app(
             # Never the key itself: its mode and the Price are all an operator
             # needs to confirm the right configuration is live.
             logger.info(
-                "Stripe billing ready: %s mode, price %s, reconciliation every %.0fs",
+                "Stripe billing ready: %s mode, price %s, portal configuration %s, "
+                "reconciliation every %.0fs",
                 "LIVE" if settings.stripe_live_mode else "test",
                 settings.stripe_price_id,
+                settings.stripe_portal_configuration_id or "account default",
                 settings.stripe_reconcile_interval_seconds,
             )
             reconciler = asyncio.create_task(

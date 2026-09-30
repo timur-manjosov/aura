@@ -22,7 +22,9 @@ from aura.billing.entitlement import (
     SubscriptionStatus,
     access_window,
     decide_plan,
+    next_unpaid_since,
     resolve_standing,
+    unpaid_since,
 )
 
 NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
@@ -47,6 +49,7 @@ def record(**overrides: object) -> SubscriptionRecord:
         "current_period_start": PERIOD_START,
         "current_period_end": PERIOD_END,
         "livemode": False,
+        "on_pro_price": True,
         "version": 1,
         "confirmed_at": PERIOD_START,
     }
@@ -324,3 +327,298 @@ class TestRefusesAmbiguousInput:
 
         assert at(boundary - TICK, record()).grants_access
         assert not at(boundary, record()).grants_access
+
+
+# --- Phase 4c audit fixes -----------------------------------------------------
+
+
+def unpaid(**overrides: object) -> SubscriptionRecord:
+    """A past_due record with an explicit anchor, as the database layer writes one."""
+    fields: dict[str, object] = {
+        "status": SubscriptionStatus.PAST_DUE,
+        "latest_invoice_status": InvoiceStatus.OPEN,
+    }
+    fields.update(overrides)
+    return record(**fields)
+
+
+class TestThePaymentGraceAnchor:
+    """next_unpaid_since: one grace per lapsed payment, never one per period (F-04)."""
+
+    def test_the_first_past_due_snapshot_anchors_at_its_own_period_start(self) -> None:
+        assert (
+            next_unpaid_since(
+                None,
+                status=SubscriptionStatus.PAST_DUE,
+                latest_invoice_status=InvoiceStatus.OPEN,
+                current_period_start=PERIOD_START,
+            )
+            == PERIOD_START
+        )
+
+    def test_a_later_unpaid_period_keeps_the_earlier_anchor(self) -> None:
+        stored = unpaid(past_due_since=PERIOD_START)
+
+        carried = next_unpaid_since(
+            stored,
+            status=SubscriptionStatus.PAST_DUE,
+            latest_invoice_status=InvoiceStatus.OPEN,
+            current_period_start=PERIOD_END,
+        )
+
+        assert carried == PERIOD_START
+
+    def test_the_anchor_only_ever_moves_earlier(self) -> None:
+        """Monotonic: a snapshot with an earlier period start (never real) cannot push it later."""
+        stored = unpaid(
+            current_period_start=PERIOD_END,
+            current_period_end=PERIOD_END + timedelta(days=30),
+            past_due_since=PERIOD_END,
+        )
+
+        carried = next_unpaid_since(
+            stored,
+            status=SubscriptionStatus.PAST_DUE,
+            latest_invoice_status=InvoiceStatus.OPEN,
+            current_period_start=PERIOD_START,
+        )
+
+        assert carried == PERIOD_START
+
+    @pytest.mark.parametrize("status", [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING])
+    def test_a_paid_period_in_force_clears_it(self, status: SubscriptionStatus) -> None:
+        assert (
+            next_unpaid_since(
+                unpaid(past_due_since=PERIOD_START),
+                status=status,
+                latest_invoice_status=InvoiceStatus.PAID,
+                current_period_start=PERIOD_START,
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "invoice"),
+        [
+            # Stripe: voiding or marking the latest invoice uncollectible returns
+            # a past_due subscription to `active` -- without anything being paid.
+            (SubscriptionStatus.ACTIVE, InvoiceStatus.VOID),
+            (SubscriptionStatus.ACTIVE, InvoiceStatus.UNCOLLECTIBLE),
+            # The next period's renewal between its draft and its charge.
+            (SubscriptionStatus.ACTIVE, InvoiceStatus.DRAFT),
+            (SubscriptionStatus.ACTIVE, InvoiceStatus.OPEN),
+            (SubscriptionStatus.ACTIVE, None),
+            (SubscriptionStatus.PAST_DUE, InvoiceStatus.PAID),
+            (SubscriptionStatus.UNPAID, InvoiceStatus.OPEN),
+            (SubscriptionStatus.CANCELED, InvoiceStatus.OPEN),
+            (SubscriptionStatus.PAUSED, None),
+            (SubscriptionStatus.INCOMPLETE, InvoiceStatus.OPEN),
+        ],
+    )
+    def test_anything_but_a_paid_period_in_force_keeps_it(
+        self, status: SubscriptionStatus, invoice: InvoiceStatus | None
+    ) -> None:
+        carried = next_unpaid_since(
+            unpaid(past_due_since=PERIOD_START),
+            status=status,
+            latest_invoice_status=invoice,
+            current_period_start=PERIOD_END,
+        )
+
+        assert carried == PERIOD_START
+
+    def test_a_subscription_never_unpaid_has_no_anchor(self) -> None:
+        for invoice in (InvoiceStatus.DRAFT, InvoiceStatus.OPEN, None):
+            assert (
+                next_unpaid_since(
+                    record(),
+                    status=SubscriptionStatus.ACTIVE,
+                    latest_invoice_status=invoice,
+                    current_period_start=PERIOD_END,
+                )
+                is None
+            )
+
+    def test_a_row_from_before_the_column_reads_as_its_own_period_start(self) -> None:
+        """Legacy rows keep exactly the pre-fix meaning, and carry it forward."""
+        legacy = unpaid(past_due_since=None)
+
+        assert unpaid_since(legacy) == PERIOD_START
+        assert access_window(legacy, POLICY).access_until == PERIOD_START + timedelta(days=7)  # type: ignore[union-attr]
+        assert (
+            next_unpaid_since(
+                legacy,
+                status=SubscriptionStatus.PAST_DUE,
+                latest_invoice_status=InvoiceStatus.OPEN,
+                current_period_start=PERIOD_END,
+            )
+            == PERIOD_START
+        )
+
+    def test_a_naive_period_start_is_refused(self) -> None:
+        with pytest.raises(ValueError):
+            next_unpaid_since(
+                None,
+                status=SubscriptionStatus.PAST_DUE,
+                latest_invoice_status=InvoiceStatus.OPEN,
+                current_period_start=datetime(2026, 9, 1),
+            )
+
+    def test_a_naive_anchor_is_refused(self) -> None:
+        with pytest.raises(ValueError):
+            unpaid(past_due_since=datetime(2026, 9, 1))
+
+
+class TestPaymentGraceFromTheAnchor:
+    def test_an_unpaid_run_rolling_into_its_next_period_ends_seven_days_after_the_first(
+        self,
+    ) -> None:
+        second_period = unpaid(
+            current_period_start=PERIOD_END,
+            current_period_end=PERIOD_END + timedelta(days=30),
+            past_due_since=PERIOD_START,
+        )
+        boundary = PERIOD_START + timedelta(days=7)
+
+        assert at(boundary - TICK, second_period).standing is Standing.PAYMENT_GRACE
+        assert not at(boundary, second_period).grants_access
+        assert not at(PERIOD_END + TICK, second_period).grants_access
+
+    def test_the_boundary_is_exact_to_the_second(self) -> None:
+        failing = unpaid(past_due_since=PERIOD_START)
+        boundary = PERIOD_START + timedelta(days=7)
+
+        answers = [
+            at(boundary + offset, failing).grants_access
+            for offset in (-timedelta(seconds=1), timedelta(0), timedelta(seconds=1))
+        ]
+
+        assert answers == [True, False, False]
+
+
+class TestPaymentGraceMeetsAnEndDate:
+    """F-14: a date the customer chose binds inside the payment grace too."""
+
+    def test_a_cancel_date_inside_the_grace_ends_pro_on_that_date(self) -> None:
+        cancel_at = PERIOD_START + timedelta(days=2)
+        failing = unpaid(past_due_since=PERIOD_START, cancel_at=cancel_at)
+
+        assert at(cancel_at - TICK, failing).grants_access
+        assert not at(cancel_at, failing).grants_access
+
+    def test_a_cancel_date_after_the_grace_does_not_extend_it(self) -> None:
+        failing = unpaid(past_due_since=PERIOD_START, cancel_at=PERIOD_END)
+
+        assert not at(PERIOD_START + timedelta(days=7), failing).grants_access
+
+    def test_cancel_at_period_end_caps_a_grace_longer_than_the_period(self) -> None:
+        generous = GracePolicy(
+            renewal_grace=timedelta(hours=72), payment_failure_grace=timedelta(days=60)
+        )
+        failing = unpaid(past_due_since=PERIOD_START, cancel_at_period_end=True)
+
+        assert at(PERIOD_END - TICK, failing, policy=generous).grants_access
+        assert not at(PERIOD_END, failing, policy=generous).grants_access
+
+    def test_the_standing_still_says_the_payment_failed(self) -> None:
+        failing = unpaid(past_due_since=PERIOD_START, cancel_at=PERIOD_START + timedelta(days=2))
+
+        standing = at(PERIOD_START + timedelta(days=1), failing)
+
+        assert standing.standing is Standing.PAYMENT_GRACE
+        assert standing.access_until == PERIOD_START + timedelta(days=2)
+
+
+class TestOnlyTheProPriceGrants:
+    """F-07: a subscription not on the Pro price at quantity >= 1 grants nothing, whatever else."""
+
+    @pytest.mark.parametrize(
+        "status",
+        [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING, SubscriptionStatus.PAST_DUE],
+    )
+    def test_a_status_that_would_grant_does_not(self, status: SubscriptionStatus) -> None:
+        off_price = record(status=status, on_pro_price=False)
+
+        assert access_window(off_price, POLICY) is None
+        assert at(NOW, off_price).standing is Standing.ENDED
+
+    def test_an_enforced_guild_on_the_wrong_price_is_free(self) -> None:
+        plan = decide_plan(
+            guild_id=GUILD,
+            records=[record(on_pro_price=False)],
+            now=NOW,
+            policy=POLICY,
+            enforced=True,
+            complimentary=False,
+        )
+
+        assert plan.tier is PlanTier.FREE
+
+    def test_it_does_not_hide_a_second_subscription_on_the_right_price(self) -> None:
+        standing = at(
+            NOW,
+            record(subscription_id="sub_cheap", on_pro_price=False),
+            record(subscription_id="sub_pro"),
+        )
+
+        assert standing.granting_subscription_ids == frozenset({"sub_pro"})
+
+    def test_the_field_is_required(self) -> None:
+        values = record().model_dump()
+        del values["on_pro_price"]
+
+        with pytest.raises(ValueError):
+            SubscriptionRecord.model_validate(values)
+
+
+class TestPaymentPending:
+    """F-05: in force but not yet paid -- still Pro, never "paid through"."""
+
+    @pytest.mark.parametrize("invoice", [InvoiceStatus.DRAFT, InvoiceStatus.OPEN, None])
+    def test_an_unpaid_period_is_payment_pending_with_no_paid_through_date(
+        self, invoice: InvoiceStatus | None
+    ) -> None:
+        standing = at(NOW, record(latest_invoice_status=invoice))
+
+        assert standing.standing is Standing.PAYMENT_PENDING
+        assert standing.grants_access
+        assert standing.paid_through is None
+        assert standing.access_until == PERIOD_END + timedelta(hours=72)
+
+    def test_a_paid_period_is_active_and_paid_through_its_end(self) -> None:
+        standing = at(NOW, record(latest_invoice_status=InvoiceStatus.PAID))
+
+        assert standing.standing is Standing.ACTIVE
+        assert standing.paid_through == PERIOD_END
+
+    def test_past_the_period_end_it_is_the_renewal_that_is_pending(self) -> None:
+        standing = at(PERIOD_END, record(latest_invoice_status=InvoiceStatus.OPEN))
+
+        assert standing.standing is Standing.RENEWAL_PENDING
+        assert standing.paid_through is None
+
+    @pytest.mark.parametrize("invoice", [InvoiceStatus.OPEN, InvoiceStatus.DRAFT])
+    def test_no_standing_carries_a_paid_through_date_for_an_unpaid_period(
+        self, invoice: InvoiceStatus
+    ) -> None:
+        for candidate in (
+            record(latest_invoice_status=invoice),
+            record(latest_invoice_status=invoice, cancel_at_period_end=True),
+            unpaid(latest_invoice_status=invoice, current_period_start=NOW),
+        ):
+            assert at(NOW, candidate).paid_through is None
+
+    def test_of_two_granting_subscriptions_the_paid_one_is_shown(self) -> None:
+        standing = at(
+            NOW,
+            record(
+                subscription_id="sub_a_pending",
+                latest_invoice_status=InvoiceStatus.OPEN,
+                current_period_end=PERIOD_END + timedelta(days=5),
+            ),
+            record(subscription_id="sub_z_paid"),
+        )
+
+        assert standing.standing is Standing.ACTIVE
+        assert standing.shown_subscription_id == "sub_z_paid"
+        assert standing.granting_subscription_ids == frozenset({"sub_a_pending", "sub_z_paid"})

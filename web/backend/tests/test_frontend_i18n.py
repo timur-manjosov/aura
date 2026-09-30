@@ -287,3 +287,36 @@ class TestResolveLocale:
             console.log(resolveLocale({payload}));
             """
         )
+
+
+class TestEveryStandingHasASentence:
+    """A standing the backend can report must be typed, described and translated in the page."""
+
+    PAGE = FRONTEND / "app" / "page.tsx"
+    API = FRONTEND / "lib" / "api.ts"
+
+    def test_the_page_type_lists_exactly_the_standings_the_backend_accepts(self) -> None:
+        from aura_web.bot_billing import _KNOWN_STANDINGS
+
+        source = self.API.read_text(encoding="utf-8")
+        union = source.split("standing:", 1)[1].split(";", 1)[0]
+
+        assert set(re.findall(r'"(\w+)"', union)) == _KNOWN_STANDINGS
+
+    def test_every_standing_but_no_subscription_has_its_own_sentence(self) -> None:
+        from aura_web.bot_billing import _KNOWN_STANDINGS
+
+        source = self.PAGE.read_text(encoding="utf-8")
+        described = source.split("function planDescription", 1)[1].split("\n}\n", 1)[0]
+        cases = set(re.findall(r'case "(\w+)":', described))
+
+        assert cases == _KNOWN_STANDINGS - {"no_subscription"}
+        for standing in cases:
+            assert f'"plan_standing_{standing}"' in described
+            assert f"plan_standing_{standing}" in load_catalogue(DEFAULT_LOCALE)
+
+    def test_only_the_active_sentence_is_dated_with_the_paid_through_date(self) -> None:
+        source = self.PAGE.read_text(encoding="utf-8")
+
+        assert source.count("plan.paid_through") == 1
+        assert 'dated("plan_standing_active", plan.paid_through)' in source

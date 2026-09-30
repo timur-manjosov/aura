@@ -187,6 +187,7 @@
     "plan_state_ended": "Dieser Server nutzt den **Free**-Plan: Sein Pro-Abo ist beendet. Einstellungen aus der Pro-Zeit bleiben erhalten und greifen wieder, sobald Pro verlängert wird.",
     "plan_state_active": "Dieser Server nutzt **Pro**. Der aktuelle Zeitraum ist bis {date} bezahlt und verlängert sich automatisch.",
     "plan_state_renewal_pending": "Dieser Server nutzt **Pro**. Die Verlängerung ist noch nicht bestätigt, deshalb bleibt Pro so lange bis {date} aktiv.",
+    "plan_state_payment_pending": "Dieser Server nutzt **Pro**. Die Zahlung für den aktuellen Zeitraum ist noch nicht bestätigt.",
     "plan_state_canceling": "Dieser Server nutzt **Pro** bis {date}. Das Abo endet dann und verlängert sich nicht.",
     "plan_state_payment_grace": "⚠️ Die letzte Zahlung für das Pro-Abo dieses Servers ist fehlgeschlagen. Pro bleibt bis {date} aktiv. Die Person, die das Abo abgeschlossen hat, kann die Zahlungsmethode vorher im Abrechnungsportal aktualisieren – sonst wechselt dieser Server zu Free.",
     "plan_free_includes": "Free umfasst /aura-ask und das Verwalten von Fakten von Hand. Proaktive Antworten, automatische Fakten-Erkennung, regelmäßige Zusammenfassungen, Onboarding-Nachrichten und der Historien-Nachlauf brauchen Pro.",

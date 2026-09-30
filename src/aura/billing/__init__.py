@@ -20,7 +20,9 @@ from aura.billing.entitlement import (
     SubscriptionStatus,
     access_window,
     decide_plan,
+    next_unpaid_since,
     resolve_standing,
+    unpaid_since,
 )
 from aura.billing.plan_gate import PlanGate, grace_policy_from_settings
 
@@ -39,5 +41,7 @@ __all__ = [
     "access_window",
     "decide_plan",
     "grace_policy_from_settings",
+    "next_unpaid_since",
     "resolve_standing",
+    "unpaid_since",
 ]

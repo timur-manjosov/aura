@@ -17,6 +17,7 @@
   "plan_badge_pro": "Pro",
   "plan_standing_active": "Opłacone do {date}, odnawia się automatycznie.",
   "plan_standing_renewal_pending": "Odnowienie nie zostało jeszcze potwierdzone. Pro pozostaje włączone do {date}.",
+  "plan_standing_payment_pending": "Płatność za bieżący okres nie została jeszcze potwierdzona.",
   "plan_standing_canceling": "Pro do {date}, potem Free.",
   "plan_standing_payment_grace": "Ostatnia płatność nie powiodła się. Pro pozostaje włączone do {date}, chyba że metoda płatności zostanie zaktualizowana.",
   "plan_standing_ended": "Subskrypcja Pro się zakończyła.",

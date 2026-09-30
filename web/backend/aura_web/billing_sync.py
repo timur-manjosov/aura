@@ -89,16 +89,32 @@ async def sync_subscription(
     Returns
     -------
     SyncOutcome
-        What happened: applied, already applied, a version conflict, or a
-        refusal. Never raises for an expected failure -- a webhook that cannot
-        be synced now is retried by Stripe and by the reconciler.
+        APPLIED when the bot stored the snapshot, DUPLICATE when this event was
+        already applied, NOT_AURA when the subscription carries no Aura guild
+        metadata (nothing is sent to the bot).
+
+    Raises
+    ------
+    StripeAPIError
+        When Stripe cannot be reached or answers with something unusable.
+    BotBillingError
+        When the bot's internal API cannot be reached or refuses the call.
+    SyncConflictError
+        After MAX_SYNC_ATTEMPTS compare-and-swaps lost to concurrent syncs.
+    LivemodeMismatchError
+        For a subscription from the other Stripe mode.
 
     Notes
     -----
-    Raises StripeAPIError or BotBillingError when either side cannot be
-    reached, SyncConflictError after MAX_SYNC_ATTEMPTS lost races, and
-    LivemodeMismatchError for a subscription from the wrong mode. Every one of
-    those leaves the bot's state exactly as it was.
+    Every exception above leaves the bot's state exactly as it was, and each is
+    a failure to answer now rather than an answer: the webhook route replies
+    with a status Stripe retries, and the reconciler tries again on its next
+    pass.
+
+    A subscription not on the Pro price (or at quantity 0) is still pushed,
+    flagged `on_pro_price=False`, so the bot records it as granting nothing.
+    Skipping it instead would leave any copy the bot already holds granting
+    Pro until that copy's own window ran out.
     """
     for attempt in range(1, MAX_SYNC_ATTEMPTS + 1):
         state = await bot.get_sync_state(subscription_id=subscription_id, event_id=event_id)
@@ -112,11 +128,33 @@ async def sync_subscription(
                 f"this service is configured for livemode={live_mode}"
             )
         if snapshot.guild_id is None:
-            logger.info(
-                "Stripe subscription %s carries no Aura guild metadata; not an Aura subscription",
-                subscription_id,
-            )
+            if state.version > 0:
+                # The bot holds this subscription, so it carried Aura's
+                # metadata once -- and only the operator can remove it. Its
+                # stored copy now never changes again and keeps granting inside
+                # its own window: someone has to look (Phase 4c audit, F-22).
+                logger.error(
+                    "Stripe subscription %s no longer carries Aura guild metadata, but the bot "
+                    "holds version %d of it; that copy is frozen and still decides the guild's "
+                    "plan until it expires. Restore the metadata in Stripe or cancel the "
+                    "subscription.",
+                    subscription_id,
+                    state.version,
+                )
+            else:
+                logger.info(
+                    "Stripe subscription %s carries no Aura guild metadata; not an Aura "
+                    "subscription",
+                    subscription_id,
+                )
             return SyncOutcome.NOT_AURA
+        if not snapshot.on_pro_price:
+            logger.warning(
+                "Stripe subscription %s for guild %s is not on the Pro price at a quantity of at "
+                "least one; pushing it to the bot as granting nothing",
+                subscription_id,
+                snapshot.guild_id,
+            )
 
         result = await bot.apply_snapshot(
             event_id=event_id,

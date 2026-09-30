@@ -9,6 +9,7 @@ arrives before startup has finished.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -483,6 +484,30 @@ def _setup_hook_patches(client: AuraClient, *, records: list[object] | None = No
 
 class TestBillingWiring:
     """Phase 4c: the plan gate exists before any trigger can ask it, and the API only when configured."""
+
+    async def test_the_subscriptions_table_is_migrated_before_the_gate_reads_it(self) -> None:
+        client = _client()
+        client.db = MagicMock()
+        order: list[str] = []
+
+        async def migrate(conn: object) -> None:
+            assert conn is client.db
+            order.append("migrate")
+
+        async def load(conn: object) -> list[object]:
+            order.append("load")
+            return []
+
+        patches = _setup_hook_patches(client)
+        with contextlib.ExitStack() as stack:
+            for index, active in enumerate(patches):
+                if index != 1:  # 1 is load_subscription_records, replaced below
+                    stack.enter_context(active)
+            stack.enter_context(patch("aura.main.verify_subscriptions_schema", migrate))
+            stack.enter_context(patch("aura.main.load_subscription_records", load))
+            await client.setup_hook()
+
+        assert order == ["migrate", "load"]
 
     async def test_setup_hook_builds_the_plan_gate_from_the_stored_subscriptions(self) -> None:
         client = _client()

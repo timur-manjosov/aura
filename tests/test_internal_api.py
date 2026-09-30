@@ -56,6 +56,7 @@ def snapshot(**overrides: Any) -> dict[str, Any]:
         "current_period_start": int(NOW.timestamp()),
         "current_period_end": int((NOW + timedelta(days=30)).timestamp()),
         "livemode": False,
+        "on_pro_price": True,
     }
     values.update(overrides)
     return values
@@ -492,6 +493,83 @@ class TestListener:
         finally:
             blocker.close()
             await conn.close()
+
+
+# --- Phase 4c audit fixes -----------------------------------------------------
+
+
+class TestOnProPriceOnTheWire:
+    """The web backend must SAY whether a subscription is on the Pro price; it is never assumed."""
+
+    async def test_a_snapshot_that_does_not_say_is_refused(self, setup) -> None:
+        client, conn, _ = setup
+        silent = snapshot()
+        del silent["on_pro_price"]
+
+        response = await client.post(
+            "/internal/v1/subscriptions/apply", json=apply_body(snapshot=silent), headers=AUTH
+        )
+
+        assert response.status == 400
+        assert await nothing_was_written(conn)
+
+    @pytest.mark.parametrize("value", [None, 0, 1, "true", "false", [], {}])
+    async def test_anything_but_a_json_boolean_is_refused(self, setup, value: object) -> None:
+        client, conn, _ = setup
+
+        response = await client.post(
+            "/internal/v1/subscriptions/apply",
+            json=apply_body(snapshot=snapshot(on_pro_price=value)),
+            headers=AUTH,
+        )
+
+        assert response.status == 400
+        assert await nothing_was_written(conn)
+
+    async def test_a_subscription_off_the_pro_price_is_stored_and_grants_nothing(
+        self, setup
+    ) -> None:
+        client, conn, gate = setup
+
+        response = await client.post(
+            "/internal/v1/subscriptions/apply",
+            json=apply_body(snapshot=snapshot(on_pro_price=False)),
+            headers=AUTH,
+        )
+        plans = await client.post(
+            "/internal/v1/guilds/plans", json={"guild_ids": [GUILD]}, headers=AUTH
+        )
+
+        assert response.status == 200
+        (record,) = await load_subscription_records(conn)
+        assert record.on_pro_price is False
+        assert gate.allows_pro(int(GUILD)) is False
+        plan = (await plans.json())["plans"][GUILD]
+        assert (plan["tier"], plan["standing"], plan["in_force_subscription_count"]) == (
+            "free",
+            "ended",
+            0,
+        )
+
+
+class TestPaymentPendingOnTheWire:
+    async def test_an_unpaid_period_is_payment_pending_with_no_paid_through(self, setup) -> None:
+        client, _, _ = setup
+        await client.post(
+            "/internal/v1/subscriptions/apply",
+            json=apply_body(snapshot=snapshot(latest_invoice_status="open")),
+            headers=AUTH,
+        )
+
+        response = await client.post(
+            "/internal/v1/guilds/plans", json={"guild_ids": [GUILD]}, headers=AUTH
+        )
+
+        plan = (await response.json())["plans"][GUILD]
+        assert plan["tier"] == "pro"
+        assert plan["standing"] == "payment_pending"
+        assert plan["paid_through"] is None
+        assert plan["access_until"] is not None
 
 
 class TestNoListenerRunsOpen:

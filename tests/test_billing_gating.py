@@ -495,6 +495,7 @@ def record(**overrides: object) -> SubscriptionRecord:
         "current_period_start": NOW - timedelta(days=1),
         "current_period_end": NOW + timedelta(days=29),
         "livemode": False,
+        "on_pro_price": True,
         "version": 1,
         "confirmed_at": NOW,
     }
@@ -532,6 +533,10 @@ class TestPlanDescription:
             ),
             ([record(cancel_at_period_end=True)], "plan_state_canceling"),
             (
+                [record(latest_invoice_status=InvoiceStatus.OPEN)],
+                "plan_state_payment_pending",
+            ),
+            (
                 [
                     record(
                         status=SubscriptionStatus.PAST_DUE,
@@ -559,6 +564,21 @@ class TestPlanDescription:
         text = describe_plan(plan([record()]), locale="en-US", dashboard_url=None)
 
         assert discord_timestamp(NOW + timedelta(days=29)) in text
+
+    @pytest.mark.parametrize("locale", SUPPORTED_LOCALES)
+    def test_a_period_not_yet_paid_is_never_described_as_paid_through(self, locale: str) -> None:
+        """F-05: the same subscription, before and after its invoice is paid."""
+        period_end = discord_timestamp(NOW + timedelta(days=29))
+        pending = describe_plan(
+            plan([record(latest_invoice_status=InvoiceStatus.OPEN)]),
+            locale=locale,
+            dashboard_url=None,
+        )
+        paid = describe_plan(plan([record()]), locale=locale, dashboard_url=None)
+
+        assert t("plan_state_payment_pending", locale) in pending
+        assert period_end not in pending
+        assert t("plan_state_active", locale, date=period_end) in paid
 
     def test_payment_grace_shows_the_date_pro_ends(self) -> None:
         failing = record(

@@ -18,6 +18,14 @@ them safe sit side by side:
     or neither. A redelivery finds it marked and changes nothing -- no second
     grant, no second revocation, no version bump.
 
+  * THE PAYMENT-GRACE ANCHOR FROM THE ROW BEING REPLACED. `past_due_since` is
+    not something Stripe reports; it is carried from the stored row to the
+    snapshot replacing it (aura.billing.entitlement.next_unpaid_since), read
+    and written inside the same transaction as the compare-and-swap. Because
+    that swap stores snapshots strictly in fetch order, the anchor is a fold
+    over exactly the sequence of states the bot has seen, and no reordering of
+    webhooks can hand it a different sequence.
+
 Every statement runs under the connection's operation lock (aura.db.connection),
 which is what makes "read the version, then write" one indivisible step with
 respect to every other coroutine in this process -- and this process is the
@@ -29,11 +37,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Final
 
 import aiosqlite
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from aura.billing.entitlement import InvoiceStatus, SubscriptionRecord, SubscriptionStatus
+from aura.billing.entitlement import (
+    InvoiceStatus,
+    SubscriptionRecord,
+    SubscriptionStatus,
+    next_unpaid_since,
+)
 from aura.db.connection import connection_lock, utc_iso
 
 # SQLite INTEGER is signed 64-bit; sqlite3 raises when binding anything larger.
@@ -42,7 +56,22 @@ _MAX_SQLITE_INTEGER = 2**63 - 1
 _RECORD_COLUMNS = (
     "subscription_id, guild_id, customer_id, purchaser_user_id, status, "
     "cancel_at_period_end, cancel_at, collection_paused, latest_invoice_status, "
-    "current_period_start, current_period_end, livemode, version, confirmed_at"
+    "current_period_start, current_period_end, livemode, version, confirmed_at, "
+    "on_pro_price, past_due_since"
+)
+
+# The two columns Phase 4c's audit fixes added to guild_subscriptions, with the
+# exact definitions schema.sql gives a fresh table. verify_subscriptions_schema
+# adds them to a table created before they existed, in this order, so a
+# migrated table and a fresh one end up with identical column lists.
+#
+# on_pro_price defaults to 1 for rows written before the price was checked:
+# those rows keep the meaning they were stored with, and the next sync of each
+# subscription -- the reconciliation runs a minute after the web backend
+# starts -- replaces it with the checked value.
+_ADDITIVE_COLUMNS: Final[tuple[tuple[str, str], ...]] = (
+    ("on_pro_price", "INTEGER NOT NULL DEFAULT 1 CHECK (on_pro_price IN (0, 1))"),
+    ("past_due_since", "INTEGER"),
 )
 
 
@@ -71,6 +100,9 @@ class SubscriptionSnapshot(BaseModel):
     current_period_start: datetime
     current_period_end: datetime
     livemode: bool
+    # Every item on the configured Pro price at a quantity of at least one --
+    # decided by the web backend, the only side that knows the price.
+    on_pro_price: bool
 
     @field_validator("guild_id", "purchaser_user_id")
     @classmethod
@@ -139,6 +171,8 @@ def _record_from_row(row: aiosqlite.Row | tuple[object, ...]) -> SubscriptionRec
         livemode,
         version,
         confirmed_at,
+        on_pro_price,
+        past_due_since,
     ) = row
     return SubscriptionRecord(
         subscription_id=str(subscription_id),
@@ -155,8 +189,10 @@ def _record_from_row(row: aiosqlite.Row | tuple[object, ...]) -> SubscriptionRec
         current_period_start=_from_unix(int(current_period_start)),  # type: ignore[arg-type]
         current_period_end=_from_unix(int(current_period_end)),  # type: ignore[arg-type]
         livemode=bool(livemode),
+        on_pro_price=bool(on_pro_price),
         version=int(version),  # type: ignore[arg-type]
         confirmed_at=datetime.fromisoformat(str(confirmed_at)),
+        past_due_since=None if past_due_since is None else _from_unix(int(past_due_since)),  # type: ignore[arg-type]
     )
 
 
@@ -250,6 +286,10 @@ async def apply_subscription_snapshot(
     duplicate event is reported as a duplicate even if the version has since
     moved, because "already applied" is the more useful answer to a redelivery
     -- it tells the caller to stop, where a conflict would tell it to retry.
+
+    The stored `past_due_since` is derived here, from the row being replaced
+    and the new snapshot (aura.billing.entitlement.next_unpaid_since), under
+    the same lock and in the same transaction as the swap itself.
     """
     if now.tzinfo is None:
         raise ValueError(f"now must be a timezone-aware datetime, got {now!r}")
@@ -259,6 +299,10 @@ async def apply_subscription_snapshot(
         raise ValueError(f"expected_version out of range: {expected_version}")
 
     confirmed_at = utc_iso(now)
+    # Truncated to the whole seconds the row stores before anything is derived
+    # from it, so the anchor carried into the next write is exactly the one
+    # read back after a restart.
+    period_start = _from_unix(_to_unix(snapshot.current_period_start))
     async with connection_lock(conn):
         try:
             if event_id is not None:
@@ -275,15 +319,22 @@ async def apply_subscription_snapshot(
                     )
 
             async with conn.execute(
-                "SELECT version, guild_id FROM guild_subscriptions WHERE subscription_id = ?",
+                f"SELECT {_RECORD_COLUMNS} FROM guild_subscriptions WHERE subscription_id = ?",
                 (snapshot.subscription_id,),
             ) as cursor:
-                existing = await cursor.fetchone()
-            current_version = int(existing[0]) if existing else 0
+                row = await cursor.fetchone()
+            existing = None if row is None else _record_from_row(row)
+            current_version = existing.version if existing is not None else 0
             if current_version != expected_version:
                 return ApplyResult(ApplyOutcome.VERSION_CONFLICT, current_version, None, None)
 
             new_version = current_version + 1
+            past_due_since = next_unpaid_since(
+                existing,
+                status=snapshot.status,
+                latest_invoice_status=snapshot.latest_invoice_status,
+                current_period_start=period_start,
+            )
             values = (
                 snapshot.guild_id,
                 snapshot.customer_id,
@@ -295,19 +346,21 @@ async def apply_subscription_snapshot(
                 None
                 if snapshot.latest_invoice_status is None
                 else snapshot.latest_invoice_status.value,
-                _to_unix(snapshot.current_period_start),
+                _to_unix(period_start),
                 _to_unix(snapshot.current_period_end),
                 int(snapshot.livemode),
                 new_version,
                 confirmed_at,
+                int(snapshot.on_pro_price),
+                None if past_due_since is None else _to_unix(past_due_since),
             )
             if existing is None:
                 await conn.execute(
                     "INSERT INTO guild_subscriptions (guild_id, customer_id, purchaser_user_id, "
                     "status, cancel_at_period_end, cancel_at, collection_paused, "
                     "latest_invoice_status, current_period_start, current_period_end, livemode, "
-                    "version, confirmed_at, subscription_id, first_seen_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "version, confirmed_at, on_pro_price, past_due_since, subscription_id, "
+                    "first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (*values, snapshot.subscription_id, confirmed_at),
                 )
             else:
@@ -315,7 +368,8 @@ async def apply_subscription_snapshot(
                     "UPDATE guild_subscriptions SET guild_id = ?, customer_id = ?, "
                     "purchaser_user_id = ?, status = ?, cancel_at_period_end = ?, cancel_at = ?, "
                     "collection_paused = ?, latest_invoice_status = ?, current_period_start = ?, "
-                    "current_period_end = ?, livemode = ?, version = ?, confirmed_at = ? "
+                    "current_period_end = ?, livemode = ?, version = ?, confirmed_at = ?, "
+                    "on_pro_price = ?, past_due_since = ? "
                     "WHERE subscription_id = ? AND version = ?",
                     (*values, snapshot.subscription_id, current_version),
                 )
@@ -341,7 +395,7 @@ async def apply_subscription_snapshot(
             await conn.rollback()
             raise
 
-    previous_guild_id = int(existing[1]) if existing is not None else None
+    previous_guild_id = existing.guild_id if existing is not None else None
     record = SubscriptionRecord(
         subscription_id=snapshot.subscription_id,
         guild_id=snapshot.guild_id,
@@ -352,11 +406,13 @@ async def apply_subscription_snapshot(
         cancel_at=None if snapshot.cancel_at is None else _from_unix(_to_unix(snapshot.cancel_at)),
         collection_paused=snapshot.collection_paused,
         latest_invoice_status=snapshot.latest_invoice_status,
-        current_period_start=_from_unix(_to_unix(snapshot.current_period_start)),
+        current_period_start=period_start,
         current_period_end=_from_unix(_to_unix(snapshot.current_period_end)),
         livemode=snapshot.livemode,
+        on_pro_price=snapshot.on_pro_price,
         version=new_version,
         confirmed_at=datetime.fromisoformat(confirmed_at),
+        past_due_since=past_due_since,
     )
     return ApplyResult(
         ApplyOutcome.APPLIED,
@@ -414,3 +470,45 @@ async def count_processed_events(conn: aiosqlite.Connection) -> int:
         async with conn.execute("SELECT COUNT(*) FROM stripe_processed_events") as cursor:
             row = await cursor.fetchone()
     return int(row[0]) if row else 0
+
+
+async def verify_subscriptions_schema(conn: aiosqlite.Connection) -> None:
+    """Add the audit-fix columns to a guild_subscriptions table created before them.
+
+    Parameters
+    ----------
+    conn
+        Open database connection, after `init_schema`.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Called once at startup, after init_schema, for the reason
+    verify_pending_facts_schema is: `CREATE TABLE IF NOT EXISTS` cannot reshape
+    a table that already exists, so a database created by the Phase 4c deploy
+    would keep its older shape and every snapshot write would fail on the
+    missing columns.
+
+    Purely additive and therefore migrated in place: no existing column
+    changes, `past_due_since` is NULL for every pre-existing row -- which
+    aura.billing.entitlement.unpaid_since reads exactly as the pre-fix rule did
+    -- and `on_pro_price` is 1, which is what every pre-existing row already
+    meant (see _ADDITIVE_COLUMNS).
+
+    Idempotent: a table already at the current shape adds nothing, and a
+    partially migrated one (a crash between the two ALTERs) is completed in one
+    pass. A database with no such table at all passes untouched.
+    """
+    async with connection_lock(conn):
+        async with conn.execute("PRAGMA table_info(guild_subscriptions)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        if not columns:
+            return
+        missing = [(name, ddl) for name, ddl in _ADDITIVE_COLUMNS if name not in columns]
+        for name, ddl in missing:
+            await conn.execute(f"ALTER TABLE guild_subscriptions ADD COLUMN {name} {ddl}")
+        if missing:
+            await conn.commit()

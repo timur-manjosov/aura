@@ -31,7 +31,15 @@ INTERNAL_API_PREFIX = "/internal/v1"
 _KNOWN_TIERS = frozenset({"free", "pro"})
 _KNOWN_BASES = frozenset({"billing_not_enforced", "complimentary", "subscription"})
 _KNOWN_STANDINGS = frozenset(
-    {"no_subscription", "ended", "active", "renewal_pending", "canceling", "payment_grace"}
+    {
+        "no_subscription",
+        "ended",
+        "active",
+        "renewal_pending",
+        "payment_pending",
+        "canceling",
+        "payment_grace",
+    }
 )
 
 

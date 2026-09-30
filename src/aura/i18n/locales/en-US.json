@@ -187,6 +187,7 @@
     "plan_state_ended": "This server is on the **Free** plan: its Pro subscription has ended. Settings made on Pro are kept and pick up again if Pro is renewed.",
     "plan_state_active": "This server is on **Pro**. The current period is paid through {date} and renews automatically.",
     "plan_state_renewal_pending": "This server is on **Pro**. The renewal hasn't been confirmed yet, so Pro stays on until {date} while it is.",
+    "plan_state_payment_pending": "This server is on **Pro**. The payment for the current period hasn't been confirmed yet.",
     "plan_state_canceling": "This server is on **Pro** until {date}. The subscription is set to end then and won't renew.",
     "plan_state_payment_grace": "⚠️ The last payment for this server's Pro subscription failed. Pro stays on until {date}. The person who subscribed can update the payment method in the billing portal before then; otherwise this server moves to Free.",
     "plan_free_includes": "Free includes /aura-ask and managing facts by hand. Proactive answers, automatic fact extraction, digests, onboarding messages and history backfill need Pro.",

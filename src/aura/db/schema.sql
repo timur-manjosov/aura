@@ -840,6 +840,22 @@ CREATE TABLE IF NOT EXISTS guild_subscriptions (
     version INTEGER NOT NULL CHECK (version >= 1),
     first_seen_at TEXT NOT NULL,
     confirmed_at TEXT NOT NULL,
+    -- Whether every item is on the configured Pro price at a quantity of at
+    -- least one, as the web backend (the only side that knows the price)
+    -- checked it. 0 never grants: a plan switch or a hand-made subscription
+    -- carrying Aura's metadata is not a Pro subscription.
+    --
+    -- This column and the next were added after the Phase 4c deploy, so a
+    -- database that predates them gains them through
+    -- aura.db.subscriptions.verify_subscriptions_schema, with these exact
+    -- definitions and in this order.
+    on_pro_price INTEGER NOT NULL DEFAULT 1 CHECK (on_pro_price IN (0, 1)),
+    -- Unix seconds: the start of the oldest period still unpaid, carried from
+    -- row to row by aura.billing.entitlement.next_unpaid_since and cleared
+    -- only when a paid period is seen. The payment grace counts from here,
+    -- not from the current period's start, which Stripe moves forward every
+    -- cycle even while nothing is paid.
+    past_due_since INTEGER,
     CHECK (current_period_end >= current_period_start)
 );
 

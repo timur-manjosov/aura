@@ -17,6 +17,7 @@
   "plan_badge_pro": "Pro",
   "plan_standing_active": "{date}까지 결제됨, 자동으로 갱신돼요.",
   "plan_standing_renewal_pending": "갱신이 아직 확인되지 않았어요. Pro는 {date}까지 유지돼요.",
+  "plan_standing_payment_pending": "현재 기간의 결제가 아직 확인되지 않았어요.",
   "plan_standing_canceling": "{date}까지 Pro, 그 후 Free예요.",
   "plan_standing_payment_grace": "최근 결제가 실패했어요. 결제 수단을 업데이트하지 않으면 Pro는 {date}까지만 유지돼요.",
   "plan_standing_ended": "Pro 구독이 끝났어요.",

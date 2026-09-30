@@ -34,8 +34,16 @@ export type ManageableGuild = {
 export type GuildPlan = {
   tier: "free" | "pro";
   basis: "billing_not_enforced" | "complimentary" | "subscription";
-  standing: "no_subscription" | "ended" | "active" | "renewal_pending" | "canceling" | "payment_grace";
+  standing:
+    | "no_subscription"
+    | "ended"
+    | "active"
+    | "renewal_pending"
+    | "payment_pending"
+    | "canceling"
+    | "payment_grace";
   access_until: number | null;
+  /** Set only while the current period's invoice is paid; never shown as "paid through" otherwise. */
   paid_through: number | null;
   active_subscription_count: number;
   can_subscribe: boolean;

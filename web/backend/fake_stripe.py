@@ -32,6 +32,11 @@ from fastapi.responses import JSONResponse
 
 DAY = 24 * 3600
 
+# The Pro price every stand-in subscription is on unless a test says otherwise.
+# The same value as FakeStripeState.price_id, which the web settings are
+# configured with, so a subscription created by a completed checkout counts.
+DEFAULT_PRICE_ID = "price_auraProMonthlyFake"
+
 
 def sign_webhook(payload: bytes, secret: str, *, timestamp: int | None = None) -> str:
     """A Stripe-Signature header value, computed exactly as Stripe documents it.
@@ -67,6 +72,8 @@ class FakeSubscription:
     latest_invoice_status: str | None = "paid"
     latest_invoice_billing_reason: str = "subscription_cycle"
     livemode: bool = False
+    price_id: str = DEFAULT_PRICE_ID
+    quantity: int | None = 1
 
     def to_object(self, *, expand_invoice: bool) -> dict[str, Any]:
         """The subscription as the dahlia API serialises it."""
@@ -96,6 +103,8 @@ class FakeSubscription:
                     {
                         "id": _stripe_id("si"),
                         "object": "subscription_item",
+                        "price": {"id": self.price_id, "object": "price"},
+                        "quantity": self.quantity,
                         "current_period_start": self.current_period_start,
                         "current_period_end": self.current_period_end,
                     }
@@ -110,7 +119,7 @@ class FakeStripeState:
 
     secret_key: str = "sk_test_fakeStripeSecretKey0000000000000000"
     webhook_secret: str = "whsec_fakeWebhookSigningSecret000000000000"
-    price_id: str = "price_auraProMonthlyFake"
+    price_id: str = DEFAULT_PRICE_ID
     livemode: bool = False
 
     checkout_sessions: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -155,6 +164,7 @@ class FakeStripeState:
             current_period_start=now,
             current_period_end=now + period_days * DAY,
             livemode=overrides.pop("livemode", self.livemode),
+            price_id=overrides.pop("price_id", self.price_id),
             **overrides,
         )
         self.subscriptions[subscription.id] = subscription

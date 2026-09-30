@@ -289,3 +289,33 @@ class TestNoBleedFromTheBotsEnvironment:
 
         with pytest.raises(WebConfigurationError):
             load_web_settings()
+
+
+class TestPortalConfiguration:
+    """AURA_WEB_STRIPE_PORTAL_CONFIGURATION_ID: optional, and a bpc_ ID when set."""
+
+    @pytest.mark.parametrize("value", [None, "", "   "])
+    def test_unset_or_blank_means_the_account_default(self, value: str | None) -> None:
+        extra = {} if value is None else {"stripe_portal_configuration_id": value}
+
+        settings = WebSettings(_env_file=None, **(dict(VALID) | extra))
+
+        assert settings.stripe_portal_configuration_id is None
+
+    @pytest.mark.parametrize(
+        "value", ["bpc_noPlanSwitching", " bpc_noPlanSwitching ", "bpc_noPlanSwitching\n"]
+    )
+    def test_a_configuration_id_is_accepted_and_trimmed(self, value: str) -> None:
+        settings = WebSettings(
+            _env_file=None, **(dict(VALID) | {"stripe_portal_configuration_id": value})
+        )
+
+        assert settings.stripe_portal_configuration_id == "bpc_noPlanSwitching"
+
+    @pytest.mark.parametrize(
+        "value",
+        ["bpc_", "price_abc", "bpc_with space", 'bpc_"quoted"', "bpc_" + "a" * 300],
+    )
+    def test_anything_else_is_refused(self, value: str) -> None:
+        with pytest.raises(ValidationError):
+            WebSettings(_env_file=None, **(dict(VALID) | {"stripe_portal_configuration_id": value}))
