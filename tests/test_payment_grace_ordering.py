@@ -119,6 +119,15 @@ THREE_ROLLOVERS_WITH_A_WRITE_OFF: Final = Lifecycle(
     expected_anchor_period=2,
 )
 
+# The same history stopped inside the next renewal's draft window (V-05): Stripe
+# reads `active` again after the write-off, and the new period's invoice is a
+# draft that has not been charged yet. Nothing has been paid since period 2, so
+# nothing may be granted -- not even for the hour before the charge fails.
+INTO_THE_DRAFT_WINDOW_AFTER_A_WRITE_OFF: Final = Lifecycle(
+    steps=THREE_ROLLOVERS_WITH_A_WRITE_OFF.steps[:5],
+    expected_anchor_period=2,
+)
+
 
 def reference_anchor(observed: list[StripeState]) -> int | None:
     """The rule as the report states it, applied to exactly the states the bot saw.
@@ -384,6 +393,120 @@ class TestReconciledEveryOrderEndsOnStripesHistory:
 
         assert plan.is_pro is False
         assert plan.standing.standing is Standing.ENDED
+
+
+class TestTheDraftWindowAfterAWriteOff:
+    async def test_every_order_stores_the_old_anchor_and_grants_nothing_before_the_charge(
+        self, world: World
+    ) -> None:
+        lifecycle = INTO_THE_DRAFT_WINDOW_AFTER_A_WRITE_OFF
+        for number, order in enumerate(orderings(lifecycle)):
+            subscription_id, _ = await run_ordering(
+                world, lifecycle, order, label=f"D{number}", reconcile_each_state=True
+            )
+            record = await stored_record(world, subscription_id)
+            world.clock.moment = moment(period_start(4)) + timedelta(minutes=30)
+
+            plan = world.gate.plan_for(record.guild_id)
+
+            assert (record.status.value, record.latest_invoice_status.value) == (
+                "active",
+                "draft",
+            ), order
+            assert record.past_due_since == moment(period_start(2)), order
+            assert plan.is_pro is False, order
+            assert plan.standing.standing is Standing.ENDED, order
+
+    async def test_with_webhooks_only_it_is_free_exactly_when_an_unpaid_period_was_seen(
+        self, world: World
+    ) -> None:
+        # Whatever order the deliveries come in, the bot can only have folded
+        # the states it saw. Seen any past_due at all: nothing is granted.
+        # Seen none (every failure's delivery lost): the draft reads like any
+        # renewal in progress, which is the bounded pre-V-05 answer.
+        lifecycle = INTO_THE_DRAFT_WINDOW_AFTER_A_WRITE_OFF
+        for number, order in enumerate(orderings(lifecycle)):
+            subscription_id, observed = await run_ordering(
+                world, lifecycle, order, label=f"DW{number}", reconcile_each_state=False
+            )
+            record = await stored_record(world, subscription_id)
+            world.clock.moment = moment(period_start(4)) + timedelta(minutes=30)
+
+            plan = world.gate.plan_for(record.guild_id)
+
+            assert record.latest_invoice_status.value == "draft", order
+            assert plan.is_pro is (reference_anchor(observed) is None), order
+
+
+class TestTheSandboxWriteOffSequenceThroughTheStack:
+    """C10-C12 of the real sandbox run, step for step, parser to gate.
+
+    Anchored at the sandbox's first failed renewal; the periods are a fixed 31
+    days rather than calendar months, which changes no decision below.
+
+    Stripe's side is the stand-in driven the way the sandbox behaved: renewals
+    start as drafts (renew), then are charged (settle_renewal), and marking an
+    invoice uncollectible leaves the subscription `active`.
+    """
+
+    FIRST_FAILURE = 1_793_368_865  # 2026-10-30 14:01:05 UTC, clock B's first failed renewal
+
+    async def test_each_step_decides_what_the_sandbox_run_recorded_and_the_draft_is_free(
+        self, world: World
+    ) -> None:
+        month = 31 * 24 * 3600
+        subscription = FakeSubscription(
+            id="sub_sandboxClockB",
+            customer="cus_sandboxClockB",
+            metadata={"aura_guild_id": "1200", "aura_discord_user_id": "5000"},
+            current_period_start=self.FIRST_FAILURE - month,
+            current_period_end=self.FIRST_FAILURE,
+        )
+        world.stripe.subscriptions[subscription.id] = subscription
+        decisions: list[tuple[str, str, bool]] = []
+
+        async def observe(label: str, *, minutes_after_period_start: int = 30) -> None:
+            await sync_until_settled(world, subscription.id, None)
+            world.clock.moment = moment(subscription.current_period_start) + timedelta(
+                minutes=minutes_after_period_start
+            )
+            plan = world.gate.plan_for(1200)
+            decisions.append((label, plan.standing.standing.value, plan.is_pro))
+
+        subscription.renew()
+        subscription.settle_renewal(paid=False)
+        await observe("C10a failed renewal")
+        subscription.renew()
+        subscription.settle_renewal(paid=False)
+        await observe("C10c rolled over unpaid")
+        subscription.latest_invoice_status = "uncollectible"
+        subscription.status = "active"
+        await observe("C11a written off")
+        subscription.renew()
+        await observe("C11b draft")
+        subscription.settle_renewal(paid=False)
+        await observe("C11b charge failed")
+        subscription.settle_renewal(paid=True)
+        await observe("C12a paid")
+        subscription.renew()
+        await observe("C12b-1 draft after a payment")
+        subscription.settle_renewal(paid=False)
+        await observe("C12b later failure")
+
+        assert decisions == [
+            ("C10a failed renewal", "payment_grace", True),
+            ("C10c rolled over unpaid", "ended", False),
+            ("C11a written off", "ended", False),
+            ("C11b draft", "ended", False),
+            ("C11b charge failed", "ended", False),
+            ("C12a paid", "active", True),
+            # A draft on a subscription that owes nothing is still Pro (V-05
+            # only withholds it while an unpaid period is recorded).
+            ("C12b-1 draft after a payment", "payment_pending", True),
+            ("C12b later failure", "payment_grace", True),
+        ]
+        record = await stored_record(world, subscription.id)
+        assert record.past_due_since == moment(subscription.current_period_start)
 
 
 class TestWebhooksOnlyTheAnchorIsTheFoldOverWhatWasSeen:
