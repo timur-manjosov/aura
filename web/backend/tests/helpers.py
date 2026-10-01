@@ -13,6 +13,7 @@ from aura_web.app import create_app
 from aura_web.bot_billing import BotBillingClient
 from aura_web.config import WebSettings
 from aura_web.discord_api import DiscordClient
+from aura_web.rate_limit import RateLimiter
 from aura_web.stripe_api import StripeClient
 from fake_discord import FakeDiscordState
 
@@ -48,6 +49,7 @@ def build_app(
     bot_http: httpx.AsyncClient | None = None,
     *,
     check_stripe_key_at_startup: bool = False,
+    rate_limiter: RateLimiter | None = None,
 ):
     """Build the production application against the fake transports that are given.
 
@@ -59,6 +61,9 @@ def build_app(
     extra Stripe request at an unpredictable moment, and many tests assert the
     exact requests Stripe saw. Its own tests, and the production wiring test,
     run it.
+
+    The request-rate limits are the ones `web_settings` describes, on the real
+    clock, unless a test passes its own limiter (typically on a fake clock).
     """
 
     def stripe_factory(_: httpx.AsyncClient, settings: WebSettings) -> StripeClient:
@@ -88,6 +93,7 @@ def build_app(
         stripe_client_factory=stripe_factory if stripe_http is not None else None,
         bot_billing_client_factory=bot_factory if bot_http is not None else None,
         check_stripe_key_at_startup=check_stripe_key_at_startup,
+        rate_limiter=rate_limiter,
     )
 
 

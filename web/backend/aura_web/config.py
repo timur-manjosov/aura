@@ -16,7 +16,8 @@ than configuring something subtly wrong.
 
 from __future__ import annotations
 
-from typing import Literal
+from ipaddress import IPv4Address, IPv6Address, ip_address
+from typing import Final, Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
@@ -54,6 +55,19 @@ _STRIPE_TOKEN_CHARACTERS = frozenset(
 # guilds, a user in fewer than 200 guilds) costs exactly one request against a
 # route Discord rate-limits tightly.
 DISCORD_GUILD_PAGE_SIZE = 200
+
+# The most addresses AURA_WEB_TRUSTED_PROXY_ADDRESSES may name. The deployed
+# chain has exactly one hop in front of this service (the frontend container);
+# a list long enough to need more than this is a configuration that has stopped
+# meaning "the frontend" and started meaning "a network".
+MAX_TRUSTED_PROXY_ADDRESSES: Final[int] = 8
+
+# Upper bounds on every rate-limit setting. Not policy -- the defaults are --
+# but a ceiling that keeps a typo (an extra zero, a per-second figure pasted
+# into a per-minute field) from silently switching a limit off.
+MAX_RATE_LIMIT_BURST: Final[int] = 10_000
+MAX_RATE_LIMIT_PER_MINUTE: Final[float] = 60_000.0
+MAX_RATE_LIMIT_TRACKED_CLIENTS: Final[int] = 1_000_000
 
 
 class WebConfigurationError(Exception):
@@ -112,6 +126,61 @@ def _require_stripe_token(value: str, *, field_name: str, prefixes: tuple[str, .
             "spaces or a trailing newline). " + ENV_EXAMPLE_HINT
         )
     return value
+
+
+def parse_trusted_proxy_addresses(value: str) -> frozenset[IPv4Address | IPv6Address]:
+    """Parse a comma-separated list of proxy addresses into the set the middleware trusts.
+
+    Parameters
+    ----------
+    value
+        Comma-separated IPv4 or IPv6 addresses; blank entries are ignored, so an
+        empty string means "trust no proxy".
+
+    Returns
+    -------
+    frozenset[IPv4Address | IPv6Address]
+        The addresses, with IPv4-mapped IPv6 forms folded to plain IPv4 so the
+        comparison against a connection's peer cannot miss on spelling.
+
+    Raises
+    ------
+    ValueError
+        For an entry that is not a single address (a hostname, a network, a
+        port), for the unspecified address, or for more than
+        MAX_TRUSTED_PROXY_ADDRESSES entries.
+
+    Notes
+    -----
+    Single addresses only, deliberately. A network would make every host on it
+    a party that may choose the client address this service logs and
+    rate-limits by -- on a Docker bridge that includes the gateway, i.e. every
+    process on the host. The deployment pins the frontend container's address
+    instead (web/docker-compose.yml), and this is where that pin is enforced.
+    """
+    entries = [entry.strip() for entry in value.split(",") if entry.strip()]
+    if len(entries) > MAX_TRUSTED_PROXY_ADDRESSES:
+        raise ValueError(
+            f"TRUSTED_PROXY_ADDRESSES may name at most {MAX_TRUSTED_PROXY_ADDRESSES} addresses."
+        )
+    addresses: set[IPv4Address | IPv6Address] = set()
+    for entry in entries:
+        try:
+            address = ip_address(entry)
+        except ValueError:
+            raise ValueError(
+                "TRUSTED_PROXY_ADDRESSES must be single IP addresses separated by commas "
+                f"(no hostnames, networks or ports), got {entry!r}."
+            ) from None
+        if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        if address.is_unspecified:
+            raise ValueError(
+                "TRUSTED_PROXY_ADDRESSES must not contain the unspecified address; "
+                "it would mean trusting a forwarding header from anyone."
+            )
+        addresses.add(address)
+    return frozenset(addresses)
 
 
 class WebSettings(BaseSettings):
@@ -239,6 +308,33 @@ class WebSettings(BaseSettings):
     # subscription snapshots to the bot process, which stays the only writer.
     bot_internal_api_url: str = Field(default="", validate_default=True)
     bot_internal_api_secret: SecretStr = Field(default="", validate_default=True)
+
+    # --- The client address and rate limiting (web deployment) ---------------
+    # The addresses whose X-Forwarded-For this service believes: in the deployed
+    # compose project exactly one, the frontend container's pinned address (set
+    # there, under `environment:`, next to the pin itself). Empty -- the default
+    # -- trusts no forwarding header at all, so a run without that topology
+    # keys every limit by the connection's own peer. See aura_web.client_address.
+    trusted_proxy_addresses: str = ""
+
+    # Per-client token buckets (aura_web.rate_limit). Each pair is a burst --
+    # how many requests may arrive at once -- and the sustained rate the bucket
+    # refills at. The reasoning behind each default is in web/.env.example.
+    rate_limit_auth_burst: int = Field(default=20, ge=1, le=MAX_RATE_LIMIT_BURST)
+    rate_limit_auth_per_minute: float = Field(default=10.0, gt=0, le=MAX_RATE_LIMIT_PER_MINUTE)
+    rate_limit_billing_burst: int = Field(default=6, ge=1, le=MAX_RATE_LIMIT_BURST)
+    rate_limit_billing_per_minute: float = Field(default=2.0, gt=0, le=MAX_RATE_LIMIT_PER_MINUTE)
+    rate_limit_webhook_burst: int = Field(default=60, ge=1, le=MAX_RATE_LIMIT_BURST)
+    rate_limit_webhook_per_minute: float = Field(default=60.0, gt=0, le=MAX_RATE_LIMIT_PER_MINUTE)
+    rate_limit_global_burst: int = Field(default=60, ge=1, le=MAX_RATE_LIMIT_BURST)
+    rate_limit_global_per_minute: float = Field(default=60.0, gt=0, le=MAX_RATE_LIMIT_PER_MINUTE)
+    # How many distinct clients each bucket remembers before forgetting the
+    # least recently seen. The limiter's memory is bounded by this, not by
+    # traffic: about 270 bytes per remembered client, so roughly 11 MB at the
+    # default with all four buckets full (measured with tracemalloc).
+    rate_limit_max_tracked_clients: int = Field(
+        default=10_000, ge=1, le=MAX_RATE_LIMIT_TRACKED_CLIENTS
+    )
 
     log_level: str = "INFO"
 
@@ -396,6 +492,24 @@ class WebSettings(BaseSettings):
                 "BOT_INTERNAL_API_SECRET may contain only printable ASCII characters without spaces."
             )
         return value
+
+    @field_validator("trusted_proxy_addresses")
+    @classmethod
+    def _trusted_proxy_addresses_are_addresses(cls, value: str) -> str:
+        parse_trusted_proxy_addresses(value)
+        return value.strip()
+
+    @property
+    def trusted_proxies(self) -> frozenset[IPv4Address | IPv6Address]:
+        """The parsed set of proxy addresses whose X-Forwarded-For is believed.
+
+        Returns
+        -------
+        frozenset[IPv4Address | IPv6Address]
+            Empty unless AURA_WEB_TRUSTED_PROXY_ADDRESSES names at least one
+            address; validated at construction, so this never raises.
+        """
+        return parse_trusted_proxy_addresses(self.trusted_proxy_addresses)
 
     @model_validator(mode="after")
     def _live_mode_is_a_deliberate_decision(self) -> WebSettings:

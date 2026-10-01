@@ -41,6 +41,8 @@ class ErrorCode(StrEnum):
     INVALID_SIGNATURE = "invalid_signature"
     INVALID_EVENT = "invalid_event"
     LIVEMODE_MISMATCH = "livemode_mismatch"
+    # Web deployment: a client over its request-rate limit (aura_web.rate_limit).
+    RATE_LIMITED = "rate_limited"
 
 
 def error_response(code: ErrorCode, status_code: int) -> JSONResponse:

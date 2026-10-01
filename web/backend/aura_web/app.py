@@ -32,9 +32,11 @@ from starlette.responses import Response
 from aura_web.billing_sync import run_reconciler
 from aura_web.bot_billing import BotBillingClient
 from aura_web.bot_guilds import BotGuildCache
+from aura_web.client_address import ClientAddressMiddleware
 from aura_web.config import WebConfigurationError, WebSettings, load_web_settings
 from aura_web.context import ServiceContext
 from aura_web.discord_api import DiscordClient
+from aura_web.rate_limit import RateLimiter, RateLimitMiddleware, rate_limiter_from_settings
 from aura_web.routes import auth_router, billing_router, dashboard_router, stripe_webhook_router
 from aura_web.sessions import OAuthStateStore, SessionStore
 from aura_web.stripe_api import StripeClient
@@ -116,6 +118,7 @@ def create_app(
     bot_billing_client_factory: Callable[[httpx.AsyncClient, WebSettings], BotBillingClient]
     | None = None,
     check_stripe_key_at_startup: bool = True,
+    rate_limiter: RateLimiter | None = None,
 ) -> FastAPI:
     """Build the application, deferring every network-owning object to startup.
 
@@ -132,6 +135,10 @@ def create_app(
         right after startup (StripeClient.check_key_permissions). On in
         production; tests that count Stripe requests turn it off, and the tests
         of the probe itself turn it on.
+    rate_limiter
+        The per-client request limits. Defaults to the ones `settings`
+        describes, on the real monotonic clock; tests pass one built with
+        rate_limiter_from_settings and a fake clock.
 
     Returns
     -------
@@ -141,6 +148,11 @@ def create_app(
 
     Notes
     -----
+    The middleware order is load-bearing, outermost first: the client address
+    is resolved before anything else reads ``scope["client"]``; the security
+    headers wrap everything below them, the limiter's 429 included; the limiter
+    decides before any route reads a body.
+
     Nothing that holds a socket or an asyncio primitive is constructed here.
     The httpx pool and the guild cache's refresh lock are created inside the
     lifespan, i.e. inside the running event loop, for the reason
@@ -252,6 +264,20 @@ def create_app(
                 settings.stripe_portal_configuration_id or "account default",
                 settings.stripe_reconcile_interval_seconds,
             )
+            logger.info(
+                "Request limits per client (burst, then per minute): auth %d/%g, billing %d/%g, "
+                "webhook %d/%g (failed verifications only), global %d/%g; "
+                "forwarding headers trusted from %d proxy address(es)",
+                settings.rate_limit_auth_burst,
+                settings.rate_limit_auth_per_minute,
+                settings.rate_limit_billing_burst,
+                settings.rate_limit_billing_per_minute,
+                settings.rate_limit_webhook_burst,
+                settings.rate_limit_webhook_per_minute,
+                settings.rate_limit_global_burst,
+                settings.rate_limit_global_per_minute,
+                len(settings.trusted_proxies),
+            )
             reconciler = asyncio.create_task(
                 run_reconciler(
                     stripe=stripe_client,
@@ -289,7 +315,13 @@ def create_app(
         redoc_url=None,
         openapi_url=None,
     )
+    limiter = rate_limiter if rate_limiter is not None else rate_limiter_from_settings(settings)
+    app.state.rate_limiter = limiter
+    # add_middleware wraps what is already there, so the last one added runs
+    # first: ClientAddress, then SecurityHeaders, then RateLimit, then routes.
+    app.add_middleware(RateLimitMiddleware, limiter=limiter)
     app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(ClientAddressMiddleware, trusted_proxies=settings.trusted_proxies)
     app.include_router(auth_router)
     app.include_router(dashboard_router)
     app.include_router(billing_router)
