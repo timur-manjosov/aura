@@ -501,8 +501,12 @@ the web backend starts rewrites it for every subscription.
    ("Stripe account settings this code relies on"). Create a customer portal
    configuration with plan switching and quantity changes disabled and put its
    `bpc_…` ID in `AURA_WEB_STRIPE_PORTAL_CONFIGURATION_ID`. Checkout offers
-   cards only (wallets such as Apple Pay and Google Pay included); that is set
-   in code, not in the dashboard.
+   cards only (wallets such as Apple Pay and Google Pay included) and keeps
+   Aura as merchant of record by switching Stripe's Managed Payments off for
+   each session; both are set in code, not in the dashboard, so the account's
+   "Managed Payments by default" setting does not matter. Under **Billing →
+   Revenue recovery → Retries**, set "If all retries for a payment fail" to
+   **Cancel the subscription** (see below).
 4. **Bring the web interface up:** `docker compose -f web/docker-compose.yml up -d --build`.
    The backend log shows `Stripe billing ready: test mode, price price_…`.
 5. **Subscribe a test server** from the dashboard with a Stripe test card and
@@ -517,7 +521,33 @@ Live keys are refused by the web backend unless
 above, with its own checklist (Stripe's go-live checklist, tax registration,
 the live webhook endpoint's own signing secret).
 
-**Troubleshooting.** `The bot's billing API refused this service's shared secret`
+**The retry setting.** Stripe's "If all retries for a payment fail" has three
+possible final actions, and Aura's entitlement is correct under each:
+
+- **Cancel the subscription** (recommended, and the sandbox default: Smart
+  Retries, 8 retries within 2 weeks, then cancel) — Stripe sends
+  `customer.subscription.deleted`, the subscription is `canceled`, Pro has
+  already ended with the 7-day payment grace and stays off.
+- **Mark the subscription as unpaid** — status `unpaid`, which grants nothing
+  from that moment.
+- **Leave the subscription past-due** — Stripe keeps charging each new period.
+  The payment grace is anchored at the oldest unpaid period and survives the
+  rollover and any write-off, so no period earns a new grace; a written-off
+  subscription that Stripe reports `active` again grants nothing until a
+  payment is actually seen.
+
+Cancel is recommended because it ends the subscription in Stripe too: nobody
+keeps being invoiced for a service they no longer have, and the admin can
+subscribe again cleanly.
+
+**Troubleshooting.** `Stripe key self-check: the key lacks the Invoices (read)
+permission` in the web log means exactly that: add the permission (step 3); no
+restart is needed for syncs to recover, but the check itself only runs at
+startup. `Stripe refused a checkout … (HTTP 400: …, param <name>)` names the
+parameter Stripe objected to, when Stripe names one; some refusals (the
+Managed Payments one among them) carry only their type, and Stripe's
+Dashboard request log (Developers → Logs) shows the full message the
+backend deliberately never writes. `The bot's billing API refused this service's shared secret`
 in the web log means the two secrets differ. Webhooks answered `503` are safe:
 Stripe redelivers them, and every redelivery is idempotent. If the web
 interface was down for longer than Stripe's retry window, the reconciliation
