@@ -102,6 +102,12 @@ class FakeDiscordState:
     fail_bot_guilds_status: int | None = None
     # Forces /users/@me/guilds to page, so the cursor logic is exercised.
     page_size_override: int | None = None
+    # Discord's per-user bucket on /users/@me/guilds: once a user token has
+    # made this many requests, every further one is answered 429. None means
+    # unlimited, which is how the double behaved before production showed a
+    # second call within one page load being refused.
+    user_guilds_requests_per_token: int | None = None
+    user_guilds_requests_by_token: dict[str, int] = field(default_factory=dict)
 
     request_log: list[str] = field(default_factory=list)
 
@@ -298,6 +304,16 @@ def create_fake_discord(state: FakeDiscordState) -> FastAPI:
             user_id = _bearer_user(request, state)
             if user_id is None:
                 return JSONResponse({"message": "401: Unauthorized"}, status_code=401)
+            token = request.headers.get("Authorization", "")
+            seen = state.user_guilds_requests_by_token.get(token, 0) + 1
+            state.user_guilds_requests_by_token[token] = seen
+            limit = state.user_guilds_requests_per_token
+            if limit is not None and seen > limit:
+                return JSONResponse(
+                    {"message": "You are being rate limited.", "retry_after": 0.4, "global": False},
+                    status_code=429,
+                    headers={"Retry-After": "1"},
+                )
             user = state.users[user_id]
             entries = [
                 {

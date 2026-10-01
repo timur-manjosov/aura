@@ -118,7 +118,7 @@ async def guilds(request: Request, context: ServiceContext = Depends(get_context
             return error_response(ErrorCode.NOT_AUTHENTICATED, status_code=401)
 
         _, session = resolved
-        user_guilds = await context.discord.fetch_user_guilds(session.tokens.access_token)
+        user_guilds = await context.user_guilds.get(session.tokens.access_token)
         bot_guild_ids = await context.bot_guilds.get()
     except DiscordAuthError as exc:
         # The access token was accepted at login and is refused now: it was

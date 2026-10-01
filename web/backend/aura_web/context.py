@@ -28,6 +28,7 @@ from aura_web.sessions import (
     utc_now,
 )
 from aura_web.stripe_api import StripeClient
+from aura_web.user_guilds import UserGuildCache
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class ServiceContext:
     sessions: SessionStore
     oauth_states: OAuthStateStore
     bot_guilds: BotGuildCache
+    user_guilds: UserGuildCache
     stripe: StripeClient
     bot_billing: BotBillingClient
 

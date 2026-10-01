@@ -294,6 +294,7 @@ async def logout(request: Request, context: ServiceContext = Depends(get_context
         # Deletion first, revocation second: the session is gone regardless of
         # whether Discord answers (revoke_token never raises), so the user's
         # logout cannot fail on somebody else's availability.
+        context.user_guilds.forget(session.tokens.access_token)
         await context.discord.revoke_token(session.tokens.access_token)
         logger.info("Closed the session for Discord user %s", session.user.id)
 

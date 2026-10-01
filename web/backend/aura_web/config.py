@@ -261,6 +261,16 @@ class WebSettings(BaseSettings):
     # past that the list is dropped and the request fails closed rather than
     # answering from something stale enough to be wrong.
     bot_guilds_stale_tolerance_seconds: float = Field(default=300.0, ge=0)
+    # How long one user's own guild list is reused. Discord's per-user bucket
+    # on /users/@me/guilds refused the second call of a single page load in
+    # production, so a page load must cost one call, not one per endpoint.
+    # Short, because it is also what decides who may act for which guild: a
+    # user who loses Manage Server keeps this view for at most this long (plus
+    # the tolerance below, and only while Discord is failing).
+    user_guilds_cache_ttl_seconds: float = Field(default=30.0, gt=0)
+    # How far past that TTL a user's list may still be served when Discord
+    # fails or rate-limits the refresh. A rejected token is never bridged.
+    user_guilds_stale_tolerance_seconds: float = Field(default=60.0, ge=0)
 
     # --- Stripe (Phase 4c) ---------------------------------------------------
     # The API key this service calls Stripe with. A restricted key (rk_) with
