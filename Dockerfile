@@ -29,8 +29,17 @@ RUN python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-tran
 
 COPY --chown=aura:aura src/ ./src/
 
+# LITELLM_MODE=PRODUCTION stops `import litellm` from running its own
+# load_dotenv(), which copies any .env it finds into os.environ (it searches
+# upward from litellm's install directory). The container's configuration
+# comes from compose's env_file and aura.config alone; a second, implicit
+# loader in a dependency is not something the bot should rely on or be
+# surprised by. It changes nothing else in litellm, and nothing today (no .env
+# is in the image or above site-packages), so the image still reads its
+# environment exactly as before.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app/src
+    PYTHONPATH=/app/src \
+    LITELLM_MODE=PRODUCTION
 
 ENTRYPOINT ["python", "-m", "aura.main"]

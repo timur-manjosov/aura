@@ -68,6 +68,11 @@ def _settings(**overrides) -> Settings:
         "discord_token": "fake-token",
         "llm_api_key": "test-key",
         "extraction_model": "openrouter/anthropic/claude-haiku-4.5",
+        # Stated, not inherited: SUPERSESSION falls back to synthesis_model, and
+        # these tests used to get one only because litellm copied the
+        # developer's .env into the environment (V-04). Without that leak an
+        # omitted value leaves the judgement unconfigured.
+        "supersession_model": "openrouter/some/judge",
         # Zero window: every queued message is immediately due, so the flush
         # tests do not have to wait or fake a clock.
         "extraction_batch_window_seconds": 0.0,
@@ -1470,9 +1475,8 @@ class TestSupersessionJudgement:
         # Extraction has its own model, so the batch is still distilled; only
         # the judgement has nothing to resolve.
         # synthesis_model is pinned to None explicitly rather than left out:
-        # this repository's real .env is loaded into the process environment the
-        # moment litellm is imported, and SUPERSESSION falls back to synthesis,
-        # so an omitted value here would silently BE configured.
+        # SUPERSESSION falls back to synthesis, so a SYNTHESIS_MODEL reaching
+        # the environment by any route would silently make it configured.
         settings = Settings(  # type: ignore[call-arg]
             _env_file=None,
             discord_token="fake-token",

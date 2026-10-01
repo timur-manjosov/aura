@@ -8,7 +8,7 @@ refusal here rather than a surprising value three layers up.
 httpx directly, not the stripe SDK's HTTP client. The SDK is used in this
 service for exactly one thing -- verifying webhook signatures, where running
 Stripe's own implementation is the point (aura_web.routes.stripe_webhook).
-For the four API calls below, a thin httpx client keeps one validating boundary
+For the API calls below, a thin httpx client keeps one validating boundary
 per upstream (the Discord one already exists), lets the test suite drive the
 real client against a stand-in over ASGI exactly as it drives Discord, and pins
 the API version in one visible constant rather than in whatever version an SDK
@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Final, TypeGuard
 from urllib.parse import urlparse
 
@@ -88,6 +89,10 @@ KNOWN_INVOICE_STATUSES = frozenset({"draft", "open", "paid", "uncollectible", "v
 # they are excluded here rather than left to whatever the dashboard enables.
 CHECKOUT_PAYMENT_METHOD_TYPES: Final[tuple[str, ...]] = ("card",)
 
+# The form field that switches Stripe's Managed Payments off for one Checkout
+# Session; sent as "false" on every checkout (see create_checkout_session).
+CHECKOUT_MANAGED_PAYMENTS_FIELD: Final = "managed_payments[enabled]"
+
 # Only an invoice that bills the subscription's own period -- its first invoice
 # or a renewal -- says whether that period was paid. A voided proration or
 # one-off invoice (billing_reason subscription_update, manual, ...) says
@@ -100,6 +105,12 @@ MAX_UNIX_SECONDS = 253_402_300_799
 _MAX_SQLITE_INTEGER = 2**63 - 1
 
 _STRIPE_ID_BODY = re.compile(r"^[A-Za-z0-9]{1,200}$")
+
+# What of a Stripe error body may reach a log line (see _error_summary): the
+# type and code are snake_case vocabulary, the param a form field name such as
+# "line_items[0][price]". Anything else in those fields is dropped, not escaped.
+_ERROR_VOCABULARY: Final = re.compile(r"[a-z_]{1,64}")
+_ERROR_PARAM: Final = re.compile(r"[a-z0-9_\[\]]{1,128}")
 
 
 class StripeAPIError(Exception):
@@ -161,6 +172,15 @@ def _unix_seconds(value: object, *, field_name: str) -> int:
     if seconds is None or not 0 <= seconds <= MAX_UNIX_SECONDS:
         raise StripeUnavailableError(f"Stripe subscription has no usable {field_name}")
     return seconds
+
+
+class KeyCheckResult(StrEnum):
+    """What the startup probe of the key's permissions found (StripeClient.check_key_permissions)."""
+
+    PRESENT = "present"
+    INVOICES_READ_MISSING = "invoices_read_missing"
+    KEY_REJECTED = "key_rejected"
+    UNVERIFIED = "unverified"
 
 
 @dataclass(frozen=True)
@@ -460,7 +480,7 @@ def parse_checkout_session(payload: object) -> CheckoutSession:
 
 
 class StripeClient:
-    """Thin, validating wrapper over the four Stripe endpoints Phase 4c needs."""
+    """Thin, validating wrapper over the four Stripe endpoints Phase 4c needs, plus a key probe."""
 
     def __init__(
         self,
@@ -547,6 +567,15 @@ class StripeClient:
         }
         for index, method_type in enumerate(CHECKOUT_PAYMENT_METHOD_TYPES):
             data[f"payment_method_types[{index}]"] = method_type
+        # Aura stays the merchant of record (V-01). On an account whose default
+        # is Stripe's Managed Payments, Stripe refuses payment_method_types
+        # outright -- every checkout failed in the sandbox as delivered -- and
+        # without the list it would choose the methods itself, which undoes
+        # the card-only rule above. Sending the flag explicitly makes checkout
+        # independent of that account default, today and after anyone changes
+        # it. Adopting Managed Payments is a tax and business decision that is
+        # still open; it would replace both parameters, not just this one.
+        data[CHECKOUT_MANAGED_PAYMENTS_FIELD] = "false"
         payload = await self._request(
             "POST",
             "/v1/checkout/sessions",
@@ -685,6 +714,69 @@ class StripeClient:
             payload.get("url"), BILLING_PORTAL_HOSTS, context="billing portal session"
         )
 
+    async def check_key_permissions(self) -> KeyCheckResult:
+        """Probe whether the configured key can read invoices, and log what was found.
+
+        Returns
+        -------
+        KeyCheckResult
+            PRESENT on HTTP 200; INVOICES_READ_MISSING on 403; KEY_REJECTED on
+            401; UNVERIFIED for anything else, including Stripe being
+            unreachable. Exactly one log line is written for each outcome.
+
+        Notes
+        -----
+        One harmless ``GET /v1/invoices?limit=1``. Every subscription sync
+        expands ``latest_invoice``, and Stripe only allows that expansion with
+        the Invoices (read) permission (V-02). A key created without it fails
+        every sync with 403, every webhook then answers 503 and no paying guild
+        reaches Pro, and the 503s alone never name the cause -- so the cause is
+        named once, at startup.
+
+        Advisory only: it never raises for a Stripe failure and never stops the
+        service, because Stripe may be briefly unreachable at the moment the
+        container starts. The log lines carry the HTTP status and Stripe's
+        error vocabulary at most -- never the key and never Stripe's message,
+        which quotes the key's last four characters on a permission error.
+        """
+        try:
+            await self._request(
+                "GET",
+                "/v1/invoices",
+                params=[("limit", "1")],
+                context="the startup key check",
+            )
+        except StripeRejectedError as exc:
+            if exc.status_code == 403:
+                logger.error(
+                    "Stripe key self-check: the key lacks the Invoices (read) permission. "
+                    "Every subscription sync expands latest_invoice and will be refused, so "
+                    "every Stripe webhook will answer 503 and no paying guild will reach Pro. "
+                    "Grant 'Invoices: Read' on the restricted key (DEPLOYMENT.md, Stripe step)."
+                )
+                return KeyCheckResult.INVOICES_READ_MISSING
+            if exc.status_code == 401:
+                logger.error(
+                    "Stripe key self-check: Stripe rejected AURA_WEB_STRIPE_SECRET_KEY itself "
+                    "(HTTP 401); every Stripe call will fail until the key is replaced."
+                )
+                return KeyCheckResult.KEY_REJECTED
+            logger.warning(
+                "Stripe key self-check could not verify the key's permissions (%s); "
+                "startup continues.",
+                exc,
+            )
+            return KeyCheckResult.UNVERIFIED
+        except StripeUnavailableError as exc:
+            logger.warning(
+                "Stripe key self-check could not run (%s); startup continues. A missing "
+                "Invoices (read) permission would show up as failing subscription syncs.",
+                exc,
+            )
+            return KeyCheckResult.UNVERIFIED
+        logger.info("Stripe key self-check passed: the key can read invoices.")
+        return KeyCheckResult.PRESENT
+
     async def _request(
         self,
         method: str,
@@ -737,12 +829,30 @@ class StripeClient:
 
 
 def _error_summary(response: httpx.Response) -> str:
-    """Stripe's error type and code, for the operator's log -- never its free-text message.
+    """Stripe's error type, code and parameter name, for the operator's log.
 
-    Stripe's human-readable error message can quote request parameters back,
-    and this module's rule is that nothing request-shaped reaches a log line.
-    The type and code ("invalid_request_error", "resource_missing") are enough
-    to diagnose, and are fixed vocabulary.
+    Parameters
+    ----------
+    response
+        A 4xx answer from Stripe.
+
+    Returns
+    -------
+    str
+        ``": <type>/<code>, param <name>"`` with whichever of the three Stripe
+        sent in its fixed vocabulary, or an empty string when it sent none.
+        Never Stripe's free-text ``message``.
+
+    Notes
+    -----
+    Stripe's human-readable message can quote request values back, and its
+    permission errors quote the key's last four characters, so it never
+    reaches a log line. The type and code ("invalid_request_error",
+    "resource_missing") are fixed vocabulary. `param` names the request
+    parameter Stripe refused ("payment_method_types", "line_items[0][price]")
+    -- a field name from this module's own form, never a value -- and it is
+    what turns "HTTP 400" into something an operator can act on (V-01: without
+    it, the Managed Payments refusal was an undiagnosable 502).
     """
     try:
         body = response.json()
@@ -754,6 +864,10 @@ def _error_summary(response: httpx.Response) -> str:
     parts = [
         str(error[key])
         for key in ("type", "code")
-        if isinstance(error.get(key), str) and re.fullmatch(r"[a-z_]{1,64}", error[key])
+        if isinstance(error.get(key), str) and _ERROR_VOCABULARY.fullmatch(error[key])
     ]
-    return f": {'/'.join(parts)}" if parts else ""
+    summary = "/".join(parts)
+    param = error.get("param")
+    if isinstance(param, str) and _ERROR_PARAM.fullmatch(param):
+        summary = f"{summary}, param {param}" if summary else f"param {param}"
+    return f": {summary}" if summary else ""

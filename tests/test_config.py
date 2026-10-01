@@ -588,6 +588,7 @@ class TestGroundingCheckModelResolution:
         )
         assert settings.is_llm_configured(ModelComponent.GROUNDING_CHECK) is False
 
+    @pytest.mark.reads_dotenv_file
     def test_an_existing_dotenv_without_the_key_still_loads(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -637,6 +638,7 @@ class TestLoadSettings:
         settings = load_settings()
         assert settings.discord_token.get_secret_value() == "real-token-value"
 
+    @pytest.mark.reads_dotenv_file
     def test_reads_token_from_dotenv_file(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -645,6 +647,7 @@ class TestLoadSettings:
         settings = load_settings()
         assert settings.discord_token.get_secret_value() == "from-dotenv-file"
 
+    @pytest.mark.reads_dotenv_file
     def test_real_env_var_takes_precedence_over_dotenv_file(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

@@ -644,6 +644,7 @@ class TestChannelContext:
         assert "unless that exact channel is itself named in a fact" in system.lower()
 
 
+@pytest.mark.usefixtures("configured_settings")
 class TestMarkdownFencedResponses:
     """A fenced ```json block must parse, because real providers really send them.
 

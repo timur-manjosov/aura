@@ -223,6 +223,7 @@ leans towards the paying guild by a fixed amount and no further.
 | Stripe state | Pro until |
 |---|---|
 | `active` / `trialing` | period end **+ 72 h** (`BILLING_RENEWAL_GRACE_HOURS`) — the delay a renewal confirmation can have while Stripe is still retrying it. Shown as "paid through" only while the period's invoice is `paid`; before that (a renewal between draft and charge, a payment still processing) it is shown as **payment pending**, with the same access |
+| … but with an unpaid period still recorded against it (see `past_due` below) and this period's invoice not `paid` | Free immediately, until a payment is seen. Stripe answers a written-off invoice with `active`, and the next renewal's invoice then sits as a draft for an hour or more before it is charged; that window used to read as payment pending (V-05) |
 | … set to cancel at period end, or with a cancel date | exactly that date, no grace |
 | `past_due` (a renewal payment failed) | start of the **oldest period still unpaid** **+ 7 days** (`BILLING_PAYMENT_GRACE_DAYS`), and never past a cancel date. The start is recorded the first time the bot stores the subscription `past_due` and kept until a **paid** period is seen: later failed retries, a late webhook, Stripe rolling the still-unpaid subscription into its next period, and a written-off invoice (which Stripe answers with `active`) all leave it where it is. One grace per lapsed payment, not one per period |
 | `unpaid`, `canceled`, `incomplete`, `incomplete_expired`, `paused` | Free immediately |
@@ -260,7 +261,8 @@ subscription store was unreachable" is not a state a Pro trigger can observe.
 | `hide_input_in_errors` on both settings classes | `config.py`, `aura.config` | A refused setting never echoes a secret into a log |
 | Every credential typed `SecretStr`, unwrapped only where a request is authenticated | `config.py`, `aura.config`, the three clients | `repr()`/`str()` of the settings (or anything holding them) prints `**********`, never a secret |
 | Every subscription item checked against the configured Pro price, quantity ≥ 1 | `stripe_api.parse_subscription` | A portal plan switch or a hand-made subscription carrying Aura's metadata does not buy Pro |
-| Checkout offers cards only | `StripeClient.create_checkout_session` | No delayed payment method can grant Pro before money arrives |
+| Checkout offers cards only, with Managed Payments switched off per session | `StripeClient.create_checkout_session` | No delayed payment method can grant Pro before money arrives, and no account default can break or widen checkout |
+| Stripe refusals logged by type, code and parameter name only, never Stripe's message | `stripe_api._error_summary` | Stripe's messages quote request values and a key's last four characters |
 | Internal API: shared secret checked before routing, strict schemas, duplicate JSON keys refused; no listener can be built around a secret shorter than 32 characters | `aura.billing.internal_api` | It is the only way a plan changes |
 
 ### Stripe account settings this code relies on
@@ -278,10 +280,34 @@ subscription store was unreachable" is not a state a Pro trigger can observe.
   `payment_method_types[]=card` itself, so a bank debit enabled in the
   dashboard is never offered: it would make a subscription `active` days
   before its first payment settles.
+- **Managed Payments:** nothing to configure either, and the account default
+  does not matter. Checkout sends `managed_payments[enabled]=false` beside the
+  card-only list, so Aura stays merchant of record. The reason is
+  operational, found against the real sandbox (V-01): on an account whose
+  default is Managed Payments, Stripe refuses `payment_method_types`
+  outright, so every checkout failed; and dropping the list instead would
+  hand the choice of payment methods to Stripe, undoing the card-only rule
+  above. Adopting Managed Payments (Stripe as merchant of record, handling
+  VAT, at higher fees and with Link-branded receipts) is a tax and business
+  decision that is still open; it would replace both parameters, and the
+  set of methods it allows would need its own check for anything that
+  confirms late.
+- **Restricted key:** created from zero permissions with exactly Checkout
+  Sessions (write), Subscriptions (read), Invoices (read) and Customer portal
+  (write) — `web/.env.example` gives the reason for each. Invoices (read) is
+  the one that is easy to miss: every sync expands `latest_invoice`, and
+  without it every webhook answers `503`. The backend probes for it once at
+  startup and logs one `ERROR` if it is missing.
 - **Revenue recovery:** enable failed-payment emails to customers (the payer's
   half of the grace-period communication; `/aura-plan` and this dashboard are
-  the admins' half) and choose what happens after the last retry
-  (canceled or unpaid both end Pro immediately).
+  the admins' half) and choose what happens after the last retry. Stripe
+  offers three final actions: **cancel the subscription** (the sandbox
+  default, after Smart Retries' 8 retries within 2 weeks), **mark it unpaid**,
+  or **leave it past-due**. The entitlement rules are correct under all three
+  — canceled and unpaid grant nothing, and under past-due the payment grace
+  stays anchored at the oldest unpaid period across rollovers and write-offs
+  — and the recommended production setting is **cancel the subscription**,
+  so a lapsed customer stops being invoiced (DEPLOYMENT.md).
 - **Webhook endpoint:** the event list in `web/.env.example`, pointed at
   `/api/stripe/webhook`. A reverse proxy in front must forward that path with
   the body byte-for-byte unchanged, or every signature fails.

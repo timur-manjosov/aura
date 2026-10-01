@@ -37,6 +37,11 @@ finite bound allows, and no further:
     that was voided or written off -- is Free immediately. So is a subscription
     that is not on the Pro price at a quantity of at least one: whatever it
     pays for, it is not Pro.
+  * A subscription Stripe reports in force while an unpaid period is still
+    recorded against it (the anchor above) grants nothing until a payment is
+    seen. Stripe returns a written-off subscription to `active`, and the next
+    period's invoice sits unpaid beside it for an hour or more before it is
+    charged; "in force" then means "not yet failed again", not "paid".
 
 Access is a half-open interval: Pro while `now < access_until`, Free from
 `access_until` on. That single comparison is what makes "exactly at the
@@ -267,8 +272,9 @@ def next_unpaid_since(
     reset the anchor, that write-off would clear it, the next period's failed
     invoice would anchor afresh, and an unpaid subscription would again earn a
     new grace every period: the defect this function exists to close. The
-    written-off period grants nothing meanwhile (`access_window`), and the
-    anchor simply survives it.
+    written-off period grants nothing meanwhile (`access_window`), nor does
+    the next period's invoice until it is paid, and the anchor simply
+    survives both.
 
     Taking the minimum, rather than keeping the first value blindly, makes the
     anchor monotonic: whatever order snapshots are stored in, it can only move
@@ -316,7 +322,9 @@ def access_window(record: SubscriptionRecord, policy: GracePolicy) -> AccessWind
     AccessWindow or None
         The window and the standing it implies, or None if this subscription
         never grants Pro -- not on the Pro price, collection paused, its latest
-        invoice written off, or a status Stripe treats as not paying.
+        invoice written off, in force but with its period invoice unpaid while
+        an unpaid period is recorded (`past_due_since`), or a status Stripe
+        treats as not paying.
 
     Notes
     -----
@@ -340,6 +348,18 @@ def access_window(record: SubscriptionRecord, policy: GracePolicy) -> AccessWind
         return None
 
     if record.status in _IN_FORCE_STATUSES:
+        if (
+            record.past_due_since is not None
+            and record.latest_invoice_status is not InvoiceStatus.PAID
+        ):
+            # In force on paper, owing in fact (V-05). The anchor survives
+            # only while no payment has been seen since a period went unpaid,
+            # so an in-force record that still carries one reads `active`
+            # because Stripe wrote an invoice off -- and the unpaid invoice
+            # beside it is the next period's, which Stripe is only now about
+            # to charge. Nothing was paid since the anchor; nothing is granted
+            # until something is.
+            return None
         access_until = record.current_period_end + policy.renewal_grace
         ending = record.cancel_at_period_end or record.cancel_at is not None
         if record.cancel_at_period_end:
@@ -470,8 +490,9 @@ def resolve_standing(
     elif standing is Standing.ACTIVE and not period_paid:
         # In force, but this period's invoice is not (yet) paid: a renewal
         # between its draft and its charge, or a payment that is still
-        # processing. Still Pro -- the invoice has not failed -- but not "paid
-        # through" anything.
+        # processing. Still Pro -- the invoice has not failed, and nothing
+        # older is owed (access_window refuses the record otherwise) -- but
+        # not "paid through" anything.
         standing = Standing.PAYMENT_PENDING
     return SubscriptionStanding(
         standing=standing,

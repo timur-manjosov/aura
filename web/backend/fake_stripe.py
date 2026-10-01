@@ -12,6 +12,14 @@ written from Stripe's documentation rather than by calling the stripe SDK the
 service under test uses to verify them. A double that shared the verifier's
 implementation could not catch that implementation being wrong.
 
+Where the real sandbox run (reports/phase-4c-stripe-verification.md, section 7)
+found this stand-in more permissive or simpler than Stripe in a way that could
+hide a bug, it now behaves like Stripe: the Managed Payments refusal, the
+Invoices (read) permission an expansion needs, cancel_at beside
+cancel_at_period_end, a first invoice billed as subscription_create, renewals
+that start as a draft, the invoice's copy of the subscription metadata, the
+portal URL's shape, and test-clock subscriptions missing from a plain listing.
+
 Excluded from the backend image by .dockerignore, like fake_discord.py.
 """
 
@@ -36,6 +44,34 @@ DAY = 24 * 3600
 # The same value as FakeStripeState.price_id, which the web settings are
 # configured with, so a subscription created by a completed checkout counts.
 DEFAULT_PRICE_ID = "price_auraProMonthlyFake"
+
+# How long after its creation Stripe finalizes a renewal's draft invoice at the
+# latest (automatically_finalizes_at in the sandbox: created + 72 h). Stripe
+# usually finalizes after about an hour; a test decides when by calling
+# FakeSubscription.settle_renewal.
+DRAFT_FINALIZATION_WINDOW = 72 * 3600
+
+# Stripe's refusal of a card-only checkout on an account whose default is
+# Managed Payments, verbatim as far as the sandbox runs recorded it
+# (reports/phase-4c-stripe-verification.txt step A3, and the Phase 4c-F01 fixes
+# acceptance run, which captured 400 characters of it). Stripe sends it with a
+# type and a request_log_url only -- no code and no param.
+MANAGED_PAYMENTS_REFUSAL = (
+    "Unsupported parameter: payment_method_types. Managed Payments, which is enabled by "
+    "default on your account, handles this parameter for you. Remove payment_method_types, "
+    "or pass managed_payments[enabled]=false to disable it for this request. You can "
+    "configure whether Managed Payments is enabled by default at "
+    "https://dashboard.stripe.com/acct_fakeStandIn/test/settings/managed-payments."
+)
+
+# Stripe's permission error, shaped as the sandbox returned it -- including the
+# key's last four characters, which is exactly why the service must never log
+# Stripe's message text.
+INVOICE_READ_REFUSAL = (
+    "Permission denied. The provided key 'rk_test_...{key_tail}' does not have the required "
+    "permissions for this endpoint on account 'acct_fakeStandIn'. Enabling Invoices Read "
+    "('invoice_read') permissions on this key would allow this request to continue."
+)
 
 
 def sign_webhook(payload: bytes, secret: str, *, timestamp: int | None = None) -> str:
@@ -70,21 +106,77 @@ class FakeSubscription:
     pause_collection: dict[str, Any] | None = None
     latest_invoice_id: str = field(default_factory=lambda: _stripe_id("in"))
     latest_invoice_status: str | None = "paid"
-    latest_invoice_billing_reason: str = "subscription_cycle"
+    # A new subscription's first invoice, as Stripe bills it. Renewals switch
+    # this to subscription_cycle (see renew).
+    latest_invoice_billing_reason: str = "subscription_create"
+    # Set while the latest invoice is a renewal draft, as Stripe does.
+    latest_invoice_finalizes_at: int | None = None
     livemode: bool = False
     price_id: str = DEFAULT_PRICE_ID
     quantity: int | None = 1
+    # A subscription on a test clock is left out of a listing that does not
+    # ask for its clock, as in the real sandbox (V-08).
+    test_clock: str | None = None
+
+    @property
+    def effective_cancel_at(self) -> int | None:
+        """cancel_at as Stripe reports it: the period end once cancel_at_period_end is set."""
+        if self.cancel_at is not None:
+            return self.cancel_at
+        return self.current_period_end if self.cancel_at_period_end else None
+
+    def invoice_object(self) -> dict[str, Any]:
+        """The latest invoice in the dahlia shape: the subscription only under parent."""
+        return {
+            "id": self.latest_invoice_id,
+            "object": "invoice",
+            "status": self.latest_invoice_status,
+            "billing_reason": self.latest_invoice_billing_reason,
+            "customer": self.customer,
+            "automatically_finalizes_at": self.latest_invoice_finalizes_at,
+            "parent": {
+                "type": "subscription_details",
+                "subscription_details": {
+                    "subscription": self.id,
+                    # Stripe copies the subscription's metadata onto each of
+                    # its invoices.
+                    "metadata": dict(self.metadata),
+                },
+                "quote_details": None,
+            },
+        }
+
+    def renew(self) -> None:
+        """Roll into the next period the way Stripe does: a new invoice, still a draft.
+
+        The subscription stays in its status and the new period's invoice is a
+        draft until settle_renewal -- the window in which the subscription
+        reads in force with an invoice that is neither paid nor failed.
+        """
+        length = self.current_period_end - self.current_period_start
+        self.current_period_start = self.current_period_end
+        self.current_period_end = self.current_period_start + length
+        self.latest_invoice_id = _stripe_id("in")
+        self.latest_invoice_status = "draft"
+        self.latest_invoice_billing_reason = "subscription_cycle"
+        self.latest_invoice_finalizes_at = self.current_period_start + DRAFT_FINALIZATION_WINDOW
+
+    def settle_renewal(self, *, paid: bool) -> None:
+        """Finalize the renewal draft and charge it: paid, or open with the subscription past_due."""
+        self.latest_invoice_finalizes_at = None
+        if paid:
+            self.latest_invoice_status = "paid"
+            if self.status == "past_due":
+                self.status = "active"
+        else:
+            self.latest_invoice_status = "open"
+            self.status = "past_due"
 
     def to_object(self, *, expand_invoice: bool) -> dict[str, Any]:
         """The subscription as the dahlia API serialises it."""
         latest_invoice: object = self.latest_invoice_id
         if expand_invoice:
-            latest_invoice = {
-                "id": self.latest_invoice_id,
-                "object": "invoice",
-                "status": self.latest_invoice_status,
-                "billing_reason": self.latest_invoice_billing_reason,
-            }
+            latest_invoice = self.invoice_object()
         return {
             "id": self.id,
             "object": "subscription",
@@ -92,11 +184,12 @@ class FakeSubscription:
             "status": self.status,
             "metadata": dict(self.metadata),
             "cancel_at_period_end": self.cancel_at_period_end,
-            "cancel_at": self.cancel_at,
+            "cancel_at": self.effective_cancel_at,
             "canceled_at": None,
             "pause_collection": self.pause_collection,
             "latest_invoice": latest_invoice,
             "livemode": self.livemode,
+            "test_clock": self.test_clock,
             "items": {
                 "object": "list",
                 "data": [
@@ -135,6 +228,13 @@ class FakeStripeState:
     fail_retrieve_status: int | None = None
     fail_list_status: int | None = None
     fail_portal_status: int | None = None
+    # The account setting "Managed Payments by default" (on in a sandbox as
+    # Stripe delivers it). While on, a checkout naming payment_method_types
+    # is refused unless it switches Managed Payments off for itself.
+    managed_payments_default: bool = True
+    # Whether the key holds Invoices (read). Without it Stripe refuses both
+    # GET /v1/invoices and every expansion of latest_invoice (V-02).
+    invoice_read_permission: bool = True
     # Replaces the hosted page URL a created session carries, so a test can
     # make "Stripe" hand back a link to somewhere that is not Stripe.
     checkout_url_override: str | None = None
@@ -219,21 +319,10 @@ class FakeStripeState:
         self, event_type: str, subscription_id: str, *, legacy_shape: bool = False, **kwargs: Any
     ) -> dict[str, Any]:
         """An invoice.* event for a subscription's invoice, in the dahlia or the pre-basil shape."""
-        subscription = self.subscriptions[subscription_id]
-        invoice: dict[str, Any] = {
-            "id": subscription.latest_invoice_id,
-            "object": "invoice",
-            "status": subscription.latest_invoice_status,
-            "billing_reason": subscription.latest_invoice_billing_reason,
-            "customer": subscription.customer,
-        }
+        invoice = self.subscriptions[subscription_id].invoice_object()
         if legacy_shape:
+            del invoice["parent"]
             invoice["subscription"] = subscription_id
-        else:
-            invoice["parent"] = {
-                "type": "subscription_details",
-                "subscription_details": {"subscription": subscription_id, "metadata": {}},
-            }
         return self.event(event_type, invoice, **kwargs)
 
     def signed(self, event: dict[str, Any], *, timestamp: int | None = None) -> tuple[bytes, str]:
@@ -243,6 +332,7 @@ class FakeStripeState:
 
 
 def _session_object(session: dict[str, Any]) -> dict[str, Any]:
+    form = session.get("form", {})
     return {
         "id": session["id"],
         "object": "checkout.session",
@@ -255,19 +345,43 @@ def _session_object(session: dict[str, Any]) -> dict[str, Any]:
         "subscription": session.get("subscription"),
         "customer": session.get("customer"),
         "livemode": session["livemode"],
+        # Echoed as Stripe echoes them, so a test can read back what the
+        # session was actually created with.
+        "managed_payments": {"enabled": session.get("managed_payments_enabled", False)},
+        "payment_method_types": [
+            value for key, value in sorted(form.items()) if key.startswith("payment_method_types[")
+        ],
+        "integration_identifier": form.get("integration_identifier"),
     }
 
 
-def _stripe_error(status: int, error_type: str, code: str) -> JSONResponse:
+def _stripe_error(
+    status: int, error_type: str, code: str, *, param: str | None = None
+) -> JSONResponse:
+    error = {"type": error_type, "code": code, "message": "The stand-in refused this request."}
+    if param is not None:
+        error["param"] = param
+    return JSONResponse({"error": error}, status_code=status)
+
+
+def _managed_payments_enabled(form: dict[str, str], *, account_default: bool) -> bool | None:
+    """Whether Managed Payments applies to this checkout; None for a value Stripe would refuse."""
+    requested = form.get("managed_payments[enabled]")
+    if requested is None:
+        return account_default
+    return {"true": True, "false": False}.get(requested)
+
+
+def _invoice_read_refused(state: FakeStripeState) -> JSONResponse:
     return JSONResponse(
         {
             "error": {
-                "type": error_type,
-                "code": code,
-                "message": "The stand-in refused this request.",
+                "type": "invalid_request_error",
+                "code": "more_permissions_required",
+                "message": INVOICE_READ_REFUSAL.format(key_tail=state.secret_key[-4:]),
             }
         },
-        status_code=status,
+        status_code=403,
     )
 
 
@@ -301,7 +415,33 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
         if form is None:
             return _stripe_error(400, "invalid_request_error", "parameter_duplicate")
         if form.get("line_items[0][price]") != state.price_id:
-            return _stripe_error(400, "invalid_request_error", "resource_missing")
+            return _stripe_error(
+                400, "invalid_request_error", "resource_missing", param="line_items[0][price]"
+            )
+        managed_payments = _managed_payments_enabled(
+            form, account_default=state.managed_payments_default
+        )
+        if managed_payments is None:
+            return _stripe_error(
+                400,
+                "invalid_request_error",
+                "parameter_invalid_boolean",
+                param="managed_payments[enabled]",
+            )
+        if managed_payments and any(key.startswith("payment_method_types[") for key in form):
+            # The fields the sandbox's answer carried, and no others: no code
+            # and no param, so nothing names the refused parameter but the
+            # message the service never logs.
+            return JSONResponse(
+                {
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": MANAGED_PAYMENTS_REFUSAL,
+                        "request_log_url": "https://dashboard.stripe.com/test/logs/req_fakeStandIn",
+                    }
+                },
+                status_code=400,
+            )
 
         key = request.headers.get("idempotency-key")
         if key is not None and key in state.idempotency:
@@ -327,6 +467,7 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
                 if key.startswith("subscription_data[metadata][") and key.endswith("]")
             },
             "livemode": state.livemode,
+            "managed_payments_enabled": managed_payments,
             "form": form,
         }
         state.checkout_sessions[session_id] = session
@@ -348,6 +489,8 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
         if subscription is None:
             return _stripe_error(404, "invalid_request_error", "resource_missing")
         expand = request.query_params.getlist("expand[]")
+        if "latest_invoice" in expand and not state.invoice_read_permission:
+            return _invoice_read_refused(state)
         return JSONResponse(subscription.to_object(expand_invoice="latest_invoice" in expand))
 
     @app.get("/v1/subscriptions")
@@ -357,8 +500,17 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
             return _stripe_error(401, "invalid_request_error", "api_key_invalid")
         if state.fail_list_status is not None:
             return _stripe_error(state.fail_list_status, "api_error", "internal")
+        if "data.latest_invoice" in request.query_params.getlist("expand[]") and (
+            not state.invoice_read_permission
+        ):
+            return _invoice_read_refused(state)
         limit = int(request.query_params.get("limit", "10"))
-        ordered = list(state.subscriptions.values())
+        test_clock = request.query_params.get("test_clock")
+        ordered = [
+            subscription
+            for subscription in state.subscriptions.values()
+            if subscription.test_clock == test_clock
+        ]
         starting_after = request.query_params.get("starting_after")
         if starting_after is not None:
             ids = [subscription.id for subscription in ordered]
@@ -370,6 +522,19 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
                 "data": [subscription.to_object(expand_invoice=False) for subscription in page],
                 "has_more": len(ordered) > limit,
             }
+        )
+
+    @app.get("/v1/invoices")
+    async def list_invoices(request: Request) -> JSONResponse:
+        state.request_log.append("GET /v1/invoices")
+        if not authorized(request):
+            return _stripe_error(401, "invalid_request_error", "api_key_invalid")
+        if not state.invoice_read_permission:
+            return _invoice_read_refused(state)
+        limit = int(request.query_params.get("limit", "10"))
+        invoices = [subscription.invoice_object() for subscription in state.subscriptions.values()]
+        return JSONResponse(
+            {"object": "list", "data": invoices[:limit], "has_more": len(invoices) > limit}
         )
 
     @app.post("/v1/billing_portal/sessions")
@@ -391,7 +556,8 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
                 "object": "billing_portal.session",
                 "customer": form["customer"],
                 "return_url": form.get("return_url"),
-                "url": f"https://billing.stripe.com/p/session/test_{secrets.token_hex(12)}",
+                # The real shape: the session's bearer secret in the query.
+                "url": f"https://billing.stripe.com/p/session?secret=test_{secrets.token_hex(12)}",
             }
         )
 

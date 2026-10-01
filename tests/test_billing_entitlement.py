@@ -622,3 +622,207 @@ class TestPaymentPending:
         assert standing.standing is Standing.ACTIVE
         assert standing.shown_subscription_id == "sub_z_paid"
         assert standing.granting_subscription_ids == frozenset({"sub_a_pending", "sub_z_paid"})
+
+
+class TestInForceButStillOwing:
+    """V-05: after a write-off Stripe reads `active`, and the next draft must not buy Pro.
+
+    The times are the sandbox's own (reports/phase-4c-stripe-verification.txt,
+    C10-C12, test clock B): the first renewal failed on 2026-10-30 14:01:05,
+    the retries ran out, the period rolled over unpaid, the invoice was marked
+    uncollectible (Stripe answered `active`), the next renewal was drafted and
+    then failed, the customer finally paid, and a later renewal failed again.
+    """
+
+    ANCHOR = datetime(2026, 10, 30, 14, 1, 5, tzinfo=UTC)
+    P3_START = datetime(2026, 11, 30, 14, 1, 5, tzinfo=UTC)
+    P4_START = datetime(2026, 12, 30, 14, 1, 5, tzinfo=UTC)
+    P5_START = datetime(2027, 1, 30, 14, 1, 5, tzinfo=UTC)
+    P6_START = datetime(2027, 2, 28, 14, 1, 5, tzinfo=UTC)
+
+    def draft_window(self, **overrides: object) -> SubscriptionRecord:
+        """C11b between the rollover and the charge: active, a draft, the old anchor."""
+        fields: dict[str, object] = {
+            "status": SubscriptionStatus.ACTIVE,
+            "latest_invoice_status": InvoiceStatus.DRAFT,
+            "current_period_start": self.P4_START,
+            "current_period_end": self.P5_START,
+            "past_due_since": self.ANCHOR,
+        }
+        fields.update(overrides)
+        return record(**fields)
+
+    def test_the_sandbox_draft_window_grants_nothing(self) -> None:
+        # The report's reproduction: 2026-12-30 14:30, then read as
+        # payment_pending with access until 2027-02-02.
+        standing = at(datetime(2026, 12, 30, 14, 30, tzinfo=UTC), self.draft_window())
+
+        assert not standing.grants_access
+        assert standing.standing is Standing.ENDED
+        assert standing.access_until is None
+        assert standing.paid_through is None
+        assert access_window(self.draft_window(), POLICY) is None
+
+    @pytest.mark.parametrize("status", [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING])
+    @pytest.mark.parametrize("invoice", [InvoiceStatus.DRAFT, InvoiceStatus.OPEN, None])
+    def test_no_in_force_record_that_still_owes_grants(
+        self, status: SubscriptionStatus, invoice: InvoiceStatus | None
+    ) -> None:
+        owing = self.draft_window(status=status, latest_invoice_status=invoice)
+
+        assert access_window(owing, POLICY) is None
+        assert not at(self.P4_START, owing).grants_access
+
+    @pytest.mark.parametrize("invoice", [InvoiceStatus.DRAFT, InvoiceStatus.OPEN, None])
+    def test_the_same_record_without_an_anchor_is_payment_pending_as_before(
+        self, invoice: InvoiceStatus | None
+    ) -> None:
+        # A renewal between its draft and its charge on a subscription that
+        # owes nothing, and the F-05 first invoice still `open` with nothing
+        # anchored: both keep today's behaviour.
+        pending = self.draft_window(latest_invoice_status=invoice, past_due_since=None)
+
+        standing = at(self.P4_START + timedelta(minutes=30), pending)
+
+        assert standing.standing is Standing.PAYMENT_PENDING
+        assert standing.access_until == self.P5_START + timedelta(hours=72)
+
+    def test_a_first_invoice_still_open_with_no_anchor_keeps_pro(self) -> None:
+        first = record(
+            latest_invoice_status=InvoiceStatus.OPEN,
+            current_period_start=NOW,
+            current_period_end=NOW + timedelta(days=30),
+        )
+
+        assert at(NOW, first).standing is Standing.PAYMENT_PENDING
+        assert (
+            next_unpaid_since(
+                None,
+                status=SubscriptionStatus.ACTIVE,
+                latest_invoice_status=InvoiceStatus.OPEN,
+                current_period_start=NOW,
+            )
+            is None
+        )
+
+    def test_a_paid_period_with_a_stale_anchor_still_grants_and_the_anchor_clears(self) -> None:
+        paid = self.draft_window(latest_invoice_status=InvoiceStatus.PAID)
+
+        assert at(self.P4_START, paid).standing is Standing.ACTIVE
+        assert (
+            next_unpaid_since(
+                paid,
+                status=SubscriptionStatus.ACTIVE,
+                latest_invoice_status=InvoiceStatus.PAID,
+                current_period_start=self.P4_START,
+            )
+            is None
+        )
+
+    def test_a_cancellation_does_not_open_a_way_around_it(self) -> None:
+        for ending in (
+            self.draft_window(cancel_at_period_end=True),
+            self.draft_window(cancel_at=self.P5_START),
+        ):
+            assert access_window(ending, POLICY) is None
+
+    def test_the_price_check_and_a_paused_collection_still_refuse_first(self) -> None:
+        for refused in (
+            self.draft_window(on_pro_price=False, past_due_since=None),
+            self.draft_window(collection_paused=True, past_due_since=None),
+            self.draft_window(latest_invoice_status=InvoiceStatus.UNCOLLECTIBLE),
+            self.draft_window(latest_invoice_status=InvoiceStatus.VOID, past_due_since=None),
+        ):
+            assert access_window(refused, POLICY) is None
+
+    def test_a_second_paying_subscription_still_carries_the_guild(self) -> None:
+        standing = at(
+            self.P4_START,
+            self.draft_window(subscription_id="sub_owing"),
+            record(
+                subscription_id="sub_paying",
+                current_period_start=self.P4_START,
+                current_period_end=self.P5_START,
+            ),
+        )
+
+        assert standing.standing is Standing.ACTIVE
+        assert standing.granting_subscription_ids == frozenset({"sub_paying"})
+
+    def test_the_whole_sandbox_sequence_folded_snapshot_by_snapshot(self) -> None:
+        """Each snapshot as Stripe sent it, the anchor as the database layer folds it."""
+        sequence = [
+            # (label, status, invoice, period start, period end, decided at, expected)
+            ("C10a", "past_due", "open", self.ANCHOR, self.P3_START, self.ANCHOR, "payment_grace"),
+            ("C10c", "past_due", "open", self.P3_START, self.P4_START, self.P3_START, "ended"),
+            (
+                "C11a",
+                "active",
+                "uncollectible",
+                self.P3_START,
+                self.P4_START,
+                self.P3_START,
+                "ended",
+            ),
+            ("C11b draft", "active", "draft", self.P4_START, self.P5_START, self.P4_START, "ended"),
+            (
+                "C11b failed",
+                "past_due",
+                "open",
+                self.P4_START,
+                self.P5_START,
+                self.P4_START,
+                "ended",
+            ),
+            ("C12a", "active", "paid", self.P4_START, self.P5_START, self.P4_START, "active"),
+            (
+                "C12b",
+                "past_due",
+                "open",
+                self.P5_START,
+                self.P6_START,
+                self.P5_START,
+                "payment_grace",
+            ),
+        ]
+        stored: SubscriptionRecord | None = None
+        seen: list[tuple[str, str, datetime | None]] = []
+        for label, status, invoice, start, end, moment, _ in sequence:
+            anchor = next_unpaid_since(
+                stored,
+                status=SubscriptionStatus(status),
+                latest_invoice_status=InvoiceStatus(invoice),
+                current_period_start=start,
+            )
+            stored = record(
+                status=SubscriptionStatus(status),
+                latest_invoice_status=InvoiceStatus(invoice),
+                current_period_start=start,
+                current_period_end=end,
+                past_due_since=anchor,
+            )
+            seen.append((label, at(moment + timedelta(minutes=30), stored).standing.value, anchor))
+
+        assert seen == [
+            ("C10a", "payment_grace", self.ANCHOR),
+            ("C10c", "ended", self.ANCHOR),
+            ("C11a", "ended", self.ANCHOR),
+            ("C11b draft", "ended", self.ANCHOR),
+            ("C11b failed", "ended", self.ANCHOR),
+            ("C12a", "active", None),
+            ("C12b", "payment_grace", self.P5_START),
+        ]
+        assert [expected for *_, expected in sequence] == [standing for _, standing, _ in seen]
+
+    def test_after_the_recovery_the_later_failure_gets_exactly_its_own_seven_days(self) -> None:
+        later = record(
+            status=SubscriptionStatus.PAST_DUE,
+            latest_invoice_status=InvoiceStatus.OPEN,
+            current_period_start=self.P5_START,
+            current_period_end=self.P6_START,
+            past_due_since=self.P5_START,
+        )
+        boundary = self.P5_START + timedelta(days=7)
+
+        assert at(boundary - TICK, later).standing is Standing.PAYMENT_GRACE
+        assert not at(boundary, later).grants_access

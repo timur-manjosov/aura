@@ -46,12 +46,19 @@ def build_app(
     discord_http: httpx.AsyncClient,
     stripe_http: httpx.AsyncClient | None = None,
     bot_http: httpx.AsyncClient | None = None,
+    *,
+    check_stripe_key_at_startup: bool = False,
 ):
     """Build the production application against the fake transports that are given.
 
     Stripe and the bot's billing API are optional so the Phase 4b tests that
     never touch billing keep their exact shape; a test that does touch billing
     passes all three, and every client is still the production class.
+
+    The startup probe of the Stripe key is off unless asked for: it is one
+    extra Stripe request at an unpredictable moment, and many tests assert the
+    exact requests Stripe saw. Its own tests, and the production wiring test,
+    run it.
     """
 
     def stripe_factory(_: httpx.AsyncClient, settings: WebSettings) -> StripeClient:
@@ -80,6 +87,7 @@ def build_app(
         discord_client_factory=build_discord_client_factory(discord_http),
         stripe_client_factory=stripe_factory if stripe_http is not None else None,
         bot_billing_client_factory=bot_factory if bot_http is not None else None,
+        check_stripe_key_at_startup=check_stripe_key_at_startup,
     )
 
 

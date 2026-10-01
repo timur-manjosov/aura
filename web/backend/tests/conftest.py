@@ -34,6 +34,23 @@ from fake_stripe import FakeStripeState, create_fake_stripe
 from helpers import FAKE_BOT_BASE, FAKE_DISCORD_BASE, FAKE_STRIPE_BASE, FRONTEND_BASE, build_app
 
 
+@pytest.fixture(autouse=True)
+def hermetic_web_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the developer's web/.env and shell out of every test in this tree.
+
+    The same rule as tests/conftest.hermetic_settings_environment: every
+    AURA_WEB_* variable WebSettings reads is removed from the environment (a
+    real test-mode Stripe key exported from running the backend by hand must
+    not reach a test that did not set it), and WebSettings' own ``web/.env``,
+    which it resolves against the working directory, is not read. Derived from
+    WebSettings, so a new setting is covered.
+    """
+    prefix = WebSettings.model_config.get("env_prefix", "")
+    for name in WebSettings.model_fields:
+        monkeypatch.delenv(f"{prefix}{name}".upper(), raising=False)
+    monkeypatch.setitem(WebSettings.model_config, "env_file", None)
+
+
 @pytest.fixture
 def discord_state() -> FakeDiscordState:
     """A fake Discord pre-loaded with one moderator, one plain member, three guilds.
