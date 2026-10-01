@@ -88,6 +88,10 @@ KNOWN_INVOICE_STATUSES = frozenset({"draft", "open", "paid", "uncollectible", "v
 # they are excluded here rather than left to whatever the dashboard enables.
 CHECKOUT_PAYMENT_METHOD_TYPES: Final[tuple[str, ...]] = ("card",)
 
+# The form field that switches Stripe's Managed Payments off for one Checkout
+# Session; sent as "false" on every checkout (see create_checkout_session).
+CHECKOUT_MANAGED_PAYMENTS_FIELD: Final = "managed_payments[enabled]"
+
 # Only an invoice that bills the subscription's own period -- its first invoice
 # or a renewal -- says whether that period was paid. A voided proration or
 # one-off invoice (billing_reason subscription_update, manual, ...) says
@@ -100,6 +104,12 @@ MAX_UNIX_SECONDS = 253_402_300_799
 _MAX_SQLITE_INTEGER = 2**63 - 1
 
 _STRIPE_ID_BODY = re.compile(r"^[A-Za-z0-9]{1,200}$")
+
+# What of a Stripe error body may reach a log line (see _error_summary): the
+# type and code are snake_case vocabulary, the param a form field name such as
+# "line_items[0][price]". Anything else in those fields is dropped, not escaped.
+_ERROR_VOCABULARY: Final = re.compile(r"[a-z_]{1,64}")
+_ERROR_PARAM: Final = re.compile(r"[a-z0-9_\[\]]{1,128}")
 
 
 class StripeAPIError(Exception):
@@ -547,6 +557,15 @@ class StripeClient:
         }
         for index, method_type in enumerate(CHECKOUT_PAYMENT_METHOD_TYPES):
             data[f"payment_method_types[{index}]"] = method_type
+        # Aura stays the merchant of record (V-01). On an account whose default
+        # is Stripe's Managed Payments, Stripe refuses payment_method_types
+        # outright -- every checkout failed in the sandbox as delivered -- and
+        # without the list it would choose the methods itself, which undoes
+        # the card-only rule above. Sending the flag explicitly makes checkout
+        # independent of that account default, today and after anyone changes
+        # it. Adopting Managed Payments is a tax and business decision that is
+        # still open; it would replace both parameters, not just this one.
+        data[CHECKOUT_MANAGED_PAYMENTS_FIELD] = "false"
         payload = await self._request(
             "POST",
             "/v1/checkout/sessions",
@@ -737,12 +756,30 @@ class StripeClient:
 
 
 def _error_summary(response: httpx.Response) -> str:
-    """Stripe's error type and code, for the operator's log -- never its free-text message.
+    """Stripe's error type, code and parameter name, for the operator's log.
 
-    Stripe's human-readable error message can quote request parameters back,
-    and this module's rule is that nothing request-shaped reaches a log line.
-    The type and code ("invalid_request_error", "resource_missing") are enough
-    to diagnose, and are fixed vocabulary.
+    Parameters
+    ----------
+    response
+        A 4xx answer from Stripe.
+
+    Returns
+    -------
+    str
+        ``": <type>/<code>, param <name>"`` with whichever of the three Stripe
+        sent in its fixed vocabulary, or an empty string when it sent none.
+        Never Stripe's free-text ``message``.
+
+    Notes
+    -----
+    Stripe's human-readable message can quote request values back, and its
+    permission errors quote the key's last four characters, so it never
+    reaches a log line. The type and code ("invalid_request_error",
+    "resource_missing") are fixed vocabulary. `param` names the request
+    parameter Stripe refused ("payment_method_types", "line_items[0][price]")
+    -- a field name from this module's own form, never a value -- and it is
+    what turns "HTTP 400" into something an operator can act on (V-01: without
+    it, the Managed Payments refusal was an undiagnosable 502).
     """
     try:
         body = response.json()
@@ -754,6 +791,10 @@ def _error_summary(response: httpx.Response) -> str:
     parts = [
         str(error[key])
         for key in ("type", "code")
-        if isinstance(error.get(key), str) and re.fullmatch(r"[a-z_]{1,64}", error[key])
+        if isinstance(error.get(key), str) and _ERROR_VOCABULARY.fullmatch(error[key])
     ]
-    return f": {'/'.join(parts)}" if parts else ""
+    summary = "/".join(parts)
+    param = error.get("param")
+    if isinstance(param, str) and _ERROR_PARAM.fullmatch(param):
+        summary = f"{summary}, param {param}" if summary else f"param {param}"
+    return f": {summary}" if summary else ""

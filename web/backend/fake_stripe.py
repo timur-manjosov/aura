@@ -37,6 +37,19 @@ DAY = 24 * 3600
 # configured with, so a subscription created by a completed checkout counts.
 DEFAULT_PRICE_ID = "price_auraProMonthlyFake"
 
+# Stripe's refusal of a card-only checkout on an account whose default is
+# Managed Payments, verbatim as far as the sandbox runs recorded it
+# (reports/phase-4c-stripe-verification.txt step A3, and the Phase 4c-F01 fixes
+# acceptance run, which captured 400 characters of it). Stripe sends it with a
+# type and a request_log_url only -- no code and no param.
+MANAGED_PAYMENTS_REFUSAL = (
+    "Unsupported parameter: payment_method_types. Managed Payments, which is enabled by "
+    "default on your account, handles this parameter for you. Remove payment_method_types, "
+    "or pass managed_payments[enabled]=false to disable it for this request. You can "
+    "configure whether Managed Payments is enabled by default at "
+    "https://dashboard.stripe.com/acct_fakeStandIn/test/settings/managed-payments."
+)
+
 
 def sign_webhook(payload: bytes, secret: str, *, timestamp: int | None = None) -> str:
     """A Stripe-Signature header value, computed exactly as Stripe documents it.
@@ -135,6 +148,10 @@ class FakeStripeState:
     fail_retrieve_status: int | None = None
     fail_list_status: int | None = None
     fail_portal_status: int | None = None
+    # The account setting "Managed Payments by default" (on in a sandbox as
+    # Stripe delivers it). While on, a checkout naming payment_method_types
+    # is refused unless it switches Managed Payments off for itself.
+    managed_payments_default: bool = True
     # Replaces the hosted page URL a created session carries, so a test can
     # make "Stripe" hand back a link to somewhere that is not Stripe.
     checkout_url_override: str | None = None
@@ -243,6 +260,7 @@ class FakeStripeState:
 
 
 def _session_object(session: dict[str, Any]) -> dict[str, Any]:
+    form = session.get("form", {})
     return {
         "id": session["id"],
         "object": "checkout.session",
@@ -255,20 +273,31 @@ def _session_object(session: dict[str, Any]) -> dict[str, Any]:
         "subscription": session.get("subscription"),
         "customer": session.get("customer"),
         "livemode": session["livemode"],
+        # Echoed as Stripe echoes them, so a test can read back what the
+        # session was actually created with.
+        "managed_payments": {"enabled": session.get("managed_payments_enabled", False)},
+        "payment_method_types": [
+            value for key, value in sorted(form.items()) if key.startswith("payment_method_types[")
+        ],
+        "integration_identifier": form.get("integration_identifier"),
     }
 
 
-def _stripe_error(status: int, error_type: str, code: str) -> JSONResponse:
-    return JSONResponse(
-        {
-            "error": {
-                "type": error_type,
-                "code": code,
-                "message": "The stand-in refused this request.",
-            }
-        },
-        status_code=status,
-    )
+def _stripe_error(
+    status: int, error_type: str, code: str, *, param: str | None = None
+) -> JSONResponse:
+    error = {"type": error_type, "code": code, "message": "The stand-in refused this request."}
+    if param is not None:
+        error["param"] = param
+    return JSONResponse({"error": error}, status_code=status)
+
+
+def _managed_payments_enabled(form: dict[str, str], *, account_default: bool) -> bool | None:
+    """Whether Managed Payments applies to this checkout; None for a value Stripe would refuse."""
+    requested = form.get("managed_payments[enabled]")
+    if requested is None:
+        return account_default
+    return {"true": True, "false": False}.get(requested)
 
 
 def create_fake_stripe(state: FakeStripeState) -> FastAPI:
@@ -301,7 +330,33 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
         if form is None:
             return _stripe_error(400, "invalid_request_error", "parameter_duplicate")
         if form.get("line_items[0][price]") != state.price_id:
-            return _stripe_error(400, "invalid_request_error", "resource_missing")
+            return _stripe_error(
+                400, "invalid_request_error", "resource_missing", param="line_items[0][price]"
+            )
+        managed_payments = _managed_payments_enabled(
+            form, account_default=state.managed_payments_default
+        )
+        if managed_payments is None:
+            return _stripe_error(
+                400,
+                "invalid_request_error",
+                "parameter_invalid_boolean",
+                param="managed_payments[enabled]",
+            )
+        if managed_payments and any(key.startswith("payment_method_types[") for key in form):
+            # The fields the sandbox's answer carried, and no others: no code
+            # and no param, so nothing names the refused parameter but the
+            # message the service never logs.
+            return JSONResponse(
+                {
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": MANAGED_PAYMENTS_REFUSAL,
+                        "request_log_url": "https://dashboard.stripe.com/test/logs/req_fakeStandIn",
+                    }
+                },
+                status_code=400,
+            )
 
         key = request.headers.get("idempotency-key")
         if key is not None and key in state.idempotency:
@@ -327,6 +382,7 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
                 if key.startswith("subscription_data[metadata][") and key.endswith("]")
             },
             "livemode": state.livemode,
+            "managed_payments_enabled": managed_payments,
             "form": form,
         }
         state.checkout_sessions[session_id] = session
