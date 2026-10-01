@@ -34,9 +34,12 @@ from aura_web.stripe_api import (
     CheckoutSession,
     StripeClient,
     StripeRejectedError,
+    parse_subscription,
 )
 from fake_discord import FakeDiscordState
 from fake_stripe import (
+    DAY,
+    DRAFT_FINALIZATION_WINDOW,
     MANAGED_PAYMENTS_REFUSAL,
     FakeStripeState,
     create_fake_stripe,
@@ -340,3 +343,228 @@ class TestARefusalNamesTheParameter:
         )
         assert "The stand-in refused" not in log_text(caplog)
         assert stripe_state.secret_key not in log_text(caplog)
+
+
+# --- V-12: stand-in fidelity --------------------------------------------------
+
+
+class TestCancelAtBesideCancelAtPeriodEnd:
+    async def test_stripe_sets_cancel_at_to_the_period_end(
+        self, stripe_client: StripeClient, stripe_state: FakeStripeState
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW, cancel_at_period_end=True
+        )
+
+        snapshot = await stripe_client.retrieve_subscription(subscription.id)
+
+        assert snapshot.cancel_at_period_end is True
+        assert snapshot.cancel_at == snapshot.current_period_end == NOW + 30 * DAY
+
+    async def test_an_explicit_cancel_date_is_kept(self, stripe_state: FakeStripeState) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW, cancel_at=NOW + DAY
+        )
+
+        assert subscription.to_object(expand_invoice=False)["cancel_at"] == NOW + DAY
+
+    async def test_no_cancellation_means_no_cancel_date(
+        self, stripe_state: FakeStripeState
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+
+        assert subscription.to_object(expand_invoice=False)["cancel_at"] is None
+
+
+class TestInvoicesAsStripeBillsThem:
+    async def test_a_new_subscriptions_first_invoice_is_subscription_create(
+        self, stripe_state: FakeStripeState
+    ) -> None:
+        added = stripe_state.add_subscription(guild_id="1000", purchaser_user_id="5000", now=NOW)
+
+        invoice = added.to_object(expand_invoice=True)["latest_invoice"]
+
+        assert invoice["billing_reason"] == "subscription_create"
+        assert invoice["status"] == "paid"
+        assert invoice["automatically_finalizes_at"] is None
+
+    async def test_a_completed_checkout_bills_its_first_invoice_as_subscription_create(
+        self, stripe_client: StripeClient, stripe_state: FakeStripeState
+    ) -> None:
+        session = await create_checkout(stripe_client)
+
+        subscription = stripe_state.complete_checkout(session.session_id, now=NOW)
+
+        assert subscription.latest_invoice_billing_reason == "subscription_create"
+
+    async def test_a_renewal_starts_as_a_draft_of_the_next_period(
+        self, stripe_client: StripeClient, stripe_state: FakeStripeState
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+        first_invoice = subscription.latest_invoice_id
+
+        subscription.renew()
+        snapshot = await stripe_client.retrieve_subscription(subscription.id)
+
+        invoice = subscription.to_object(expand_invoice=True)["latest_invoice"]
+        assert invoice["id"] != first_invoice
+        assert invoice["status"] == "draft"
+        assert invoice["billing_reason"] == "subscription_cycle"
+        assert invoice["automatically_finalizes_at"] == (NOW + 30 * DAY + DRAFT_FINALIZATION_WINDOW)
+        assert snapshot.status == "active"
+        assert snapshot.latest_invoice_status == "draft"
+        assert (snapshot.current_period_start, snapshot.current_period_end) == (
+            NOW + 30 * DAY,
+            NOW + 60 * DAY,
+        )
+
+    @pytest.mark.parametrize(
+        ("paid", "status", "invoice"), [(True, "active", "paid"), (False, "past_due", "open")]
+    )
+    async def test_the_draft_finalizes_into_a_charge_that_succeeds_or_fails(
+        self,
+        stripe_client: StripeClient,
+        stripe_state: FakeStripeState,
+        paid: bool,
+        status: str,
+        invoice: str,
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+        subscription.renew()
+
+        subscription.settle_renewal(paid=paid)
+        snapshot = await stripe_client.retrieve_subscription(subscription.id)
+
+        assert (snapshot.status, snapshot.latest_invoice_status) == (status, invoice)
+        assert subscription.latest_invoice_finalizes_at is None
+
+    async def test_paying_a_past_due_renewal_returns_the_subscription_to_active(
+        self, stripe_state: FakeStripeState
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+        subscription.renew()
+        subscription.settle_renewal(paid=False)
+
+        subscription.settle_renewal(paid=True)
+
+        assert (subscription.status, subscription.latest_invoice_status) == ("active", "paid")
+
+    async def test_an_invoice_carries_a_copy_of_the_subscription_metadata(
+        self, stripe_state: FakeStripeState
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+
+        invoice = stripe_state.invoice_event("invoice.paid", subscription.id)["data"]["object"]
+
+        assert "subscription" not in invoice
+        assert invoice["parent"] == {
+            "type": "subscription_details",
+            "subscription_details": {
+                "subscription": subscription.id,
+                "metadata": {"aura_guild_id": "1000", "aura_discord_user_id": "5000"},
+            },
+            "quote_details": None,
+        }
+
+    async def test_the_copy_is_a_copy(self, stripe_state: FakeStripeState) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+
+        invoice = subscription.invoice_object()
+        invoice["parent"]["subscription_details"]["metadata"]["aura_guild_id"] = "9999"
+
+        assert subscription.metadata["aura_guild_id"] == "1000"
+
+    async def test_the_pre_basil_shape_has_no_parent(self, stripe_state: FakeStripeState) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+
+        invoice = stripe_state.invoice_event("invoice.paid", subscription.id, legacy_shape=True)
+
+        assert invoice["data"]["object"]["subscription"] == subscription.id
+        assert "parent" not in invoice["data"]["object"]
+
+    async def test_the_expanded_invoice_parses_like_before(
+        self, stripe_state: FakeStripeState
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+
+        snapshot = parse_subscription(
+            subscription.to_object(expand_invoice=True), pro_price_id=stripe_state.price_id
+        )
+
+        assert snapshot.latest_invoice_status == "paid"
+        assert snapshot.on_pro_price is True
+
+
+class TestThePortalURLHasTheRealShape:
+    async def test_the_session_secret_is_in_the_query_and_the_host_check_still_passes(
+        self, stripe_state: FakeStripeState
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+        async with stripe_http(stripe_state) as http:
+            url = httpx.URL(
+                await client_for(http, stripe_state).create_portal_session(
+                    customer_id=subscription.customer
+                )
+            )
+
+        assert url.host == "billing.stripe.com"
+        assert url.path == "/p/session"
+        assert url.params["secret"].startswith("test_")
+
+
+class TestTestClockSubscriptionsAreNotListed:
+    async def test_a_plain_listing_omits_them_so_reconciliation_cannot_see_them(
+        self, stripe_client: StripeClient, stripe_state: FakeStripeState
+    ) -> None:
+        plain = stripe_state.add_subscription(guild_id="1000", purchaser_user_id="5000", now=NOW)
+        stripe_state.add_subscription(
+            guild_id="1001", purchaser_user_id="5000", now=NOW, test_clock="clock_Abc"
+        )
+
+        assert await stripe_client.list_aura_subscription_ids() == [plain.id]
+
+    async def test_asking_for_the_clock_lists_only_its_subscriptions(
+        self, stripe_state: FakeStripeState
+    ) -> None:
+        stripe_state.add_subscription(guild_id="1000", purchaser_user_id="5000", now=NOW)
+        clocked = stripe_state.add_subscription(
+            guild_id="1001", purchaser_user_id="5000", now=NOW, test_clock="clock_Abc"
+        )
+        async with stripe_http(stripe_state) as http:
+            response = await http.get(
+                "/v1/subscriptions",
+                params=[("status", "all"), ("test_clock", "clock_Abc")],
+                headers={"Authorization": f"Bearer {stripe_state.secret_key}"},
+            )
+
+        assert [entry["id"] for entry in response.json()["data"]] == [clocked.id]
+        assert response.json()["data"][0]["test_clock"] == "clock_Abc"
+
+    async def test_a_clock_subscription_can_still_be_retrieved_directly(
+        self, stripe_client: StripeClient, stripe_state: FakeStripeState
+    ) -> None:
+        clocked = stripe_state.add_subscription(
+            guild_id="1001", purchaser_user_id="5000", now=NOW, test_clock="clock_Abc"
+        )
+
+        snapshot = await stripe_client.retrieve_subscription(clocked.id)
+
+        assert snapshot.guild_id == "1001"

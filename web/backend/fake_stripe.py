@@ -37,6 +37,12 @@ DAY = 24 * 3600
 # configured with, so a subscription created by a completed checkout counts.
 DEFAULT_PRICE_ID = "price_auraProMonthlyFake"
 
+# How long after its creation Stripe finalizes a renewal's draft invoice at the
+# latest (automatically_finalizes_at in the sandbox: created + 72 h). Stripe
+# usually finalizes after about an hour; a test decides when by calling
+# FakeSubscription.settle_renewal.
+DRAFT_FINALIZATION_WINDOW = 72 * 3600
+
 # Stripe's refusal of a card-only checkout on an account whose default is
 # Managed Payments, verbatim as far as the sandbox runs recorded it
 # (reports/phase-4c-stripe-verification.txt step A3, and the Phase 4c-F01 fixes
@@ -83,21 +89,77 @@ class FakeSubscription:
     pause_collection: dict[str, Any] | None = None
     latest_invoice_id: str = field(default_factory=lambda: _stripe_id("in"))
     latest_invoice_status: str | None = "paid"
-    latest_invoice_billing_reason: str = "subscription_cycle"
+    # A new subscription's first invoice, as Stripe bills it. Renewals switch
+    # this to subscription_cycle (see renew).
+    latest_invoice_billing_reason: str = "subscription_create"
+    # Set while the latest invoice is a renewal draft, as Stripe does.
+    latest_invoice_finalizes_at: int | None = None
     livemode: bool = False
     price_id: str = DEFAULT_PRICE_ID
     quantity: int | None = 1
+    # A subscription on a test clock is left out of a listing that does not
+    # ask for its clock, as in the real sandbox (V-08).
+    test_clock: str | None = None
+
+    @property
+    def effective_cancel_at(self) -> int | None:
+        """cancel_at as Stripe reports it: the period end once cancel_at_period_end is set."""
+        if self.cancel_at is not None:
+            return self.cancel_at
+        return self.current_period_end if self.cancel_at_period_end else None
+
+    def invoice_object(self) -> dict[str, Any]:
+        """The latest invoice in the dahlia shape: the subscription only under parent."""
+        return {
+            "id": self.latest_invoice_id,
+            "object": "invoice",
+            "status": self.latest_invoice_status,
+            "billing_reason": self.latest_invoice_billing_reason,
+            "customer": self.customer,
+            "automatically_finalizes_at": self.latest_invoice_finalizes_at,
+            "parent": {
+                "type": "subscription_details",
+                "subscription_details": {
+                    "subscription": self.id,
+                    # Stripe copies the subscription's metadata onto each of
+                    # its invoices.
+                    "metadata": dict(self.metadata),
+                },
+                "quote_details": None,
+            },
+        }
+
+    def renew(self) -> None:
+        """Roll into the next period the way Stripe does: a new invoice, still a draft.
+
+        The subscription stays in its status and the new period's invoice is a
+        draft until settle_renewal -- the window in which the subscription
+        reads in force with an invoice that is neither paid nor failed.
+        """
+        length = self.current_period_end - self.current_period_start
+        self.current_period_start = self.current_period_end
+        self.current_period_end = self.current_period_start + length
+        self.latest_invoice_id = _stripe_id("in")
+        self.latest_invoice_status = "draft"
+        self.latest_invoice_billing_reason = "subscription_cycle"
+        self.latest_invoice_finalizes_at = self.current_period_start + DRAFT_FINALIZATION_WINDOW
+
+    def settle_renewal(self, *, paid: bool) -> None:
+        """Finalize the renewal draft and charge it: paid, or open with the subscription past_due."""
+        self.latest_invoice_finalizes_at = None
+        if paid:
+            self.latest_invoice_status = "paid"
+            if self.status == "past_due":
+                self.status = "active"
+        else:
+            self.latest_invoice_status = "open"
+            self.status = "past_due"
 
     def to_object(self, *, expand_invoice: bool) -> dict[str, Any]:
         """The subscription as the dahlia API serialises it."""
         latest_invoice: object = self.latest_invoice_id
         if expand_invoice:
-            latest_invoice = {
-                "id": self.latest_invoice_id,
-                "object": "invoice",
-                "status": self.latest_invoice_status,
-                "billing_reason": self.latest_invoice_billing_reason,
-            }
+            latest_invoice = self.invoice_object()
         return {
             "id": self.id,
             "object": "subscription",
@@ -105,11 +167,12 @@ class FakeSubscription:
             "status": self.status,
             "metadata": dict(self.metadata),
             "cancel_at_period_end": self.cancel_at_period_end,
-            "cancel_at": self.cancel_at,
+            "cancel_at": self.effective_cancel_at,
             "canceled_at": None,
             "pause_collection": self.pause_collection,
             "latest_invoice": latest_invoice,
             "livemode": self.livemode,
+            "test_clock": self.test_clock,
             "items": {
                 "object": "list",
                 "data": [
@@ -236,21 +299,10 @@ class FakeStripeState:
         self, event_type: str, subscription_id: str, *, legacy_shape: bool = False, **kwargs: Any
     ) -> dict[str, Any]:
         """An invoice.* event for a subscription's invoice, in the dahlia or the pre-basil shape."""
-        subscription = self.subscriptions[subscription_id]
-        invoice: dict[str, Any] = {
-            "id": subscription.latest_invoice_id,
-            "object": "invoice",
-            "status": subscription.latest_invoice_status,
-            "billing_reason": subscription.latest_invoice_billing_reason,
-            "customer": subscription.customer,
-        }
+        invoice = self.subscriptions[subscription_id].invoice_object()
         if legacy_shape:
+            del invoice["parent"]
             invoice["subscription"] = subscription_id
-        else:
-            invoice["parent"] = {
-                "type": "subscription_details",
-                "subscription_details": {"subscription": subscription_id, "metadata": {}},
-            }
         return self.event(event_type, invoice, **kwargs)
 
     def signed(self, event: dict[str, Any], *, timestamp: int | None = None) -> tuple[bytes, str]:
@@ -414,7 +466,12 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
         if state.fail_list_status is not None:
             return _stripe_error(state.fail_list_status, "api_error", "internal")
         limit = int(request.query_params.get("limit", "10"))
-        ordered = list(state.subscriptions.values())
+        test_clock = request.query_params.get("test_clock")
+        ordered = [
+            subscription
+            for subscription in state.subscriptions.values()
+            if subscription.test_clock == test_clock
+        ]
         starting_after = request.query_params.get("starting_after")
         if starting_after is not None:
             ids = [subscription.id for subscription in ordered]
@@ -447,7 +504,8 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
                 "object": "billing_portal.session",
                 "customer": form["customer"],
                 "return_url": form.get("return_url"),
-                "url": f"https://billing.stripe.com/p/session/test_{secrets.token_hex(12)}",
+                # The real shape: the session's bearer secret in the query.
+                "url": f"https://billing.stripe.com/p/session?secret=test_{secrets.token_hex(12)}",
             }
         )
 
