@@ -33,6 +33,7 @@
   "billing_unavailable": "지금은 플랜 정보를 불러올 수 없어요.",
   "error_guild_not_manageable": "내가 관리하고 Aura가 있는 서버만 구독할 수 있어요.",
   "error_already_subscribed": "이 서버에는 이미 활성 Pro 구독이 있어요.",
+  "error_nothing_to_buy": "이 서버는 구독 없이도 이미 모든 기능을 쓸 수 있어서 구매할 것이 없어요. 청구된 금액은 없어요.",
   "error_not_billing_owner": "이 서버의 결제는 구독한 사람만 관리할 수 있어요.",
   "error_payment_provider": "Stripe에 연결할 수 없었어요. 잠시 후 다시 시도해 주세요.",
   "error_rate_limited": "요청이 너무 많습니다. 1분 후에 다시 시도해 주세요."

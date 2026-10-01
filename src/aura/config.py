@@ -119,8 +119,9 @@ class BillingMode(StrEnum):
 
     DISABLED (the default): every guild gets every feature, exactly as before
     Phase 4c. Subscription state is still recorded if the internal billing API
-    is running -- so a guild can subscribe before enforcement is switched on
-    -- it simply decides nothing. See Settings.billing_mode for why this, not
+    is running -- a subscription that already exists stays visible -- it
+    simply decides nothing, and the web backend refuses any new checkout,
+    since it would buy nothing. See Settings.billing_mode for why this, not
     ENFORCED, is the default.
 
     ENFORCED: the Pro-only triggers (proactive relief, automatic extraction,

@@ -33,6 +33,7 @@
   "billing_unavailable": "La información del plan no está disponible ahora mismo.",
   "error_guild_not_manageable": "Solo puedes suscribir servidores que gestionas y en los que está Aura.",
   "error_already_subscribed": "Este servidor ya tiene una suscripción Pro activa.",
+  "error_nothing_to_buy": "Este servidor ya tiene todas las funciones sin suscripción, así que no hay nada que comprar. No se ha cobrado nada.",
   "error_not_billing_owner": "Solo quien contrató la suscripción puede gestionar la facturación de este servidor.",
   "error_payment_provider": "No se pudo contactar con Stripe. Inténtalo de nuevo en un momento.",
   "error_rate_limited": "Demasiadas solicitudes. Espera un minuto y vuelve a intentarlo."

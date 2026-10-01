@@ -580,10 +580,10 @@ def decide_plan(
 
     Notes
     -----
-    Computing the standing even when billing is not enforced is what lets a guild
-    that subscribed before enforcement was switched on see its subscription, and
-    what lets the web backend refuse a second checkout for a guild that is
-    already paying regardless of the deployment's mode.
+    Computing the standing on every basis is what lets `/aura-plan` and the
+    dashboard still show a subscription whose guild's plan it does not decide:
+    one that predates a switch to unenforced billing, or one a complimentary
+    guild is paying anyway.
     """
     standing = resolve_standing(records, now=now, policy=policy)
     if not enforced:

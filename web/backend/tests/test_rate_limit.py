@@ -11,8 +11,11 @@ that nothing it should not was read or logged.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
+import math
+import random
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -37,6 +40,7 @@ from aura_web.rate_limit import (
     WEBHOOK_REFUND_STATE_KEY,
     BucketPolicy,
     RateLimitBucket,
+    RateLimitDecision,
     RateLimiter,
     classify_path,
     client_key,
@@ -172,18 +176,197 @@ class TestTheTokenBucket:
         limits.refund(RateLimitBucket.WEBHOOK, CLIENT)
         assert limits.tracked_clients(RateLimitBucket.WEBHOOK) == 0
 
-    def test_a_refusal_episode_is_reported_once_at_its_start_and_once_at_its_end(self) -> None:
+
+def plain_token_bucket(
+    schedule: list[float], *, burst: int, per_minute: float
+) -> list[tuple[bool, int]]:
+    """What a token bucket with no logging state at all answers, request by request."""
+    rate = per_minute / 60.0
+    tokens, updated_at = float(burst), schedule[0]
+    answers: list[tuple[bool, int]] = []
+    for now in schedule:
+        elapsed = max(0.0, now - updated_at)
+        tokens = min(float(burst), tokens + elapsed * rate)
+        updated_at = max(updated_at, now)
+        if tokens >= 1.0:
+            tokens -= 1.0
+            answers.append((True, 0))
+        else:
+            answers.append((False, max(1, math.ceil((1.0 - tokens) / rate))))
+    return answers
+
+
+def drive(
+    limits: RateLimiter, clock: FakeClock, gaps: list[float], *, key: str = CLIENT
+) -> list[RateLimitDecision]:
+    decisions = []
+    for gap in gaps:
+        clock.advance(gap)
+        decisions.append(limits.acquire(RateLimitBucket.AUTH, key))
+    return decisions
+
+
+def reported(decisions: list[RateLimitDecision]) -> int:
+    """Refusals the log accounts for: each logged one, plus every count a line carries."""
+    return sum(
+        int(d.log_refusal) + d.unlogged_refusals
+        for d in decisions
+        if d.log_refusal or d.limit_lifted
+    )
+
+
+class TestRefusalLogging:
+    """At most one WARNING per client and bucket per interval; every refusal counted once."""
+
+    def test_the_first_refusal_is_logged_and_the_rest_of_the_interval_only_counted(
+        self,
+    ) -> None:
         clock = FakeClock()
         limits = limiter(clock, burst=1)
         limits.acquire(RateLimitBucket.AUTH, CLIENT)
+
         refusals = [limits.acquire(RateLimitBucket.AUTH, CLIENT) for _ in range(5)]
-        assert [d.refusal_episode_started for d in refusals] == [True, False, False, False, False]
-        clock.advance(10)
-        lifted = limits.acquire(RateLimitBucket.AUTH, CLIENT)
-        assert lifted.allowed
-        assert lifted.refusals_in_ended_episode == 5
-        clock.advance(10)
-        assert limits.acquire(RateLimitBucket.AUTH, CLIENT).refusals_in_ended_episode == 0
+
+        assert [d.log_refusal for d in refusals] == [True, False, False, False, False]
+        assert [d.unlogged_refusals for d in refusals] == [0, 0, 0, 0, 0]
+        assert not any(d.limit_lifted for d in refusals)
+
+    def test_a_sustained_flood_logs_one_warning_per_interval_and_never_lifts(self) -> None:
+        """One request a second against one token every ten: the run restarts every 10 s."""
+        clock = FakeClock()
+        limits = limiter(clock, burst=1, per_minute=6.0)
+
+        decisions = drive(limits, clock, [0.0] + [1.0] * 299)
+
+        warned_at = [1000.0 + i for i, d in enumerate(decisions) if d.log_refusal]
+        assert len(warned_at) == 5
+        assert warned_at[0] == 1001.0
+        # Each the first refusal once the interval has passed: never sooner, and
+        # no later than the next refusal the flood is certain to produce.
+        assert all(60.0 <= b - a <= 61.0 for a, b in itertools.pairwise(warned_at))
+        assert not any(d.limit_lifted for d in decisions)
+        assert sum(not d.allowed for d in decisions) > 250
+
+    def test_every_refusal_is_reported_exactly_once_once_the_client_is_back(self) -> None:
+        clock = FakeClock()
+        limits = limiter(clock, burst=1, per_minute=6.0)
+        flood = drive(limits, clock, [0.0] + [1.0] * 299)
+
+        (back,) = drive(limits, clock, [60.0])
+
+        assert back.allowed and back.limit_lifted
+        assert reported([*flood, back]) == sum(not d.allowed for d in flood)
+
+    def test_the_answer_is_exactly_a_plain_token_bucket_s_whatever_is_logged(self) -> None:
+        """Logging state never feeds back: same 429s, same Retry-After, request by request."""
+        rng = random.Random(20261001)
+        gaps = [0.0] + [
+            rng.choice([0.0, 0.1, 0.5, 1.0, 3.0, 9.99, 10.0, 59.9, 60.0, 61.0]) for _ in range(2000)
+        ]
+        clock = FakeClock()
+        limits = limiter(clock, burst=3, per_minute=6.0)
+
+        decisions = drive(limits, clock, gaps)
+
+        # Summed in the clock's own order from its own start, so every instant
+        # is the same float the limiter saw.
+        schedule = list(itertools.accumulate(gaps, initial=FakeClock().now))[1:]
+        expected = plain_token_bucket(schedule, burst=3, per_minute=6.0)
+        assert [(d.allowed, d.retry_after_seconds) for d in decisions] == expected
+        assert sum(d.log_refusal for d in decisions) > 1
+        assert sum(d.limit_lifted for d in decisions) > 1
+
+    def test_a_new_warning_exactly_at_the_interval_and_not_a_moment_before(self) -> None:
+        clock = FakeClock()
+        limits = limiter(clock, burst=1, per_minute=0.5)
+        limits.acquire(RateLimitBucket.AUTH, CLIENT)
+
+        first, before, at = drive(limits, clock, [0.0, 59.999, 0.001])
+
+        assert (first.log_refusal, before.log_refusal, at.log_refusal) == (True, False, True)
+        assert at.unlogged_refusals == 1
+
+    def test_clients_and_buckets_are_logged_independently(self) -> None:
+        clock = FakeClock()
+        limits = limiter(clock, burst=1)
+        for key in (CLIENT, ATTACKER):
+            limits.acquire(RateLimitBucket.AUTH, key)
+            limits.acquire(RateLimitBucket.GLOBAL, key)
+
+        firsts = [
+            limits.acquire(bucket, key)
+            for key in (CLIENT, ATTACKER)
+            for bucket in (RateLimitBucket.AUTH, RateLimitBucket.GLOBAL)
+        ]
+
+        assert all(d.log_refusal for d in firsts)
+
+    def test_lifted_only_after_a_full_interval_without_a_refusal(self) -> None:
+        clock = FakeClock()
+        limits = limiter(clock, burst=2, per_minute=600.0)
+        drive(limits, clock, [0.0, 0.0])
+        logged, counted = drive(limits, clock, [0.0, 0.0])
+        assert logged.log_refusal and not counted.log_refusal
+
+        soon, almost, full, after = drive(limits, clock, [10.0, 49.999, 0.001, 10.0])
+
+        assert all(d.allowed for d in (soon, almost, full, after))
+        assert (soon.limit_lifted, almost.limit_lifted, full.limit_lifted) == (False, False, True)
+        assert full.unlogged_refusals == 1
+        assert not after.limit_lifted
+
+    def test_a_refusal_in_between_restarts_the_quiet_interval(self) -> None:
+        clock = FakeClock()
+        limits = limiter(clock, burst=1, per_minute=6.0)
+        drive(limits, clock, [0.0, 0.0])
+
+        decisions = drive(limits, clock, [10.0, 0.0, 50.0, 10.0])
+
+        assert [d.allowed for d in decisions] == [True, False, True, True]
+        assert [d.limit_lifted for d in decisions] == [False, False, False, True]
+
+    def test_without_a_refusal_nothing_is_ever_logged(self) -> None:
+        clock = FakeClock()
+        limits = limiter(clock, burst=2, per_minute=6.0)
+
+        decisions = drive(limits, clock, [0.0] + [10.0] * 50 + [600.0])
+
+        assert all(d.allowed for d in decisions)
+        assert not any(d.log_refusal or d.limit_lifted for d in decisions)
+
+    def test_a_clock_stepping_backwards_neither_repeats_the_warning_nor_lifts(self) -> None:
+        clock = FakeClock()
+        limits = limiter(clock, burst=1, per_minute=0.5)
+        limits.acquire(RateLimitBucket.AUTH, CLIENT)
+        assert limits.acquire(RateLimitBucket.AUTH, CLIENT).log_refusal
+
+        back, forward = drive(limits, clock, [-1_000.0, 1_060.0])
+
+        assert not back.log_refusal and not back.limit_lifted
+        assert forward.log_refusal and forward.unlogged_refusals == 1
+
+    def test_a_refusal_while_the_clock_was_behind_still_counts_as_recent(self) -> None:
+        """Stamped at the latest instant the client has seen, not at the stepped-back reading."""
+        clock = FakeClock()
+        limits = limiter(clock, burst=1, per_minute=600.0)
+        drive(limits, clock, [0.0, 0.0])
+
+        behind, half_a_second_later = drive(limits, clock, [-1_000.0, 1_000.5])
+
+        assert not behind.allowed
+        assert half_a_second_later.allowed and not half_a_second_later.limit_lifted
+
+    def test_a_forgotten_client_starts_over_with_a_full_bucket(self) -> None:
+        """Eviction loses the log state with the tokens; a re-seen client must spend its burst."""
+        clock = FakeClock()
+        limits = limiter(clock, burst=2, max_tracked_clients=1)
+        drive(limits, clock, [0.0, 0.0, 0.0])
+        limits.acquire(RateLimitBucket.AUTH, ATTACKER)
+
+        again = drive(limits, clock, [0.0, 0.0, 0.0])
+
+        assert [d.allowed for d in again] == [True, True, False]
+        assert again[2].log_refusal
 
 
 class TestTheWebhookRefundHandle:
@@ -716,7 +899,7 @@ class TestConcurrency:
 
 
 class TestWhatIsLogged:
-    async def test_one_warning_per_episode_and_one_line_when_it_lifts(
+    async def test_one_warning_for_a_burst_of_refusals_and_one_line_once_it_lifts(
         self, service: Service, caplog: pytest.LogCaptureFixture
     ) -> None:
         caplog.set_level(logging.INFO, logger="aura_web.rate_limit")
@@ -728,11 +911,52 @@ class TestWhatIsLogged:
         assert len(warnings) == 1
         assert "global" in warnings[0].getMessage()
         assert CLIENT in warnings[0].getMessage()
+        assert "0 refusal(s) since the last line" in warnings[0].getMessage()
         service.clock.advance(1)
+        assert (await client.get("/api/health")).status_code == 200
+        assert not [r for r in records if "Rate limit lifted" in r.getMessage()]
+        service.clock.advance(60)
         await client.get("/api/health")
         lifted = [r.getMessage() for r in records if "Rate limit lifted" in r.getMessage()]
         assert len(lifted) == 1
-        assert "40 refused" in lifted[0]
+        assert "39 refusal(s) since the last line" in lifted[0]
+
+    async def test_a_sustained_flood_writes_one_warning_a_minute_and_counts_every_refusal(
+        self, service: Service, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The audit's flood: one login a second against one token every six seconds."""
+        caplog.set_level(logging.INFO, logger="aura_web.rate_limit")
+        client = service.clients[ATTACKER]
+        gaps = [0.0] * AUTH_BURST + [1.0] * 180
+        responses = []
+        for gap in gaps:
+            service.clock.advance(gap)
+            responses.append(await client.get("/api/auth/login"))
+
+        lines = [r for r in caplog.records if r.name == "aura_web.rate_limit"]
+        assert [r.levelno for r in lines] == [logging.WARNING] * 3
+        expected = plain_token_bucket(
+            list(itertools.accumulate(gaps)), burst=AUTH_BURST, per_minute=10.0
+        )
+        assert [
+            (r.status_code == 307, int(r.headers.get("retry-after", 0))) for r in responses
+        ] == expected
+        for refused in (r for r in responses if r.status_code == 429):
+            assert_refused(refused)
+
+        service.clock.advance(60)
+        assert (await client.get("/api/auth/login")).status_code == 307
+        lines = [r.getMessage() for r in caplog.records if r.name == "aura_web.rate_limit"]
+        assert "Rate limit lifted" in lines[-1]
+        counted = (
+            len(lines)
+            - 1
+            + sum(
+                int(n)
+                for n in re.findall(r"(\d+) refusal\(s\) since the last line", "\n".join(lines))
+            )
+        )
+        assert counted == sum(r.status_code == 429 for r in responses)
 
     async def test_no_query_string_cookie_or_signature_reaches_a_log_line(
         self, service: Service, caplog: pytest.LogCaptureFixture

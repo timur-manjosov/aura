@@ -212,9 +212,12 @@ a byte of the body, in a pure ASGI middleware.
 | `global` | everything else | 60, then 60 | a page view is three requests |
 
 A refused request gets `429`, `Retry-After` (whole seconds until one token is
-back) and `{"error": "rate_limited"}`, with the usual security headers, and is
-logged once per episode at WARNING (client, bucket, method and path -- never a
-query string). IPv6 clients are keyed by their /64; clients behind one shared
+back) and `{"error": "rate_limited"}`, with the usual security headers. The log
+gets at most one WARNING per client and bucket per minute (client, bucket,
+method and path -- never a query string), carrying the number of refusals no
+line has reported since the previous one, and one INFO line once that client
+has gone a full minute without a refusal, carrying the rest. A sustained flood
+therefore writes one line a minute, however its requests are timed. IPv6 clients are keyed by their /64; clients behind one shared
 address (a carrier-grade NAT) share its limits, which the defaults leave room
 for at Aura's scale. Memory is bounded per bucket
 (`AURA_WEB_RATE_LIMIT_MAX_TRACKED_CLIENTS`, least recently seen forgotten
@@ -412,8 +415,12 @@ subscription store was unreachable" is not a state a Pro trigger can observe.
   operator's step (see DEPLOYMENT.md), as is switching to live Stripe keys.
 - **"Upgrade to Pro" is offered only where it changes something**: a guild
   whose plan is decided by subscription and that has none granting yet. With
-  `BILLING_MODE=disabled`, or on a complimentary guild, the button is not shown
-  — which also means nobody can subscribe ahead of enforcement from the
-  dashboard. The checkout route itself does not refuse those guilds: only a
-  hand-crafted request reaches it, and it charges its own sender for a
-  subscription that buys nothing extra.
+  `BILLING_MODE=disabled`, or on a complimentary guild, the button is not shown,
+  and the checkout route refuses a hand-made request for such a guild with
+  `409 nothing_to_buy` before Stripe is contacted. Nobody can subscribe ahead
+  of enforcement: switch enforcement on (with the operator's own guilds
+  complimentary) before the first checkout. The route asks the bot on every
+  request; when the bot cannot answer it refuses with `503`, never assuming
+  enforcement. A Checkout Session handed out under enforcement and paid only
+  after enforcement was switched off still completes: Stripe's hosted page is
+  not this service's to withdraw.

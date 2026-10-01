@@ -94,6 +94,25 @@ class GuildPlanView:
     in_force_subscription_count: int
     subscriptions: tuple[SubscriptionView, ...]
 
+    @property
+    def decided_by_subscription(self) -> bool:
+        """Report whether a subscription decides this guild's plan.
+
+        Returns
+        -------
+        bool
+            True only for the `subscription` basis. False when billing is not
+            enforced or the operator made the guild complimentary: on either
+            basis the guild has every feature, and paying would change nothing.
+
+        Notes
+        -----
+        The one predicate both the dashboard's offer (`can_subscribe`) and the
+        checkout route's refusal read, so the button and the route cannot
+        disagree about where a payment buys something.
+        """
+        return self.basis == "subscription"
+
 
 def _strict_int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None

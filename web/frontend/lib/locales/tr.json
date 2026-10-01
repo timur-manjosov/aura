@@ -33,6 +33,7 @@
   "billing_unavailable": "Plan bilgisi şu anda kullanılamıyor.",
   "error_guild_not_manageable": "Yalnızca yönettiğin ve Aura'nın bulunduğu sunuculara abone olabilirsin.",
   "error_already_subscribed": "Bu sunucunun zaten aktif bir Pro aboneliği var.",
+  "error_nothing_to_buy": "Bu sunucu abonelik olmadan zaten tüm özelliklere sahip, bu yüzden satın alınacak bir şey yok. Hiçbir ücret alınmadı.",
   "error_not_billing_owner": "Bu sunucunun faturalandırmasını yalnızca aboneliği başlatan kişi yönetebilir.",
   "error_payment_provider": "Stripe'a ulaşılamadı. Lütfen birazdan tekrar dene.",
   "error_rate_limited": "Çok fazla istek gönderildi. Lütfen bir dakika bekleyip tekrar deneyin."

@@ -512,12 +512,17 @@ the web backend starts rewrites it for every subscription.
    **Cancel the subscription** (see below).
 4. **Bring the web interface up:** `docker compose -f web/docker-compose.yml up -d --build`.
    The backend log shows `Stripe billing ready: test mode, price price_…`.
-5. **Subscribe a test server** from the dashboard with a Stripe test card and
-   check `/aura-plan` in that server: it should read Pro, paid through a date.
-6. **Only then, enforce.** Put your own servers into
+5. **Enforce, with your own servers complimentary.** Put your own servers into
    `BILLING_COMPLIMENTARY_GUILD_IDS` first, then set `BILLING_MODE=enforced`
-   and restart the bot. Guilds without a subscription or a complimentary entry
-   move to Free: their Pro settings are kept and pick up again with Pro.
+   and restart the bot (the full deploy discipline: online backup, integrity
+   check, row counts, a tagged rollback image). Guilds without a subscription
+   or a complimentary entry move to Free: their Pro settings are kept and pick
+   up again with Pro. Enforcement comes first because the checkout refuses
+   every guild whose plan no subscription decides (`409 nothing_to_buy`):
+   with billing disabled, nothing can be bought.
+6. **Subscribe a test server** that is not complimentary, from the dashboard
+   with a Stripe test card, and check `/aura-plan` in that server: Free
+   before, Pro paid through a date after.
 
 Live keys are refused by the web backend unless
 `AURA_WEB_STRIPE_ALLOW_LIVE_MODE=true` — a separate decision from everything

@@ -320,3 +320,31 @@ class TestEveryStandingHasASentence:
 
         assert source.count("plan.paid_through") == 1
         assert 'dated("plan_standing_active", plan.paid_through)' in source
+
+
+class TestEveryBillingRefusalHasASentence:
+    """A code a billing action can return must reach the user as a translated sentence."""
+
+    PAGE = FRONTEND / "app" / "page.tsx"
+
+    def billing_error_keys(self) -> dict[str, str]:
+        source = self.PAGE.read_text(encoding="utf-8")
+        mapping = source.split("const BILLING_ERROR_KEYS", 1)[1].split("};", 1)[0]
+        return dict(re.findall(r'(\w+): "(\w+)"', mapping))
+
+    def test_nothing_to_buy_has_its_own_sentence(self) -> None:
+        from aura_web.errors import ErrorCode
+
+        assert self.billing_error_keys()[ErrorCode.NOTHING_TO_BUY] == "error_nothing_to_buy"
+
+    def test_every_mapped_code_is_a_real_backend_code(self) -> None:
+        from aura_web.errors import ErrorCode
+
+        assert set(self.billing_error_keys()) <= {code.value for code in ErrorCode}
+
+    @pytest.mark.parametrize("locale", sorted(REQUIRED_LOCALES))
+    def test_every_mapped_sentence_exists_in_every_locale(self, locale: str) -> None:
+        catalogue = load_catalogue(locale)
+
+        for key in self.billing_error_keys().values():
+            assert key in catalogue, key
