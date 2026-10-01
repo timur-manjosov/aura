@@ -34,5 +34,6 @@
   "error_guild_not_manageable": "You can only subscribe servers you manage and Aura is in.",
   "error_already_subscribed": "This server already has an active Pro subscription.",
   "error_not_billing_owner": "Only the person who subscribed can manage this server's billing.",
-  "error_payment_provider": "Stripe could not be reached. Please try again in a moment."
+  "error_payment_provider": "Stripe could not be reached. Please try again in a moment.",
+  "error_rate_limited": "Too many requests. Please wait a minute and try again."
 }

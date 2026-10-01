@@ -19,8 +19,21 @@
 #     instead, and how subscription state reaches the bot without it;
 #   * the backend publishes no host port at all. It is reachable only from the
 #     frontend container over the internal network, so the OAuth callback and
-#     every session cookie travel through exactly one origin.
+#     every session cookie travel through exactly one origin;
+#   * the frontend is published on the host's LOOPBACK interface only. On the
+#     server the host's reverse proxy (web/deploy/Caddyfile.aura) reaches it
+#     there and terminates TLS; nothing outside the host can reach it at all.
 name: aura-web
+
+# Every container here answers requests from the internet, so its log grows
+# with whatever anyone sends -- a flood of refused requests included. Docker's
+# default json-file driver never rotates; this caps each container's log at
+# 50 MB on disk.
+x-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
 
 services:
   backend:
@@ -30,11 +43,18 @@ services:
     environment:
       AURA_WEB_HOST: "0.0.0.0"
       AURA_WEB_PORT: "8080"
+      # The ONE address whose X-Forwarded-For the backend believes: the
+      # frontend's, pinned below. Set here rather than in .env so the trust
+      # rule and the address it names can only ever change together (a value
+      # under `environment:` wins over env_file). See aura_web.client_address.
+      AURA_WEB_TRUSTED_PROXY_ADDRESSES: "172.16.86.3"
     expose:
       - "8080"
     networks:
-      - aura-web
-      - aura-billing
+      aura-web:
+        ipv4_address: 172.16.86.2
+      aura-billing: {}
+    logging: *bounded-logging
     restart: unless-stopped
 
   frontend:
@@ -47,17 +67,33 @@ services:
         # localhost -- inside the frontend container, 127.0.0.1 is itself.
         AURA_WEB_BACKEND_ORIGIN: "http://backend:8080"
     ports:
-      - "${AURA_WEB_FRONTEND_PORT:-3000}:3000"
+      # 127.0.0.1, never 0.0.0.0: Docker's published ports bypass the host
+      # firewall, so binding every interface would expose plain HTTP next to
+      # the TLS proxy that is meant to be the only way in.
+      - "127.0.0.1:${AURA_WEB_FRONTEND_PORT:-3000}:3000"
     depends_on:
       backend:
         condition: service_healthy
     networks:
-      - aura-web
+      aura-web:
+        # Pinned so the backend can name it as its only trusted proxy. Both
+        # containers are pinned, so Docker never hands this address to anyone
+        # else on the network; the gateway (.1) -- which is how every process
+        # on the host reaches a container -- is deliberately not trusted.
+        ipv4_address: 172.16.86.3
+    logging: *bounded-logging
     restart: unless-stopped
 
 networks:
+  # A fixed, private subnet outside Docker's automatic address pools, so it
+  # never collides with a network Docker creates on its own. If it collides
+  # with something on a particular machine, `up` refuses loudly ("Pool
+  # overlaps"); change the subnet and BOTH pinned addresses together.
   aura-web:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.16.86.0/28
   # Created by the repository root's docker-compose.yml. `external` rather than
   # declared here too, so neither project can delete it out from under the
   # other with `docker compose down`; it does mean the bot comes up first.

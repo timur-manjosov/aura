@@ -34,5 +34,6 @@
   "error_guild_not_manageable": "Możesz subskrybować tylko serwery, którymi zarządzasz i na których jest Aura.",
   "error_already_subscribed": "Ten serwer ma już aktywną subskrypcję Pro.",
   "error_not_billing_owner": "Rozliczeniami tego serwera może zarządzać tylko osoba, która wykupiła subskrypcję.",
-  "error_payment_provider": "Nie udało się połączyć ze Stripe. Spróbuj ponownie za chwilę."
+  "error_payment_provider": "Nie udało się połączyć ze Stripe. Spróbuj ponownie za chwilę.",
+  "error_rate_limited": "Zbyt wiele żądań. Odczekaj minutę i spróbuj ponownie."
 }

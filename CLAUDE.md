@@ -228,14 +228,39 @@ Therefore, for every implementation, without exception:
   the alternative (a membership table the bot writes and the web service reads
   read-only) is written up with its own trade-offs in `web/README.md`.
 
-- **Web sessions are in memory only (Phase 4b).** A backend restart logs
-  everyone out, and the store's size ceiling can evict the oldest live session
-  under load. Accepted for 4b because it means no Discord token is ever
-  written to disk and no new table exists; `aura_web.sessions` keeps both
-  stores behind small interfaces so 4c/4d can make them durable without
-  touching the flow. No request-rate limiting exists either — the stores bound
-  memory, not request rate; a reverse proxy is the right place for that and
-  there is none in local development.
+- **Web sessions are in memory only (Phase 4b) — deliberately kept for the
+  public deployment.** A backend restart logs everyone out, and the store's
+  size ceiling can evict the oldest live session under load. Accepted because
+  no Discord token is ever written to disk and no new table exists, and
+  because a restart is harmless to billing: no webhook and no reconciliation
+  depends on a session (Phase 4c audit, E4). `aura_web.sessions` keeps both
+  stores behind small interfaces so durable sessions can be added when a
+  feature (4d at the latest) needs them.
+
+- **Request-rate limiting and the client address — RESOLVED in the web
+  deployment.** The stock host Caddy has no rate-limit module, so the backend
+  limits per client itself (`aura_web.rate_limit`: auth, billing actions, the
+  Stripe webhook — counting failed verifications only — and a global ceiling;
+  every limit an `AURA_WEB_RATE_LIMIT_*` setting). The client address is read
+  from `X-Forwarded-For` only when the peer is the frontend container's pinned
+  address, rightmost entry first (`aura_web.client_address`); uvicorn's own
+  proxy-header handling is off. The chain was measured, not assumed: Caddy
+  replaces any client-sent `X-Forwarded-For` and passes `Forwarded`/`X-Real-IP`
+  through (never read); Next.js forwards it unchanged. See `web/README.md`,
+  "Behind a reverse proxy".
+
+- **The web stack is public, behind the host's Caddy (web deployment).**
+  `aura.timurmanjosov.com` is one site block appended to the Caddy that also
+  serves the portfolio (`web/deploy/Caddyfile.aura`; procedure and rollback in
+  DEPLOYMENT.md). Still open, by decision rather than by oversight:
+  `X-Robots-Tag: noindex` until the site is announced; page and static-file
+  requests served by Next.js are not rate-limited; another Stripe account can
+  point its endpoint at this URL, and its failed deliveries count against the
+  webhook limit of the Stripe address they arrive from — the only way a
+  genuine delivery can be refused, and then only delayed (Stripe retries for
+  three days, reconciliation runs every six hours); Caddy's admin API on
+  `localhost:2019` (its default, predating Aura) lets any local user
+  reconfigure it.
 
 - **Billing is built, verified in test mode, and switched off (Phase 4c).**
   `BILLING_MODE` defaults to `disabled` and the web backend refuses live Stripe

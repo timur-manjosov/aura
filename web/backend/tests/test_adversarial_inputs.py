@@ -17,6 +17,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from aura_web.config import WebSettings
 from fake_discord import FakeDiscordState
 from helpers import complete_login, set_cookie_header, start_login
 
@@ -312,6 +313,17 @@ class TestUnexpectedMethodsAndPaths:
 
 
 class TestSessionIsolationUnderAbuse:
+    @pytest.fixture
+    def web_settings(self, web_settings: WebSettings) -> WebSettings:
+        """The suite's settings with room for the flood below in the auth bucket.
+
+        These tests are about the session store under a flood from one client,
+        so the request-rate limit -- which would otherwise refuse that client
+        once its auth burst is spent, as it should in production -- is raised
+        for them alone. The limit itself is tested in test_rate_limit.py.
+        """
+        return web_settings.model_copy(update={"rate_limit_auth_burst": 1_000})
+
     async def test_a_flood_of_logins_cannot_hand_out_a_reused_identifier(
         self, app_client: httpx.AsyncClient, discord_state: FakeDiscordState
     ) -> None:

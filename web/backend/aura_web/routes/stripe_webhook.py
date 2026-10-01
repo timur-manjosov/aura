@@ -15,6 +15,9 @@ exactly below:
      list of expected types, on purpose: the one outcome that must be
      impossible is an unverified body reaching step 4 because verification
      failed in a way this code did not predict.
+     A delivery that verifies hands its rate-limit token back here
+     (aura_web.rate_limit): only failed verifications count against a client,
+     so Stripe's own deliveries can never exhaust the webhook's limit.
   4. Only now is the body parsed, and only into an event ID, a type, a mode and
      a subscription reference (aura_web.stripe_events).
   5. The subscription is re-fetched from Stripe and handed to the bot through
@@ -44,6 +47,7 @@ from aura_web.billing_sync import LivemodeMismatchError, SyncConflictError, sync
 from aura_web.bot_billing import BotBillingError
 from aura_web.context import ServiceContext, get_context
 from aura_web.errors import ErrorCode, error_response
+from aura_web.rate_limit import refund_webhook_allowance
 from aura_web.request_bodies import BodyTooLargeError, read_bounded_body
 from aura_web.stripe_api import StripeAPIError, StripeRejectedError
 from aura_web.stripe_events import InvalidEventError, parse_verified_event
@@ -112,6 +116,10 @@ async def stripe_webhook(
             "Rejected a Stripe webhook: signature verification failed (%s)", type(exc).__name__
         )
         return error_response(ErrorCode.INVALID_SIGNATURE, status_code=400)
+
+    # Signed by the endpoint's own secret: whatever happens next, this delivery
+    # came from Stripe, and Stripe's deliveries never count against the limit.
+    refund_webhook_allowance(request)
 
     try:
         event = parse_verified_event(payload)

@@ -59,6 +59,13 @@ const BILLING_ERROR_KEYS: Record<string, string> = {
   payment_provider_unavailable: "error_payment_provider",
   payment_provider_error: "error_payment_provider",
   billing_unavailable: "billing_unavailable",
+  rate_limited: "error_rate_limited",
+};
+
+/** Backend error codes a page load can return with their own message; anything else is generic. */
+const LOAD_ERROR_KEYS: Record<string, string> = {
+  discord_unavailable: "error_discord_unavailable",
+  rate_limited: "error_rate_limited",
 };
 
 const CHECKOUT_NOTICES: Record<string, string> = {
@@ -233,11 +240,7 @@ export default function HomePage() {
       {state.status === "error" && (
         <div>
           <p className="error">
-            {translate(
-              state.code === "discord_unavailable"
-                ? "error_discord_unavailable"
-                : "error_generic",
-            )}
+            {translate(LOAD_ERROR_KEYS[state.code] ?? "error_generic")}
           </p>
           <button type="button" className="button" onClick={() => void load()}>
             {translate("retry_button")}
