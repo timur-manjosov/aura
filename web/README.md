@@ -212,9 +212,12 @@ a byte of the body, in a pure ASGI middleware.
 | `global` | everything else | 60, then 60 | a page view is three requests |
 
 A refused request gets `429`, `Retry-After` (whole seconds until one token is
-back) and `{"error": "rate_limited"}`, with the usual security headers, and is
-logged once per episode at WARNING (client, bucket, method and path -- never a
-query string). IPv6 clients are keyed by their /64; clients behind one shared
+back) and `{"error": "rate_limited"}`, with the usual security headers. The log
+gets at most one WARNING per client and bucket per minute (client, bucket,
+method and path -- never a query string), carrying the number of refusals no
+line has reported since the previous one, and one INFO line once that client
+has gone a full minute without a refusal, carrying the rest. A sustained flood
+therefore writes one line a minute, however its requests are timed. IPv6 clients are keyed by their /64; clients behind one shared
 address (a carrier-grade NAT) share its limits, which the defaults leave room
 for at Aura's scale. Memory is bounded per bucket
 (`AURA_WEB_RATE_LIMIT_MAX_TRACKED_CLIENTS`, least recently seen forgotten

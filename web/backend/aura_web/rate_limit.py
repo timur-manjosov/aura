@@ -27,6 +27,14 @@ route). A client sending forgeries drains its bucket and is then refused
 without a byte read; Stripe, whose deliveries all verify, never holds a token
 for longer than one verification takes.
 
+LOGGING is bounded per client and bucket, independently of the refusals: at
+most one WARNING per REFUSAL_LOG_INTERVAL_SECONDS, carrying the number of
+refusals left unlogged since the line before it, and one INFO line once the
+client has gone a full interval without a refusal, carrying the rest. A flood
+just above the refill rate otherwise ends and restarts its refusal run every
+few seconds, and a line per run is a line every few seconds for as long as the
+flood lasts. The 429 and its Retry-After never depend on any of this.
+
 MEMORY is bounded per bucket by AURA_WEB_RATE_LIMIT_MAX_TRACKED_CLIENTS: the
 least recently seen client is forgotten first. Forgetting is the safe
 direction -- a forgotten client starts again from a full bucket -- and a flood
@@ -84,6 +92,10 @@ STRIPE_PATH_PREFIX: Final[str] = "/api/stripe/"
 
 SECONDS_PER_MINUTE: Final[float] = 60.0
 
+# At most one WARNING per client and bucket in this many seconds; also how long
+# a client must go without a refusal before its limit is reported lifted.
+REFUSAL_LOG_INTERVAL_SECONDS: Final[float] = 60.0
+
 
 class RateLimitBucket(StrEnum):
     """The four request classes, each limited separately per client."""
@@ -123,7 +135,7 @@ class BucketPolicy:
 
 @dataclass(frozen=True)
 class RateLimitDecision:
-    """The outcome of asking for one request's token.
+    """The outcome of asking for one request's token, and whether it is worth a log line.
 
     Attributes
     ----------
@@ -131,25 +143,34 @@ class RateLimitDecision:
         Whether the request may proceed.
     retry_after_seconds
         Whole seconds until one token is available again; 0 when allowed.
-    refusal_episode_started
-        True on the first refusal after a run of allowed requests -- the one
-        refusal worth a WARNING, so a flood writes one line, not one per request.
-    refusals_in_ended_episode
-        On the first allowed request after a run of refusals, how many were
-        refused; 0 otherwise.
+    log_refusal
+        True on a refusal that is to be logged at WARNING: the client's first
+        in this bucket, or the first REFUSAL_LOG_INTERVAL_SECONDS or more after
+        the last logged one. Never true on an allowed request.
+    limit_lifted
+        True on the first allowed request after the client went
+        REFUSAL_LOG_INTERVAL_SECONDS or more without a refusal, following at
+        least one refusal. Never true on a refusal.
+    unlogged_refusals
+        With `log_refusal` or `limit_lifted`: the refusals since the client's
+        previous line in this bucket that no line has reported yet. 0 otherwise.
     """
 
     allowed: bool
     retry_after_seconds: int
-    refusal_episode_started: bool = False
-    refusals_in_ended_episode: int = 0
+    log_refusal: bool = False
+    limit_lifted: bool = False
+    unlogged_refusals: int = 0
 
 
 @dataclass
 class _Allowance:
     tokens: float
     updated_at: float
-    refusals: int = 0
+    # None while the client has no refusal awaiting its "lifted" line.
+    last_refusal_at: float | None = None
+    last_warning_at: float | None = None
+    unlogged_refusals: int = 0
 
 
 def classify_path(path: str) -> RateLimitBucket:
@@ -287,7 +308,11 @@ class RateLimiter:
         return len(self._allowances[bucket])
 
     def _refilled(self, bucket: RateLimitBucket, key: str) -> _Allowance:
-        """Return the client's allowance, refilled up to now, as most recently used."""
+        """Return the client's allowance, refilled up to now, as most recently used.
+
+        Its `updated_at` is then the client's own "now": the clock reading, or
+        the latest one this client has seen if the clock has stepped backwards.
+        """
         policy = self._policies[bucket]
         allowances = self._allowances[bucket]
         now = self._clock()
@@ -322,22 +347,54 @@ class RateLimiter:
         -------
         RateLimitDecision
             Allowed with a token taken, or refused with the whole seconds until
-            a token will be available (at least 1).
+            a token will be available (at least 1), plus whether the request is
+            worth a log line. Whether it is allowed and its Retry-After are
+            decided by the token bucket alone; the log fields never feed back.
+
+        Notes
+        -----
+        Every refusal is either logged itself or counted in exactly one later
+        line's `unlogged_refusals`, as long as the client is seen again after
+        it: a WARNING once the interval has passed, or the "lifted" line once a
+        full interval passed without a refusal. A client never seen again, or
+        forgotten under memory pressure, takes its last uncounted refusals
+        with it -- at most one interval's worth after its last WARNING.
         """
         policy = self._policies[bucket]
         allowance = self._refilled(bucket, key)
+        now = allowance.updated_at
         if allowance.tokens >= 1.0:
             allowance.tokens -= 1.0
-            ended, allowance.refusals = allowance.refusals, 0
+            if (
+                allowance.last_refusal_at is None
+                or now - allowance.last_refusal_at < REFUSAL_LOG_INTERVAL_SECONDS
+            ):
+                return RateLimitDecision(allowed=True, retry_after_seconds=0)
+            unlogged = allowance.unlogged_refusals
+            allowance.last_refusal_at = None
+            allowance.unlogged_refusals = 0
             return RateLimitDecision(
-                allowed=True, retry_after_seconds=0, refusals_in_ended_episode=ended
+                allowed=True,
+                retry_after_seconds=0,
+                limit_lifted=True,
+                unlogged_refusals=unlogged,
             )
-        allowance.refusals += 1
         retry_after = max(1, math.ceil((1.0 - allowance.tokens) / policy.refill_per_second))
+        allowance.last_refusal_at = now
+        if (
+            allowance.last_warning_at is not None
+            and now - allowance.last_warning_at < REFUSAL_LOG_INTERVAL_SECONDS
+        ):
+            allowance.unlogged_refusals += 1
+            return RateLimitDecision(allowed=False, retry_after_seconds=retry_after)
+        unlogged = allowance.unlogged_refusals
+        allowance.last_warning_at = now
+        allowance.unlogged_refusals = 0
         return RateLimitDecision(
             allowed=False,
             retry_after_seconds=retry_after,
-            refusal_episode_started=allowance.refusals == 1,
+            log_refusal=True,
+            unlogged_refusals=unlogged,
         )
 
     def refund(self, bucket: RateLimitBucket, key: str) -> None:
@@ -423,26 +480,30 @@ class RateLimitMiddleware:
         key = client_key(client[0] if client is not None else None)
         decision = self.limiter.acquire(bucket, key)
 
-        if decision.refusals_in_ended_episode:
+        if decision.limit_lifted:
             logger.info(
-                "Rate limit lifted for client %s in the %s bucket after %d refused request(s)",
+                "Rate limit lifted for client %s in the %s bucket: no refusal for %ds; "
+                "%d refusal(s) since the last line were not logged",
                 key,
                 bucket.value,
-                decision.refusals_in_ended_episode,
+                REFUSAL_LOG_INTERVAL_SECONDS,
+                decision.unlogged_refusals,
             )
         if not decision.allowed:
-            if decision.refusal_episode_started:
+            if decision.log_refusal:
                 # The method and path only: the query string can carry an OAuth
                 # code or state, and nothing here needs it. The path is quoted
                 # as uvicorn's access log quotes it: it arrives percent-decoded,
                 # and a decoded %0a would otherwise start a forged log line.
                 logger.warning(
-                    "Rate limit reached for client %s in the %s bucket (%s %s); refusing for %ds",
+                    "Rate limit reached for client %s in the %s bucket (%s %s); refusing for "
+                    "%ds; %d refusal(s) since the last line were not logged",
                     key,
                     bucket.value,
                     scope.get("method", "?"),
                     quote(scope["path"]),
                     decision.retry_after_seconds,
+                    decision.unlogged_refusals,
                 )
             response = error_response(ErrorCode.RATE_LIMITED, status_code=429)
             response.headers["Retry-After"] = str(decision.retry_after_seconds)
