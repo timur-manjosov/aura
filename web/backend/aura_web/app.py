@@ -78,6 +78,36 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+async def check_stripe_key(stripe_client: StripeClient) -> None:
+    """Run the Stripe key's permission probe, and never let it fail the service.
+
+    Parameters
+    ----------
+    stripe_client
+        The client whose configured key is probed.
+
+    Returns
+    -------
+    None
+        The finding is logged by StripeClient.check_key_permissions; any
+        unexpected exception is logged here by type only and swallowed.
+
+    Notes
+    -----
+    The probe already turns every Stripe failure into a log line. This wrapper
+    is for everything else: an exception escaping a background task would only
+    surface as "Task exception was never retrieved" at shutdown, with a
+    traceback, instead of as one line at the time it happened.
+    """
+    try:
+        await stripe_client.check_key_permissions()
+    except Exception as exc:
+        logger.warning(
+            "Stripe key self-check failed unexpectedly (%s); startup continues",
+            type(exc).__name__,
+        )
+
+
 def create_app(
     settings: WebSettings,
     *,
@@ -85,6 +115,7 @@ def create_app(
     stripe_client_factory: Callable[[httpx.AsyncClient, WebSettings], StripeClient] | None = None,
     bot_billing_client_factory: Callable[[httpx.AsyncClient, WebSettings], BotBillingClient]
     | None = None,
+    check_stripe_key_at_startup: bool = True,
 ) -> FastAPI:
     """Build the application, deferring every network-owning object to startup.
 
@@ -96,6 +127,11 @@ def create_app(
         Build each network-owning client from the shared httpx client and the
         settings. Each defaults to the real implementation; tests pass fakes, so
         the whole application can be driven with no socket.
+    check_stripe_key_at_startup
+        Whether to probe the Stripe key's permissions once, in the background,
+        right after startup (StripeClient.check_key_permissions). On in
+        production; tests that count Stripe requests turn it off, and the tests
+        of the probe itself turn it on.
 
     Returns
     -------
@@ -224,12 +260,23 @@ def create_app(
                     interval_seconds=settings.stripe_reconcile_interval_seconds,
                 )
             )
+            # A background task, not an awaited call: the probe is advisory,
+            # and a Stripe that is slow or unreachable at the moment the
+            # container starts must not hold the service back from serving.
+            key_check = (
+                asyncio.create_task(check_stripe_key(stripe_client))
+                if check_stripe_key_at_startup
+                else None
+            )
+            app.state.stripe_key_check = key_check
             try:
                 yield
             finally:
-                reconciler.cancel()
-                with suppress(asyncio.CancelledError):
-                    await reconciler
+                background = [reconciler] if key_check is None else [reconciler, key_check]
+                for task in background:
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
 
     app = FastAPI(
         title="Aura Web Backend",

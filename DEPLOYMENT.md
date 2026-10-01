@@ -476,7 +476,26 @@ the web backend starts rewrites it for every subscription.
    still connect to the container's own IP on either network. The shared
    secret is what keeps it closed.
 3. **Configure Stripe (test mode)** in `web/.env`: a restricted test key, the
-   Pro Price ID and the webhook signing secret. Point a webhook endpoint at
+   Pro Price ID and the webhook signing secret. Create the restricted key
+   **from zero permissions** ("Create restricted key", every resource left at
+   *None*) and grant exactly four:
+
+   | Resource | Access | Why |
+   |---|---|---|
+   | Checkout Sessions | Write | creates the subscription checkout |
+   | Subscriptions | Read | every webhook and every reconciliation re-fetches the subscription |
+   | Invoices | Read | each of those fetches expands `latest_invoice`; without this Stripe refuses it (403), every webhook answers `503` and no paying guild ever reaches Pro |
+   | Customer portal | Write | opens the payer's billing portal |
+
+   Nothing else — in particular no Customers, Refunds or Webhook endpoints,
+   and no write access to Subscriptions: the web container holds this key.
+   The backend probes the key once at startup (`GET /v1/invoices?limit=1`) and
+   logs one `ERROR` naming the missing permission if Invoices (read) is
+   absent; an unreachable Stripe at that moment is only a warning. To check the
+   whole set against a test key, run `python scripts/verify_stripe_sandbox.py`
+   (its step A1 probes each permission without creating anything and refuses
+   a key that can create payouts). Create the live key the same way.
+   Point a webhook endpoint at
    `https://<your-domain>/api/stripe/webhook` with the events listed in
    `web/.env.example`, and apply the account settings in `web/README.md`
    ("Stripe account settings this code relies on"). Create a customer portal

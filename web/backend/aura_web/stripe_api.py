@@ -8,7 +8,7 @@ refusal here rather than a surprising value three layers up.
 httpx directly, not the stripe SDK's HTTP client. The SDK is used in this
 service for exactly one thing -- verifying webhook signatures, where running
 Stripe's own implementation is the point (aura_web.routes.stripe_webhook).
-For the four API calls below, a thin httpx client keeps one validating boundary
+For the API calls below, a thin httpx client keeps one validating boundary
 per upstream (the Discord one already exists), lets the test suite drive the
 real client against a stand-in over ASGI exactly as it drives Discord, and pins
 the API version in one visible constant rather than in whatever version an SDK
@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Final, TypeGuard
 from urllib.parse import urlparse
 
@@ -171,6 +172,15 @@ def _unix_seconds(value: object, *, field_name: str) -> int:
     if seconds is None or not 0 <= seconds <= MAX_UNIX_SECONDS:
         raise StripeUnavailableError(f"Stripe subscription has no usable {field_name}")
     return seconds
+
+
+class KeyCheckResult(StrEnum):
+    """What the startup probe of the key's permissions found (StripeClient.check_key_permissions)."""
+
+    PRESENT = "present"
+    INVOICES_READ_MISSING = "invoices_read_missing"
+    KEY_REJECTED = "key_rejected"
+    UNVERIFIED = "unverified"
 
 
 @dataclass(frozen=True)
@@ -470,7 +480,7 @@ def parse_checkout_session(payload: object) -> CheckoutSession:
 
 
 class StripeClient:
-    """Thin, validating wrapper over the four Stripe endpoints Phase 4c needs."""
+    """Thin, validating wrapper over the four Stripe endpoints Phase 4c needs, plus a key probe."""
 
     def __init__(
         self,
@@ -703,6 +713,69 @@ class StripeClient:
         return _https_url_on(
             payload.get("url"), BILLING_PORTAL_HOSTS, context="billing portal session"
         )
+
+    async def check_key_permissions(self) -> KeyCheckResult:
+        """Probe whether the configured key can read invoices, and log what was found.
+
+        Returns
+        -------
+        KeyCheckResult
+            PRESENT on HTTP 200; INVOICES_READ_MISSING on 403; KEY_REJECTED on
+            401; UNVERIFIED for anything else, including Stripe being
+            unreachable. Exactly one log line is written for each outcome.
+
+        Notes
+        -----
+        One harmless ``GET /v1/invoices?limit=1``. Every subscription sync
+        expands ``latest_invoice``, and Stripe only allows that expansion with
+        the Invoices (read) permission (V-02). A key created without it fails
+        every sync with 403, every webhook then answers 503 and no paying guild
+        reaches Pro, and the 503s alone never name the cause -- so the cause is
+        named once, at startup.
+
+        Advisory only: it never raises for a Stripe failure and never stops the
+        service, because Stripe may be briefly unreachable at the moment the
+        container starts. The log lines carry the HTTP status and Stripe's
+        error vocabulary at most -- never the key and never Stripe's message,
+        which quotes the key's last four characters on a permission error.
+        """
+        try:
+            await self._request(
+                "GET",
+                "/v1/invoices",
+                params=[("limit", "1")],
+                context="the startup key check",
+            )
+        except StripeRejectedError as exc:
+            if exc.status_code == 403:
+                logger.error(
+                    "Stripe key self-check: the key lacks the Invoices (read) permission. "
+                    "Every subscription sync expands latest_invoice and will be refused, so "
+                    "every Stripe webhook will answer 503 and no paying guild will reach Pro. "
+                    "Grant 'Invoices: Read' on the restricted key (DEPLOYMENT.md, Stripe step)."
+                )
+                return KeyCheckResult.INVOICES_READ_MISSING
+            if exc.status_code == 401:
+                logger.error(
+                    "Stripe key self-check: Stripe rejected AURA_WEB_STRIPE_SECRET_KEY itself "
+                    "(HTTP 401); every Stripe call will fail until the key is replaced."
+                )
+                return KeyCheckResult.KEY_REJECTED
+            logger.warning(
+                "Stripe key self-check could not verify the key's permissions (%s); "
+                "startup continues.",
+                exc,
+            )
+            return KeyCheckResult.UNVERIFIED
+        except StripeUnavailableError as exc:
+            logger.warning(
+                "Stripe key self-check could not run (%s); startup continues. A missing "
+                "Invoices (read) permission would show up as failing subscription syncs.",
+                exc,
+            )
+            return KeyCheckResult.UNVERIFIED
+        logger.info("Stripe key self-check passed: the key can read invoices.")
+        return KeyCheckResult.PRESENT
 
     async def _request(
         self,

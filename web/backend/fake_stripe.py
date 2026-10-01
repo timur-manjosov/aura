@@ -12,6 +12,14 @@ written from Stripe's documentation rather than by calling the stripe SDK the
 service under test uses to verify them. A double that shared the verifier's
 implementation could not catch that implementation being wrong.
 
+Where the real sandbox run (reports/phase-4c-stripe-verification.md, section 7)
+found this stand-in more permissive or simpler than Stripe in a way that could
+hide a bug, it now behaves like Stripe: the Managed Payments refusal, the
+Invoices (read) permission an expansion needs, cancel_at beside
+cancel_at_period_end, a first invoice billed as subscription_create, renewals
+that start as a draft, the invoice's copy of the subscription metadata, the
+portal URL's shape, and test-clock subscriptions missing from a plain listing.
+
 Excluded from the backend image by .dockerignore, like fake_discord.py.
 """
 
@@ -54,6 +62,15 @@ MANAGED_PAYMENTS_REFUSAL = (
     "or pass managed_payments[enabled]=false to disable it for this request. You can "
     "configure whether Managed Payments is enabled by default at "
     "https://dashboard.stripe.com/acct_fakeStandIn/test/settings/managed-payments."
+)
+
+# Stripe's permission error, shaped as the sandbox returned it -- including the
+# key's last four characters, which is exactly why the service must never log
+# Stripe's message text.
+INVOICE_READ_REFUSAL = (
+    "Permission denied. The provided key 'rk_test_...{key_tail}' does not have the required "
+    "permissions for this endpoint on account 'acct_fakeStandIn'. Enabling Invoices Read "
+    "('invoice_read') permissions on this key would allow this request to continue."
 )
 
 
@@ -215,6 +232,9 @@ class FakeStripeState:
     # Stripe delivers it). While on, a checkout naming payment_method_types
     # is refused unless it switches Managed Payments off for itself.
     managed_payments_default: bool = True
+    # Whether the key holds Invoices (read). Without it Stripe refuses both
+    # GET /v1/invoices and every expansion of latest_invoice (V-02).
+    invoice_read_permission: bool = True
     # Replaces the hosted page URL a created session carries, so a test can
     # make "Stripe" hand back a link to somewhere that is not Stripe.
     checkout_url_override: str | None = None
@@ -352,6 +372,19 @@ def _managed_payments_enabled(form: dict[str, str], *, account_default: bool) ->
     return {"true": True, "false": False}.get(requested)
 
 
+def _invoice_read_refused(state: FakeStripeState) -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": {
+                "type": "invalid_request_error",
+                "code": "more_permissions_required",
+                "message": INVOICE_READ_REFUSAL.format(key_tail=state.secret_key[-4:]),
+            }
+        },
+        status_code=403,
+    )
+
+
 def create_fake_stripe(state: FakeStripeState) -> FastAPI:
     """Build the ASGI application. Routes mirror Stripe's own paths under /v1."""
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -456,6 +489,8 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
         if subscription is None:
             return _stripe_error(404, "invalid_request_error", "resource_missing")
         expand = request.query_params.getlist("expand[]")
+        if "latest_invoice" in expand and not state.invoice_read_permission:
+            return _invoice_read_refused(state)
         return JSONResponse(subscription.to_object(expand_invoice="latest_invoice" in expand))
 
     @app.get("/v1/subscriptions")
@@ -465,6 +500,10 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
             return _stripe_error(401, "invalid_request_error", "api_key_invalid")
         if state.fail_list_status is not None:
             return _stripe_error(state.fail_list_status, "api_error", "internal")
+        if "data.latest_invoice" in request.query_params.getlist("expand[]") and (
+            not state.invoice_read_permission
+        ):
+            return _invoice_read_refused(state)
         limit = int(request.query_params.get("limit", "10"))
         test_clock = request.query_params.get("test_clock")
         ordered = [
@@ -483,6 +522,19 @@ def create_fake_stripe(state: FakeStripeState) -> FastAPI:
                 "data": [subscription.to_object(expand_invoice=False) for subscription in page],
                 "has_more": len(ordered) > limit,
             }
+        )
+
+    @app.get("/v1/invoices")
+    async def list_invoices(request: Request) -> JSONResponse:
+        state.request_log.append("GET /v1/invoices")
+        if not authorized(request):
+            return _stripe_error(401, "invalid_request_error", "api_key_invalid")
+        if not state.invoice_read_permission:
+            return _invoice_read_refused(state)
+        limit = int(request.query_params.get("limit", "10"))
+        invoices = [subscription.invoice_object() for subscription in state.subscriptions.values()]
+        return JSONResponse(
+            {"object": "list", "data": invoices[:limit], "has_more": len(invoices) > limit}
         )
 
     @app.post("/v1/billing_portal/sessions")

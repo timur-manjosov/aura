@@ -19,6 +19,7 @@ stand-in over HTTP; nothing in aura_web is mocked.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -27,16 +28,21 @@ from typing import Final
 import httpx
 import pytest
 import pytest_asyncio
+from fastapi import FastAPI
 from pydantic import SecretStr
 
+from aura_web.app import check_stripe_key
+from aura_web.config import WebSettings
 from aura_web.stripe_api import (
     CHECKOUT_MANAGED_PAYMENTS_FIELD,
     CheckoutSession,
+    KeyCheckResult,
     StripeClient,
     StripeRejectedError,
     parse_subscription,
 )
-from fake_discord import FakeDiscordState
+from fake_bot_billing import FakeBotBillingState, create_fake_bot_billing
+from fake_discord import FakeDiscordState, create_fake_discord
 from fake_stripe import (
     DAY,
     DRAFT_FINALIZATION_WINDOW,
@@ -44,7 +50,7 @@ from fake_stripe import (
     FakeStripeState,
     create_fake_stripe,
 )
-from helpers import FRONTEND_BASE, complete_login
+from helpers import FAKE_BOT_BASE, FAKE_STRIPE_BASE, FRONTEND_BASE, build_app, complete_login
 
 NOW: Final = 1_790_000_000
 CHECKOUT: Final = "/api/billing/checkout"
@@ -343,6 +349,307 @@ class TestARefusalNamesTheParameter:
         )
         assert "The stand-in refused" not in log_text(caplog)
         assert stripe_state.secret_key not in log_text(caplog)
+
+
+# --- V-02: the startup key check ----------------------------------------------
+
+
+class TestTheKeyCheck:
+    async def test_a_key_that_can_read_invoices_passes_quietly(
+        self,
+        stripe_client: StripeClient,
+        stripe_state: FakeStripeState,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level(logging.DEBUG, logger="aura_web"):
+            result = await stripe_client.check_key_permissions()
+
+        assert result is KeyCheckResult.PRESENT
+        assert stripe_state.request_log == ["GET /v1/invoices"]
+        assert [r.levelno for r in caplog.records] == [logging.INFO]
+        assert stripe_state.secret_key not in log_text(caplog)
+
+    async def test_the_probe_is_one_harmless_read(self, stripe_state: FakeStripeState) -> None:
+        seen: list[httpx.Request] = []
+
+        async def record(request: httpx.Request) -> None:
+            seen.append(request)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_fake_stripe(stripe_state)),
+            base_url=STRIPE_BASE,
+            event_hooks={"request": [record]},
+        ) as http:
+            await client_for(http, stripe_state).check_key_permissions()
+
+        (request,) = seen
+        assert request.method == "GET"
+        assert request.url.path == "/v1/invoices"
+        assert dict(request.url.params) == {"limit": "1"}
+        assert request.headers["stripe-version"] == "2026-08-26.dahlia"
+
+    async def test_a_key_without_invoices_read_is_named_once_without_stripes_message(
+        self,
+        stripe_client: StripeClient,
+        stripe_state: FakeStripeState,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        stripe_state.invoice_read_permission = False
+
+        with caplog.at_level(logging.DEBUG, logger="aura_web"):
+            result = await stripe_client.check_key_permissions()
+
+        assert result is KeyCheckResult.INVOICES_READ_MISSING
+        (line,) = caplog.records
+        assert line.levelno == logging.ERROR
+        assert "Invoices (read)" in line.getMessage()
+        text = log_text(caplog)
+        # Stripe's message quotes the key's last four characters.
+        assert stripe_state.secret_key not in text
+        assert stripe_state.secret_key[-4:] not in text
+        assert "Permission denied" not in text and "invoice_read" not in text
+
+    async def test_a_rejected_key_is_named_without_the_key(
+        self, stripe_state: FakeStripeState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        wrong_key = "rk_test_revokedKey0000000000000000000000Zq9x"
+        async with stripe_http(stripe_state) as http:
+            with caplog.at_level(logging.DEBUG, logger="aura_web"):
+                result = await client_for(http, stripe_state, key=wrong_key).check_key_permissions()
+
+        assert result is KeyCheckResult.KEY_REJECTED
+        (line,) = caplog.records
+        assert line.levelno == logging.ERROR
+        assert "401" in line.getMessage()
+        assert wrong_key not in log_text(caplog) and "Zq9x" not in log_text(caplog)
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            httpx.ConnectError("connection refused to https://stripe.test/v1/invoices"),
+            httpx.ReadTimeout("timed out"),
+        ],
+        ids=["unreachable", "timeout"],
+    )
+    async def test_an_unreachable_stripe_is_a_warning_not_an_error_or_a_crash(
+        self,
+        stripe_state: FakeStripeState,
+        caplog: pytest.LogCaptureFixture,
+        failure: httpx.HTTPError,
+    ) -> None:
+        def explode(_: httpx.Request) -> httpx.Response:
+            raise failure
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(explode)) as http:
+            with caplog.at_level(logging.DEBUG, logger="aura_web"):
+                result = await client_for(http, stripe_state).check_key_permissions()
+
+        assert result is KeyCheckResult.UNVERIFIED
+        (line,) = caplog.records
+        assert line.levelno == logging.WARNING
+        assert "stripe.test" not in line.getMessage()
+
+    @pytest.mark.parametrize("status", [500, 503, 429])
+    async def test_a_stripe_outage_is_unverified(
+        self, stripe_state: FakeStripeState, caplog: pytest.LogCaptureFixture, status: int
+    ) -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(status))
+        ) as http:
+            with caplog.at_level(logging.DEBUG, logger="aura_web"):
+                result = await client_for(http, stripe_state).check_key_permissions()
+
+        assert result is KeyCheckResult.UNVERIFIED
+        assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+    async def test_another_refusal_is_unverified_and_carries_only_the_vocabulary(
+        self, stripe_state: FakeStripeState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        error = {"type": "invalid_request_error", "code": "weird", "message": "sk_test_secret"}
+        async with rejecting_client(error, status=404) as http:
+            with caplog.at_level(logging.DEBUG, logger="aura_web"):
+                result = await client_for(http, stripe_state).check_key_permissions()
+
+        assert result is KeyCheckResult.UNVERIFIED
+        (line,) = caplog.records
+        assert line.levelno == logging.WARNING
+        assert "invalid_request_error/weird" in line.getMessage()
+        assert "sk_test_secret" not in line.getMessage()
+
+    async def test_an_unexpected_exception_in_the_probe_is_swallowed_by_type(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        class Exploding:
+            async def check_key_permissions(self) -> KeyCheckResult:
+                raise RuntimeError("sk_test_mustNotAppear")
+
+        with caplog.at_level(logging.DEBUG, logger="aura_web"):
+            await check_stripe_key(Exploding())  # type: ignore[arg-type]
+
+        (line,) = caplog.records
+        assert line.levelno == logging.WARNING
+        assert "RuntimeError" in line.getMessage()
+        assert "sk_test_mustNotAppear" not in line.getMessage()
+
+
+class TestWithoutInvoicesReadEverySyncIsRefused:
+    """The stand-in's half of V-02: the expansion needs the permission, as at Stripe."""
+
+    async def test_retrieving_with_the_expansion_is_refused(
+        self, stripe_client: StripeClient, stripe_state: FakeStripeState
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+        stripe_state.invoice_read_permission = False
+
+        with pytest.raises(StripeRejectedError) as raised:
+            await stripe_client.retrieve_subscription(subscription.id)
+
+        assert raised.value.status_code == 403
+        assert "more_permissions_required" in str(raised.value)
+        assert stripe_state.secret_key[-4:] not in str(raised.value)
+
+    async def test_the_listing_without_the_expansion_still_works(
+        self, stripe_client: StripeClient, stripe_state: FakeStripeState
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=NOW
+        )
+        stripe_state.invoice_read_permission = False
+
+        assert await stripe_client.list_aura_subscription_ids() == [subscription.id]
+
+    async def test_listing_with_the_expansion_is_refused(
+        self, stripe_state: FakeStripeState
+    ) -> None:
+        stripe_state.invoice_read_permission = False
+        async with stripe_http(stripe_state) as http:
+            response = await http.get(
+                "/v1/subscriptions",
+                params=[("status", "all"), ("expand[]", "data.latest_invoice")],
+                headers={"Authorization": f"Bearer {stripe_state.secret_key}"},
+            )
+
+        assert response.status_code == 403
+
+
+@asynccontextmanager
+async def running_app(
+    web_settings: WebSettings,
+    discord_state: FakeDiscordState,
+    stripe_state: FakeStripeState,
+    bot_billing_state: FakeBotBillingState,
+    *,
+    stripe_transport: httpx.AsyncBaseTransport | None = None,
+) -> AsyncGenerator[tuple[FastAPI, httpx.AsyncClient]]:
+    async with (
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_fake_discord(discord_state)),
+            base_url="https://discord.test",
+        ) as discord_http,
+        httpx.AsyncClient(
+            transport=stripe_transport or httpx.ASGITransport(app=create_fake_stripe(stripe_state)),
+            base_url=FAKE_STRIPE_BASE,
+        ) as stripe_http_client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_fake_bot_billing(bot_billing_state)),
+            base_url=FAKE_BOT_BASE,
+        ) as bot_http,
+    ):
+        app = build_app(
+            web_settings,
+            discord_http,
+            stripe_http_client,
+            bot_http,
+            check_stripe_key_at_startup=True,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="https://testserver"
+            ) as client:
+                yield app, client
+
+
+class TestTheCheckRunsAtStartupWithoutHoldingItUp:
+    async def test_a_key_without_invoices_read_is_reported_and_the_service_still_serves(
+        self,
+        web_settings: WebSettings,
+        discord_state: FakeDiscordState,
+        stripe_state: FakeStripeState,
+        bot_billing_state: FakeBotBillingState,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        stripe_state.invoice_read_permission = False
+        with caplog.at_level(logging.INFO):
+            async with running_app(
+                web_settings, discord_state, stripe_state, bot_billing_state
+            ) as (app, client):
+                await app.state.stripe_key_check
+                login = await complete_login(client, discord_state, "5000")
+
+        assert login.status_code == 303
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1 and "Invoices (read)" in errors[0].getMessage()
+        assert stripe_state.request_log.count("GET /v1/invoices") == 1
+
+    async def test_a_stripe_that_never_answers_does_not_delay_startup(
+        self,
+        web_settings: WebSettings,
+        discord_state: FakeDiscordState,
+        stripe_state: FakeStripeState,
+        bot_billing_state: FakeBotBillingState,
+    ) -> None:
+        answered = asyncio.Event()
+
+        class Hanging(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, _: httpx.Request) -> httpx.Response:
+                await answered.wait()
+                return httpx.Response(200, json={"object": "list", "data": []})
+
+        async with running_app(
+            web_settings,
+            discord_state,
+            stripe_state,
+            bot_billing_state,
+            stripe_transport=Hanging(),
+        ) as (app, client):
+            # Startup has completed and requests are served while the probe is
+            # still waiting on Stripe.
+            response = await client.get("/api/me")
+            assert response.status_code == 401
+            assert not app.state.stripe_key_check.done()
+        # Shutdown cancelled the still-pending probe rather than waiting for it.
+        assert app.state.stripe_key_check.cancelled()
+
+    async def test_an_unreachable_stripe_at_startup_is_one_warning(
+        self,
+        web_settings: WebSettings,
+        discord_state: FakeDiscordState,
+        stripe_state: FakeStripeState,
+        bot_billing_state: FakeBotBillingState,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        def explode(_: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("unreachable")
+
+        with caplog.at_level(logging.INFO):
+            async with running_app(
+                web_settings,
+                discord_state,
+                stripe_state,
+                bot_billing_state,
+                stripe_transport=httpx.MockTransport(explode),
+            ) as (app, client):
+                await app.state.stripe_key_check
+                assert (await client.get("/api/me")).status_code == 401
+
+        warnings = [
+            r
+            for r in caplog.records
+            if "self-check" in r.getMessage() and r.levelno >= logging.INFO
+        ]
+        assert [r.levelno for r in warnings] == [logging.WARNING]
 
 
 # --- V-12: stand-in fidelity --------------------------------------------------

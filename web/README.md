@@ -278,6 +278,12 @@ subscription store was unreachable" is not a state a Pro trigger can observe.
   `payment_method_types[]=card` itself, so a bank debit enabled in the
   dashboard is never offered: it would make a subscription `active` days
   before its first payment settles.
+- **Restricted key:** created from zero permissions with exactly Checkout
+  Sessions (write), Subscriptions (read), Invoices (read) and Customer portal
+  (write) — `web/.env.example` gives the reason for each. Invoices (read) is
+  the one that is easy to miss: every sync expands `latest_invoice`, and
+  without it every webhook answers `503`. The backend probes for it once at
+  startup and logs one `ERROR` if it is missing.
 - **Revenue recovery:** enable failed-payment emails to customers (the payer's
   half of the grace-period communication; `/aura-plan` and this dashboard are
   the admins' half) and choose what happens after the last retry

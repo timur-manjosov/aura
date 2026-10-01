@@ -133,3 +133,38 @@ class TestTheDefaultClientsAreBuiltFromTheSettings:
 
         assert portal.status_code == 200
         assert stripe_state.portal_sessions[-1]["configuration"] == PORTAL_CONFIGURATION
+
+
+class TestTheKeyCheckIsOnInProduction:
+    async def test_the_default_app_probes_the_configured_key_once_at_startup(
+        self,
+        web_settings: WebSettings,
+        discord_state: FakeDiscordState,
+        stripe_state: FakeStripeState,
+        bot_billing_state: FakeBotBillingState,
+    ) -> None:
+        routes: dict[str, httpx.AsyncBaseTransport] = {
+            httpx.URL(FAKE_DISCORD_BASE).host: httpx.ASGITransport(
+                app=create_fake_discord(discord_state)
+            ),
+            httpx.URL(FAKE_STRIPE_BASE).host: httpx.ASGITransport(
+                app=create_fake_stripe(stripe_state)
+            ),
+            httpx.URL(FAKE_BOT_BASE).host: httpx.ASGITransport(
+                app=create_fake_bot_billing(bot_billing_state)
+            ),
+        }
+        real_client = httpx.AsyncClient
+
+        def routed_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+            return real_client(*args, transport=HostRoutingTransport(routes), **kwargs)  # type: ignore[arg-type]
+
+        app = create_app(web_settings)
+        with patch("aura_web.app.httpx.AsyncClient", routed_client):
+            async with app.router.lifespan_context(app):
+                await app.state.stripe_key_check
+
+        assert stripe_state.request_log == ["GET /v1/invoices"]
+        assert stripe_state.received_headers[-1]["authorization"] == (
+            f"Bearer {stripe_state.secret_key}"
+        )
