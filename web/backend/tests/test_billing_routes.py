@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import httpx
 import pytest
@@ -575,3 +576,181 @@ class TestThePortalConfigurationReachesStripe:
         await post_json(moderator, PORTAL, {"guild_id": "1000"})
 
         assert "configuration" not in stripe_state.portal_sessions[-1]
+
+
+# --- Enforced-billing test: no checkout where paying buys nothing --------------
+
+
+class TestNothingToBuy:
+    """A checkout only where a subscription decides the plan; every refusal before Stripe."""
+
+    @pytest.mark.parametrize("basis", ["billing_not_enforced", "complimentary"])
+    async def test_a_guild_whose_plan_no_subscription_decides_is_refused_before_stripe(
+        self, moderator, stripe_state, bot_billing_state, basis: str
+    ) -> None:
+        bot_billing_state.plans["1000"] = unpaid_plan(basis=basis)
+
+        response = await post_json(moderator, CHECKOUT, {"guild_id": "1000"})
+
+        assert response.status_code == 409
+        assert response.json() == {"error": "nothing_to_buy"}
+        assert stripe_state.request_log == []
+        assert stripe_state.checkout_sessions == {}
+
+    @pytest.mark.parametrize("basis", ["billing_not_enforced", "complimentary"])
+    async def test_it_is_refused_on_that_basis_even_when_someone_is_already_paying(
+        self, moderator, stripe_state, bot_billing_state, basis: str
+    ) -> None:
+        bot_billing_state.plans["1000"] = paying_plan(purchaser="7777") | {"basis": basis}
+
+        response = await post_json(moderator, CHECKOUT, {"guild_id": "1000"})
+
+        assert response.status_code == 409
+        assert response.json() == {"error": "nothing_to_buy"}
+        assert stripe_state.request_log == []
+
+    @pytest.mark.parametrize("standing", ["no_subscription", "ended"])
+    async def test_under_enforcement_a_free_guild_still_gets_its_checkout(
+        self, moderator, stripe_state, bot_billing_state, standing: str
+    ) -> None:
+        bot_billing_state.plans["1000"] = unpaid_plan(tier="free", standing=standing)
+
+        response = await post_json(moderator, CHECKOUT, {"guild_id": "1000"})
+
+        assert response.status_code == 200
+        assert httpx.URL(response.json()["url"]).host == "checkout.stripe.com"
+        assert len(stripe_state.checkout_sessions) == 1
+
+    async def test_under_enforcement_a_paying_guild_is_still_already_subscribed(
+        self, moderator, stripe_state, bot_billing_state
+    ) -> None:
+        bot_billing_state.plans["1000"] = paying_plan(purchaser="7777")
+
+        response = await post_json(moderator, CHECKOUT, {"guild_id": "1000"})
+
+        assert (response.status_code, response.json()) == (409, {"error": "already_subscribed"})
+        assert stripe_state.request_log == []
+
+    async def test_a_guild_the_user_cannot_manage_learns_nothing_about_its_basis(
+        self, moderator, stripe_state, bot_billing_state
+    ) -> None:
+        """Aura is in 3000 but the user is only a member: 403 first, the bot never asked."""
+        bot_billing_state.plans["3000"] = unpaid_plan(basis="billing_not_enforced")
+
+        response = await post_json(moderator, CHECKOUT, {"guild_id": "3000"})
+
+        assert (response.status_code, response.json()) == (403, {"error": "guild_not_manageable"})
+        assert "plans" not in bot_billing_state.request_log
+        assert stripe_state.request_log == []
+
+    @pytest.mark.parametrize(
+        "break_the_bot",
+        [
+            pytest.param(lambda state: setattr(state, "fail_status", 503), id="bot-5xx"),
+            pytest.param(lambda state: setattr(state, "secret", "x" * 48), id="secret-refused"),
+            pytest.param(
+                lambda state: state.plans.__setitem__("1000", unpaid_plan(basis="enforced")),
+                id="unknown-basis",
+            ),
+            pytest.param(
+                lambda state: state.plans.__setitem__("1000", unpaid_plan(basis=None)),
+                id="no-basis",
+            ),
+        ],
+    )
+    async def test_when_the_bot_cannot_say_it_fails_closed_rather_than_assuming_enforcement(
+        self, moderator, stripe_state, bot_billing_state, break_the_bot
+    ) -> None:
+        break_the_bot(bot_billing_state)
+
+        response = await post_json(moderator, CHECKOUT, {"guild_id": "1000"})
+
+        assert (response.status_code, response.json()) == (503, {"error": "billing_unavailable"})
+        assert stripe_state.request_log == []
+
+    async def test_an_unreachable_bot_fails_closed_before_stripe(
+        self,
+        web_settings: WebSettings,
+        discord_state: FakeDiscordState,
+        stripe_state: FakeStripeState,
+    ) -> None:
+        def connection_refused(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        async with (
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=create_fake_discord(discord_state)),
+                base_url="https://discord.test",
+            ) as discord_http,
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=create_fake_stripe(stripe_state)),
+                base_url=FAKE_STRIPE_BASE,
+            ) as stripe_http,
+            httpx.AsyncClient(
+                transport=httpx.MockTransport(connection_refused), base_url=FAKE_BOT_BASE
+            ) as bot_http,
+        ):
+            app = build_app(web_settings, discord_http, stripe_http, bot_http)
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="https://testserver"
+                ) as browser:
+                    await complete_login(browser, discord_state, "5000")
+                    response = await post_json(browser, CHECKOUT, {"guild_id": "1000"})
+
+        assert (response.status_code, response.json()) == (503, {"error": "billing_unavailable"})
+        assert stripe_state.request_log == []
+
+    async def test_the_bot_is_asked_afresh_for_every_checkout(
+        self, moderator, stripe_state, bot_billing_state
+    ) -> None:
+        """Enforcement switched off between two clicks: the second is refused, not served stale."""
+        first = await post_json(moderator, CHECKOUT, {"guild_id": "1000"})
+        bot_billing_state.plans["1000"] = unpaid_plan(basis="billing_not_enforced")
+        second = await post_json(moderator, CHECKOUT, {"guild_id": "1000"})
+
+        assert first.status_code == 200
+        assert (second.status_code, second.json()) == (409, {"error": "nothing_to_buy"})
+        assert len(stripe_state.checkout_sessions) == 1
+        assert bot_billing_state.request_log.count("plans") == 2
+
+    @pytest.mark.parametrize("basis", ["billing_not_enforced", "complimentary"])
+    async def test_the_payer_can_still_open_the_portal_on_that_basis(
+        self, moderator, stripe_state, bot_billing_state, basis: str
+    ) -> None:
+        subscription = stripe_state.add_subscription(
+            guild_id="1000", purchaser_user_id="5000", now=0
+        )
+        bot_billing_state.plans["1000"] = paying_plan(
+            purchaser="5000", customer=subscription.customer
+        ) | {"basis": basis}
+
+        response = await post_json(moderator, PORTAL, {"guild_id": "1000"})
+
+        assert response.status_code == 200
+        assert httpx.URL(response.json()["url"]).host == "billing.stripe.com"
+
+    @pytest.mark.parametrize("basis", ["billing_not_enforced", "complimentary", "subscription"])
+    @pytest.mark.parametrize("paying", [False, True])
+    async def test_the_route_refuses_exactly_what_the_dashboard_does_not_offer(
+        self, moderator, stripe_state, bot_billing_state, basis: str, paying: bool
+    ) -> None:
+        plan = paying_plan(purchaser="7777") if paying else unpaid_plan(tier="free")
+        bot_billing_state.plans["1000"] = plan | {"basis": basis}
+
+        offered = (await moderator.get("/api/billing/guilds")).json()[0]["plan"]["can_subscribe"]
+        response = await post_json(moderator, CHECKOUT, {"guild_id": "1000"})
+
+        assert offered is (response.status_code == 200)
+        assert offered is (len(stripe_state.checkout_sessions) == 1)
+
+    async def test_the_refusal_is_logged_with_the_basis_and_nothing_else_reaches_stripe(
+        self, moderator, stripe_state, bot_billing_state, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING, logger="aura_web.routes.billing")
+        bot_billing_state.plans["1000"] = unpaid_plan(basis="complimentary")
+
+        await post_json(moderator, CHECKOUT, {"guild_id": "1000"})
+
+        (line,) = [r.getMessage() for r in caplog.records if r.name == "aura_web.routes.billing"]
+        assert "guild 1000" in line and "user 5000" in line and "complimentary" in line

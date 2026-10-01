@@ -33,6 +33,7 @@
   "billing_unavailable": "Plan-Informationen sind gerade nicht verfügbar.",
   "error_guild_not_manageable": "Du kannst nur Server abonnieren, die du verwaltest und auf denen Aura ist.",
   "error_already_subscribed": "Dieser Server hat bereits ein aktives Pro-Abo.",
+  "error_nothing_to_buy": "Dieser Server hat bereits alle Funktionen ohne Abo, es gibt also nichts zu kaufen. Es wurde nichts berechnet.",
   "error_not_billing_owner": "Nur die Person, die das Abo abgeschlossen hat, kann die Abrechnung dieses Servers verwalten.",
   "error_payment_provider": "Stripe war nicht erreichbar. Bitte versuche es gleich noch einmal.",
   "error_rate_limited": "Zu viele Anfragen. Bitte warte eine Minute und versuche es dann erneut."

@@ -55,6 +55,7 @@ const BILLING_ERROR_KEYS: Record<string, string> = {
   discord_unavailable: "error_discord_unavailable",
   guild_not_manageable: "error_guild_not_manageable",
   already_subscribed: "error_already_subscribed",
+  nothing_to_buy: "error_nothing_to_buy",
   not_billing_owner: "error_not_billing_owner",
   payment_provider_unavailable: "error_payment_provider",
   payment_provider_error: "error_payment_provider",

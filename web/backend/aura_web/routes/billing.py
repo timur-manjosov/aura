@@ -9,6 +9,8 @@ WHO MAY DO WHAT, decided here and nowhere else:
     against Discord's live answer, to be a guild this user manages and Aura is
     in, before anything is sent to Stripe. The ID that reaches Stripe's
     metadata is the checked one; nothing else from the body goes anywhere.
+    Only a guild whose plan a subscription decides can be bought for: with
+    billing not enforced, or on a complimentary guild, paying changes nothing.
   * POST /api/billing/portal   -- Stripe's billing portal for a subscription
     THIS user paid for. Managing the guild is not enough: another admin of the
     same server must not see the payer's card, address or invoices. Having paid
@@ -150,7 +152,8 @@ def browser_plan(plan: GuildPlanView, *, user_id: str) -> dict[str, object]:
     -----
     A guild on Pro because billing is not enforced, or because the operator
     made it complimentary, is not offered a checkout: a subscription would buy
-    it nothing (Phase 4c audit, F-15).
+    it nothing (Phase 4c audit, F-15). The checkout route refuses the same
+    guilds, through the same predicate, for a request this page did not make.
     """
     return {
         "tier": plan.tier,
@@ -159,7 +162,7 @@ def browser_plan(plan: GuildPlanView, *, user_id: str) -> dict[str, object]:
         "access_until": plan.access_until,
         "paid_through": plan.paid_through,
         "active_subscription_count": plan.in_force_subscription_count,
-        "can_subscribe": plan.basis == "subscription" and plan.in_force_subscription_count == 0,
+        "can_subscribe": plan.decided_by_subscription and plan.in_force_subscription_count == 0,
         "is_billing_owner": any(
             subscription.purchaser_user_id == user_id for subscription in plan.subscriptions
         ),
@@ -248,7 +251,20 @@ async def create_checkout(
     Response
         The hosted checkout URL for the browser to follow, or a JSON error:
         401 without a session, 403 for a guild the caller may not manage, 409
-        when the guild already has a subscription the bot knows about.
+        `nothing_to_buy` when no subscription decides the guild's plan (billing
+        not enforced, or the guild complimentary), 409 `already_subscribed`
+        when the guild already has a subscription the bot knows about, 503
+        when the bot's answer cannot be obtained. Every refusal is sent before
+        Stripe is contacted.
+
+    Notes
+    -----
+    Whether paying buys anything is read from the bot on every request, never
+    cached, and an unreadable answer refuses (503) rather than assuming
+    enforcement: a payment can only start on the bot's current word that the
+    guild's plan depends on it. What this cannot close is a Checkout Session
+    already handed out under enforcement and paid after the operator switched
+    enforcement off; the page Stripe hosts is not this service's to withdraw.
     """
     refusal = _refuse_cross_site(request, context)
     if refusal is not None:
@@ -278,6 +294,18 @@ async def create_checkout(
         # charge to a real card.
         logger.warning("Refused a checkout for guild %s: plans unavailable (%s)", guild_id, exc)
         return error_response(ErrorCode.BILLING_UNAVAILABLE, status_code=503)
+    if not plan.decided_by_subscription:
+        # The dashboard does not offer this (can_subscribe), so only a
+        # hand-made request gets here -- and it would charge a real card for
+        # a plan the guild already has.
+        logger.warning(
+            "Refused a checkout for guild %s by user %s: its plan is not decided by a "
+            "subscription (basis %s)",
+            guild_id,
+            caller.session.user.id,
+            plan.basis,
+        )
+        return error_response(ErrorCode.NOTHING_TO_BUY, status_code=409)
     if plan.in_force_subscription_count > 0:
         return error_response(ErrorCode.ALREADY_SUBSCRIBED, status_code=409)
 

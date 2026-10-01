@@ -412,8 +412,12 @@ subscription store was unreachable" is not a state a Pro trigger can observe.
   operator's step (see DEPLOYMENT.md), as is switching to live Stripe keys.
 - **"Upgrade to Pro" is offered only where it changes something**: a guild
   whose plan is decided by subscription and that has none granting yet. With
-  `BILLING_MODE=disabled`, or on a complimentary guild, the button is not shown
-  — which also means nobody can subscribe ahead of enforcement from the
-  dashboard. The checkout route itself does not refuse those guilds: only a
-  hand-crafted request reaches it, and it charges its own sender for a
-  subscription that buys nothing extra.
+  `BILLING_MODE=disabled`, or on a complimentary guild, the button is not shown,
+  and the checkout route refuses a hand-made request for such a guild with
+  `409 nothing_to_buy` before Stripe is contacted. Nobody can subscribe ahead
+  of enforcement: switch enforcement on (with the operator's own guilds
+  complimentary) before the first checkout. The route asks the bot on every
+  request; when the bot cannot answer it refuses with `503`, never assuming
+  enforcement. A Checkout Session handed out under enforcement and paid only
+  after enforcement was switched off still completes: Stripe's hosted page is
+  not this service's to withdraw.

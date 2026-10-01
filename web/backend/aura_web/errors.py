@@ -34,6 +34,9 @@ class ErrorCode(StrEnum):
     PAYLOAD_TOO_LARGE = "payload_too_large"
     GUILD_NOT_MANAGEABLE = "guild_not_manageable"
     ALREADY_SUBSCRIBED = "already_subscribed"
+    # A checkout for a guild whose plan no subscription decides: billing is not
+    # enforced, or the operator made the guild complimentary.
+    NOTHING_TO_BUY = "nothing_to_buy"
     NOT_BILLING_OWNER = "not_billing_owner"
     BILLING_UNAVAILABLE = "billing_unavailable"
     PAYMENT_PROVIDER_UNAVAILABLE = "payment_provider_unavailable"
