@@ -19,6 +19,9 @@ no context beyond what's written here.
 - Both Aura and Epiphyte run under Docker Compose's `restart: unless-stopped`
   policy, independently. Neither shares a network, volume, or process with
   the other.
+- The web interface (`web/`) is a third, separate compose project
+  (`aura-web`), reached at `https://aura.timurmanjosov.com` through the host's
+  existing Caddy. See "The web interface on the server" below.
 
 ## First-time setup
 
@@ -553,6 +556,206 @@ Stripe redelivers them, and every redelivery is idempotent. If the web
 interface was down for longer than Stripe's retry window, the reconciliation
 that runs a minute after startup and every six hours re-syncs every
 subscription.
+
+## The web interface on the server
+
+The web stack runs as its own compose project next to the bot and behind the
+**Caddy that is already installed on the host** (a systemd service, not a
+container) and already serves the portfolio site on ports 80 and 443. Aura's
+site is added to that Caddy as one more site block; there is no second proxy,
+and that Caddy is never stopped or restarted, only gracefully reloaded.
+
+### What is reachable from where
+
+| Component | Listens on | Reachable from |
+|---|---|---|
+| Caddy, site `aura.timurmanjosov.com` | host ports 80, 443 | the internet. Port 80 only redirects to HTTPS |
+| Frontend (Next.js) | `127.0.0.1:3000` on the host | the host only. Caddy proxies to it |
+| Backend (FastAPI) | port 8080 on the `aura-web` network | the frontend container. No host port |
+| Bot's internal billing API | port 8081 on `aura-billing` (internal) | the web backend. No host port |
+
+"No host port" is not "unreachable from the host": any process on the VPS can
+connect to a container's own address. The backend trusts nothing on that basis
+(see the client address below), and the bot's internal API is closed by its
+shared secret, not by the network. Caddy's own admin API listens on
+`localhost:2019` (its default, predating Aura); any local user can reconfigure
+Caddy through it.
+
+`web/docker-compose.yml` publishes the frontend on `127.0.0.1` on purpose:
+Docker's published ports bypass the host firewall, so binding every interface
+would put plain HTTP on the internet next to Caddy.
+
+### Prerequisites
+
+1. **DNS.** An `A` and an `AAAA` record for `aura.timurmanjosov.com` with the
+   same addresses as the main domain. Check from anywhere:
+   `getent ahosts aura.timurmanjosov.com` against `getent ahosts timurmanjosov.com`.
+   Until the name resolves publicly, Caddy cannot obtain a certificate.
+2. **Ports 80 and 443 open** on the host firewall and in Netcup's panel. They
+   already are for the portfolio; the certificate challenge needs them.
+3. **The bot is up** (it creates the `aura-billing` network the web backend
+   joins).
+4. **Discord:** under the application's OAuth2 → Redirects, add exactly
+   `https://aura.timurmanjosov.com/api/auth/callback`.
+5. **Stripe (test mode):** a webhook endpoint (below) and its signing secret.
+6. **The `aura-web` subnet is free.** The compose file pins `172.16.86.0/28`.
+   List every subnet already in use:
+   `for n in $(docker network ls -q); do docker network inspect -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}' "$n"; done; ip -4 route`.
+   Nothing may lie inside `172.16.86.0/28` or contain it. Docker's automatic
+   pools start at `172.17.0.0/16`, so it never hands out this range by itself;
+   only a hand-made network or a host route can collide. (Checked 2026-10-01:
+   the host uses `172.17`–`172.20.0.0/16` and the public `/22`, nothing else.)
+
+### `web/.env` on the server
+
+Copy the laptop's `web/.env` with `scp` (never through git, never printed),
+`chmod 600` it, then change exactly these lines (they are not secrets):
+
+    AURA_WEB_OAUTH_REDIRECT_URI=https://aura.timurmanjosov.com/api/auth/callback
+    AURA_WEB_POST_LOGIN_REDIRECT_URL=https://aura.timurmanjosov.com/
+    AURA_WEB_CHECKOUT_SUCCESS_URL=https://aura.timurmanjosov.com/?checkout=success
+    AURA_WEB_CHECKOUT_CANCEL_URL=https://aura.timurmanjosov.com/?checkout=cancelled
+    AURA_WEB_BILLING_PORTAL_RETURN_URL=https://aura.timurmanjosov.com/
+
+- `AURA_WEB_POST_LOGIN_REDIRECT_URL` is also what the billing routes compare a
+  request's `Origin` against (`WebSettings.frontend_origin`): it must be
+  exactly the public origin, `https`, no port.
+- `AURA_WEB_SESSION_COOKIE_SECURE` stays unset (on).
+- `AURA_WEB_STRIPE_WEBHOOK_SECRET` must be the signing secret of the **server's
+  own endpoint**, not the `stripe listen` one from local testing.
+- `AURA_WEB_DISCORD_BOT_TOKEN` must equal the bot's `DISCORD_TOKEN` (compare by
+  hash, not by eye).
+- `AURA_WEB_BOT_INTERNAL_API_URL` stays `http://aura-bot:8081`.
+- Do not set `AURA_WEB_TRUSTED_PROXY_ADDRESSES`; the compose file sets it.
+
+### Bringing it up
+
+    cd ~/projects/aura && git pull --ff-only
+    docker compose -f web/docker-compose.yml up -d --build
+
+Only the `aura-web` project is touched. Check: both containers healthy with
+`RestartCount` 0; the backend log shows `Stripe billing ready: test mode`,
+`Stripe key self-check passed` and the `Request limits per client` line;
+`ss -ltnp` shows `127.0.0.1:3000` and nothing new on a public address.
+
+### Adding the site to Caddy
+
+`/etc/caddy/Caddyfile` belongs to root, so the steps that change it need
+`sudo`. The block to add is `web/deploy/Caddyfile.aura`: one site, no global
+options, nothing that changes another site's behaviour.
+
+1. **Back up** (as the normal user):
+
+       TS=$(date -u +%Y%m%d-%H%M%S); B=~/backups/caddy-$TS-pre-aura-web
+       mkdir -m 700 -p "$B" && cp -p /etc/caddy/Caddyfile "$B/Caddyfile.before"
+       ls -la /etc/caddy > "$B/etc-caddy-listing.txt"
+
+2. **Stage** the combined file, and confirm the existing sites are untouched:
+
+       mkdir -p /tmp/aura-caddy
+       { cat /etc/caddy/Caddyfile; printf '\n'; cat ~/projects/aura/web/deploy/Caddyfile.aura; } > /tmp/aura-caddy/Caddyfile.new
+       chmod 644 /tmp/aura-caddy/Caddyfile.new
+
+   `caddy adapt` both files and compare the JSON routes of every existing
+   hostname: they must be identical except for the path of the configuration
+   file itself, which `file_server` hides (and which is the same once the file
+   is installed).
+
+3. **Validate as the `caddy` user, install, reload gracefully** (with sudo):
+
+       sudo -u caddy -H caddy validate --config /tmp/aura-caddy/Caddyfile.new --adapter caddyfile \
+         && sudo cp -a /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak-$TS \
+         && sudo install -m 644 -o root -g root /tmp/aura-caddy/Caddyfile.new /etc/caddy/Caddyfile \
+         && sudo systemctl reload caddy
+
+   Validate as `caddy`, not as root: validation opens the new access log, and
+   a log file created by root is one the running Caddy cannot open. A reload
+   that fails leaves the previous configuration running.
+
+4. **Verify immediately:** the portfolio answers with exactly the status codes
+   and headers it had before (compare against a snapshot taken in step 1);
+   then `https://aura.timurmanjosov.com` serves the sign-in page with a valid
+   certificate, `http://` redirects to `https://`, the response carries
+   `X-Robots-Tag: noindex` and an HSTS header **without** `includeSubDomains`,
+   and an unsigned `POST /api/stripe/webhook` is answered `400`.
+
+**Rolling the Caddy change back** (portfolio not exactly as before, or anything
+unexpected):
+
+    sudo install -m 644 -o root -g root ~/backups/caddy-<TS>-pre-aura-web/Caddyfile.before /etc/caddy/Caddyfile && sudo systemctl reload caddy
+
+The access log for this site is `/var/log/caddy/aura.timurmanjosov.com.access.log`
+(rotated at 10 MiB, ten files, 30 days). It never contains bodies; Caddy redacts
+cookies and `Authorization`, and the block additionally drops `Stripe-Signature`
+and the OAuth callback's `code` and `state`.
+
+### Registering the Stripe webhook
+
+In the Stripe Dashboard, **in the sandbox** (the sandbox banner is visible):
+Developers → Webhooks → add an endpoint at
+`https://aura.timurmanjosov.com/api/stripe/webhook` with the 13 events listed in
+`web/.env.example`. Reveal its signing secret, type it into the server's
+`web/.env` as `AURA_WEB_STRIPE_WEBHOOK_SECRET` (with an editor on the server, so
+it never passes through a chat or a terminal history on another machine), then
+restart only the backend:
+
+    docker compose -f web/docker-compose.yml up -d --force-recreate backend
+
+### Connecting the bot
+
+The web backend reaches the bot's internal billing API only once the bot has
+`INTERNAL_API_SECRET` set, with the same value as
+`AURA_WEB_BOT_INTERNAL_API_SECRET`. Adding it is a bot restart: take the full
+deploy discipline (online backup of the database, integrity check, row counts,
+a tagged rollback image), add the line, `docker compose up -d aura`, and look
+for `Internal billing API listening on 0.0.0.0:8081`. `BILLING_MODE` is a
+separate decision (see "Plans and billing").
+
+### The client address and rate limiting
+
+The backend limits requests per client in four buckets (sign-in, billing
+actions, the Stripe webhook, everything else); the limits and the reasoning
+behind each default are in `web/.env.example`, and every one is an
+`AURA_WEB_RATE_LIMIT_*` setting. A client over its limit gets `429` with
+`Retry-After`, before any request body is read. Only webhook deliveries that
+fail signature verification count against the webhook's limit, so Stripe's own
+deliveries are never refused by it.
+
+The limit is keyed by the real client address, which the backend takes from
+`X-Forwarded-For` **only** when the request comes from the frontend container's
+pinned address, and then from the right-hand end. Caddy (with no
+`trusted_proxies`) replaces whatever `X-Forwarded-For` a client sends with the
+client's real address, and Next.js passes it on unchanged, so a client cannot
+choose its own identity. `Forwarded` and `X-Real-IP` are never read. To raise a
+limit, set the variable in `web/.env` and recreate the backend.
+
+An IPv4 client is one address. An IPv6 client is its whole `/64`, the block a
+single subscriber is normally given, because a client could otherwise rotate
+through 2^64 addresses of its own. The domain has an `AAAA` record, so phones
+on mobile data often arrive over IPv6. The other side of this choice: many
+visitors behind one carrier-grade NAT IPv4 address share one budget.
+
+Page and static-file requests are served by Next.js and are not rate-limited
+(the stock Caddy build has no rate-limit module, and rebuilding the host's
+Caddy with a plugin would put the other site at risk).
+
+### Sessions stay in memory (decision)
+
+Restarting the backend logs every user out. That is accepted: it costs a
+re-login, it has no effect on billing (a webhook or a reconciliation never
+depends on a session; verified in the Phase 4c audit, E4), and it means no
+Discord token is ever written to disk. Durable sessions are deferred until a
+feature needs them.
+
+### Rolling the web stack back
+
+- **Take the site off Caddy:** restore the backed-up Caddyfile and reload (above).
+- **Stop the web stack:** `docker compose -f web/docker-compose.yml down`
+  (removes only the `aura-web` containers and its own network; the external
+  `aura-billing` network and the bot are untouched).
+- **Disconnect the bot:** remove the `INTERNAL_API_SECRET` line from `.env` and
+  `docker compose up -d aura`; the log then says the internal billing API is
+  not started.
 
 ## Restart policy: what `unless-stopped` actually guarantees
 

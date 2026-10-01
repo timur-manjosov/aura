@@ -20,7 +20,20 @@ web/
    flow.
 2. `cp web/.env.example web/.env` and fill in the three credentials.
 3. `docker compose -f web/docker-compose.yml up -d --build`
-4. Open <http://localhost:3000>.
+4. Open <http://localhost:3000>. The frontend is published on `127.0.0.1`
+   only; nothing else on the network can reach it.
+
+The `aura-web` network has a fixed subnet (`172.16.86.0/28`, outside Docker's
+automatic pools) because the backend trusts exactly one pinned address -- the
+frontend's -- to report the client address (see "Behind a reverse proxy"). A
+checkout that already ran an older version of this project needs one
+`docker compose -f web/docker-compose.yml down` first, so the network is
+recreated with that subnet. If the subnet collides with something on a
+particular machine, `up` says so ("Pool overlaps"); change it and both pinned
+addresses together.
+
+The deployed setup, behind the host's Caddy on `aura.timurmanjosov.com`, is
+described in DEPLOYMENT.md, "The web interface on the server".
 
 For development without Docker:
 
@@ -131,6 +144,8 @@ address. `next dev` reads it at start-up as you would expect.
 | Both in-memory stores are bounded | `WebSettings.max_*` | `/api/auth/login` is unauthenticated; an unbounded store is a memory lever |
 | Post-login destination is config-only | `WebSettings.post_login_redirect_url` | A caller-chosen redirect target is the textbook open redirect in an OAuth callback |
 | Logout is POST-only | `routes/auth.py::logout` | A GET logout is CSRF-able from any page with an `<img>` tag |
+| `X-Forwarded-For` believed only from the frontend's pinned address, rightmost entry | `client_address.py` | A client-chosen address would choose its own rate-limit identity and its own log entry |
+| Per-client limits before any body is read | `rate_limit.py` | Unauthenticated routes are memory and upstream-call levers; a flood must cost almost nothing |
 | `Cache-Control: no-store` on every response | `app.SecurityHeadersMiddleware` | `/api/guilds` is a per-session answer behind a cookie; a shared cache would hand it to the next person |
 | Redirects are not followed | `app.create_app` | Following one would forward a bearer token to wherever it pointed |
 | Guild list fails closed on a Discord outage | `routes/dashboard.py`, `bot_guilds.py` | Without a trustworthy membership list the filter cannot be applied; answering anyway would list servers Aura is not in |
@@ -140,15 +155,82 @@ address. `next dev` reads it at start-up as you would expect.
 
 - **Sessions live in memory.** Restarting the backend logs everyone out. In
   exchange, no Discord token is ever written to disk and this sub-phase adds
-  no table. 4c/4d will need durable sessions; the two stores are behind small
-  interfaces for that reason.
+  no table. Kept that way for the public deployment, on purpose: a restart
+  costs a re-login and nothing else -- no webhook and no reconciliation
+  depends on a session (Phase 4c audit, E4). The two stores stay behind small
+  interfaces so durable sessions can be added when a feature needs them.
 - **The session store's ceiling can evict a live session.** With `max_sessions`
   reached, the oldest login is dropped. That is recoverable (log in again);
   refusing all new logins would not be.
-- **No rate limiting of its own.** `/api/auth/login` is unauthenticated and
-  cheap, but it is not free. The store bounds memory; it does not bound
-  request rate. A reverse proxy in front is the right place for that, and
-  there is none yet in local development.
+- ~~No rate limiting of its own~~ -- resolved for the web deployment: see
+  "Behind a reverse proxy" below.
+
+## Behind a reverse proxy (web deployment)
+
+Deployed, the chain is
+
+    browser --TLS--> host Caddy --> frontend (Next.js) --> backend
+
+and the backend is reachable only from the frontend container (plus, as any
+container is, from processes on the host itself).
+
+### Which address a request came from
+
+Every limit and every log line needs the real client address, and the backend
+only ever sees the frontend as its connection peer. What each hop does was
+measured against the deployed versions, not assumed:
+
+- **Caddy**, with no `trusted_proxies` configured, discards any
+  `X-Forwarded-For` the client sent (one header or several) and writes exactly
+  one entry: the client's real address. It passes `Forwarded` and `X-Real-IP`
+  through untouched.
+- **Next.js**'s rewrite proxy forwards `X-Forwarded-For` unchanged and adds
+  nothing.
+
+So the backend (`aura_web.client_address`) reads `X-Forwarded-For` only when
+the peer is the frontend's pinned address (`AURA_WEB_TRUSTED_PROXY_ADDRESSES`,
+set by the compose file), takes the rightmost entry that is not itself a
+trusted proxy, and falls back to the peer for anything malformed. It never
+reads `Forwarded` or `X-Real-IP`. uvicorn's own proxy-header handling is
+switched off, so this is the only rule. The resolved address replaces the
+connection's client address before anything else runs, so uvicorn's access
+log, the service's own log lines and the rate limiter all name the same
+client. A request from anywhere but the frontend (a process on the host,
+reaching the container's address directly) is attributed to its own address,
+whatever header it carries.
+
+### Request-rate limits
+
+`aura_web.rate_limit`: per-client token buckets, applied before any route reads
+a byte of the body, in a pure ASGI middleware.
+
+| Bucket | Routes | Default (burst, then per minute) | Why |
+|---|---|---|---|
+| `auth` | `/api/auth/*` | 20, then 10 | a callback is a Discord token exchange and a user fetch |
+| `billing` | `POST /api/billing/checkout`, `/portal` | 6, then 2 | each is a Discord, a bot and a Stripe call |
+| `webhook` | `/api/stripe/*` | 60, then 60 | **failed verifications only**: a verified delivery hands its token back |
+| `global` | everything else | 60, then 60 | a page view is three requests |
+
+A refused request gets `429`, `Retry-After` (whole seconds until one token is
+back) and `{"error": "rate_limited"}`, with the usual security headers, and is
+logged once per episode at WARNING (client, bucket, method and path -- never a
+query string). IPv6 clients are keyed by their /64; clients behind one shared
+address (a carrier-grade NAT) share its limits, which the defaults leave room
+for at Aura's scale. Memory is bounded per bucket
+(`AURA_WEB_RATE_LIMIT_MAX_TRACKED_CLIENTS`, least recently seen forgotten
+first): about 11 MB with all four buckets full at the default.
+
+The webhook bucket's refund is what keeps "a legitimate Stripe delivery is
+never refused" true without exempting any address: Stripe's deliveries all
+verify, so they never hold a token past their own verification, while a
+client sending forgeries drains its bucket and is then refused without its
+body being read. One residual, by construction: another Stripe account could
+point its own endpoint at this URL, and Stripe would then deliver events
+signed with *that* account's secret from the same addresses that deliver
+Aura's. Those fail verification and count. Draining a Stripe address's bucket
+that way takes over 60 failed deliveries a minute through that one address,
+and a refused delivery is not lost -- Stripe retries it for up to three days,
+and the six-hourly reconciliation re-syncs every subscription regardless.
 
 ## Plans and billing (Phase 4c)
 
