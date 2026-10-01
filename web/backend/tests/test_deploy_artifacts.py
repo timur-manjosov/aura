@@ -200,5 +200,7 @@ class TestTheCaddyBlock:
         self, caddy_lines: list[str]
     ) -> None:
         assert "request>headers>Stripe-Signature delete" in caddy_lines
+        # The login redirect's Location carries the OAuth state to Discord.
+        assert "resp_headers>Location delete" in caddy_lines
         assert "delete code" in caddy_lines
         assert "delete state" in caddy_lines

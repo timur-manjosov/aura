@@ -52,10 +52,13 @@ aura.timurmanjosov.com {
 			roll_keep_for 720h
 		}
 		# Caddy never logs bodies, and redacts Cookie and Authorization by
-		# default. These three remain: a webhook's signature, and the OAuth
-		# callback's single-use code and state.
+		# default. These remain: a webhook's signature, the OAuth callback's
+		# single-use code and state, and the same state again in the Location
+		# of the login redirect to Discord (found in the first live log, not
+		# predicted). No Location here carries anything an operator needs.
 		format filter {
 			request>headers>Stripe-Signature delete
+			resp_headers>Location delete
 			request>uri query {
 				delete code
 				delete state
