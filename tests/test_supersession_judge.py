@@ -77,6 +77,9 @@ async def _judge(payload: object, *, fenced: bool = False):
 def _configured_llm(monkeypatch: pytest.MonkeyPatch):
     """judge_relationship reads the API key through load_settings; give it one."""
     monkeypatch.setenv("LLM_API_KEY", "test-key")
+    # load_settings refuses to build without a token. Stated here rather than
+    # read from the developer's .env, which the suite no longer sees (V-04).
+    monkeypatch.setenv("DISCORD_TOKEN", "fake-token")
     yield
 
 

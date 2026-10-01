@@ -760,7 +760,12 @@ class TestLLMFailureModesEndToEnd:
 
         await _seed_matching_fact(conn)
         message = _make_postable_message(channel_id=11, message_id=22)
-        with patch.object(litellm, "acompletion", acompletion):
+        # load_settings is what synthesize_answer reads the key through; it is
+        # handed the same fake settings instead of the developer's .env (V-04).
+        with (
+            patch.object(litellm, "acompletion", acompletion),
+            patch("aura.synthesis.load_settings", return_value=_configured_settings()),
+        ):
             await _handle(message, db=conn, settings=_configured_settings())
         return message
 

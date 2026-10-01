@@ -326,13 +326,16 @@ class TestExtraction:
     ) -> None:
         await self._queue_due_batch(conn)
 
-        await flush_due_batches(
-            conn,
-            Tripwire("embedding_model", touches),  # type: ignore[arg-type]
-            settings=settings(),
-            now=datetime.now(UTC),
-            plan_gate=production_gate(complimentary=True),
-        )
+        # The distiller reads its key through load_settings: the same fake
+        # settings, not the developer's .env (V-04).
+        with patch("aura.extraction.distiller.load_settings", return_value=settings()):
+            await flush_due_batches(
+                conn,
+                Tripwire("embedding_model", touches),  # type: ignore[arg-type]
+                settings=settings(),
+                now=datetime.now(UTC),
+                plan_gate=production_gate(complimentary=True),
+            )
 
         assert "litellm.acompletion" in touches.names
 

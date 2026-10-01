@@ -70,6 +70,9 @@ def _verdict(index: int, *, faithful: bool = True, reasoning: str = "preserves m
 def _configured_llm(monkeypatch: pytest.MonkeyPatch):
     """The low-level helpers read the API key through load_settings; give them one."""
     monkeypatch.setenv("LLM_API_KEY", "test-key")
+    # load_settings refuses to build without a token. Stated here rather than
+    # read from the developer's .env, which the suite no longer sees (V-04).
+    monkeypatch.setenv("DISCORD_TOKEN", "fake-token")
     yield
 
 
