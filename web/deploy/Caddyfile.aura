@@ -1,0 +1,70 @@
+# Aura's web interface: ONE site block for a Caddy that already serves other
+# sites on the same host. Appended to that Caddy's existing Caddyfile, never
+# replacing it; see DEPLOYMENT.md, "The web interface on the server", for the
+# exact steps (backup, validate, graceful reload) and how to take it out again.
+#
+# Self-contained on purpose: no global options block, no snippet shared with
+# another site, nothing that changes how any other site on this Caddy behaves.
+# Everything below applies to this hostname only.
+#
+# What Caddy does here and nowhere else in the chain:
+#   * obtains and renews the certificate, and redirects HTTP to HTTPS (both
+#     automatic for a site address without a scheme);
+#   * caps request bodies at the backend's own largest limit (the Stripe
+#     webhook's 1 MiB), so an oversized body is refused before it is relayed;
+#   * replaces any X-Forwarded-For the client sent with the client's real
+#     address. That is Caddy's default when no trusted_proxies are configured,
+#     and it is what the backend's rate limits key on (aura_web.client_address).
+#     Forwarded and X-Real-IP pass through unchanged; the backend never reads
+#     them.
+# Rate limiting is NOT done here: the stock Caddy build has no module for it,
+# and the backend does it per client (aura_web.rate_limit).
+
+aura.timurmanjosov.com {
+	# Equal to MAX_WEBHOOK_BODY_BYTES in aura_web.routes.stripe_webhook, the
+	# largest body any route accepts. Anything larger is answered 413 here.
+	request_body {
+		max_size 1MiB
+	}
+
+	header {
+		# Applied as the response is written, after the upstream's own headers,
+		# so `?` (only if absent) keeps every header the frontend or the
+		# backend chose and fills in only what is missing -- one value each,
+		# never a duplicate.
+		defer
+		# No includeSubDomains and no preload: this header can only ever speak
+		# for this one hostname.
+		Strict-Transport-Security "max-age=31536000"
+		# Public, but not advertised yet.
+		X-Robots-Tag "noindex"
+		?X-Content-Type-Options "nosniff"
+		?Referrer-Policy "no-referrer"
+		?X-Frame-Options "DENY"
+		-X-Powered-By
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/aura.timurmanjosov.com.access.log {
+			roll_size 10MiB
+			roll_keep 10
+			roll_keep_for 720h
+		}
+		# Caddy never logs bodies, and redacts Cookie and Authorization by
+		# default. These three remain: a webhook's signature, and the OAuth
+		# callback's single-use code and state.
+		format filter {
+			request>headers>Stripe-Signature delete
+			request>uri query {
+				delete code
+				delete state
+			}
+		}
+	}
+
+	# The frontend, published by web/docker-compose.yml on the host's loopback
+	# interface only (AURA_WEB_FRONTEND_PORT, default 3000). It proxies /api/*
+	# to the backend, so every byte reaches the backend through one origin.
+	reverse_proxy localhost:3000
+}
