@@ -113,14 +113,17 @@ async def _resolve_caller(request: Request, context: ServiceContext) -> _Caller 
         if resolved is None:
             return error_response(ErrorCode.NOT_AUTHENTICATED, status_code=401)
         token, session = resolved
-        user_guilds = await context.discord.fetch_user_guilds(session.tokens.access_token)
+        user_guilds = await context.user_guilds.get(session.tokens.access_token)
         bot_guild_ids = await context.bot_guilds.get()
     except DiscordAuthError:
         context.sessions.delete(request.cookies.get(context.settings.session_cookie_name))
         return error_response(ErrorCode.NOT_AUTHENTICATED, status_code=401)
-    except DiscordAPIError:
+    except DiscordAPIError as exc:
         # Fails closed for the same reason /api/guilds does: without Discord's
         # answer there is no way to know which guilds this user may act for.
+        logger.warning(
+            "Could not resolve the caller's guilds from Discord (%s); refusing the request", exc
+        )
         return error_response(ErrorCode.DISCORD_UNAVAILABLE, status_code=503)
     return _Caller(session, token, select_manageable_guilds(user_guilds, bot_guild_ids))
 

@@ -40,6 +40,7 @@ from aura_web.rate_limit import RateLimiter, RateLimitMiddleware, rate_limiter_f
 from aura_web.routes import auth_router, billing_router, dashboard_router, stripe_webhook_router
 from aura_web.sessions import OAuthStateStore, SessionStore
 from aura_web.stripe_api import StripeClient
+from aura_web.user_guilds import UserGuildCache
 
 logger = logging.getLogger(__name__)
 
@@ -241,18 +242,25 @@ def create_app(
                     ttl_seconds=settings.bot_guilds_cache_ttl_seconds,
                     stale_tolerance_seconds=settings.bot_guilds_stale_tolerance_seconds,
                 ),
+                user_guilds=UserGuildCache(
+                    discord,
+                    ttl_seconds=settings.user_guilds_cache_ttl_seconds,
+                    stale_tolerance_seconds=settings.user_guilds_stale_tolerance_seconds,
+                    max_entries=settings.max_sessions,
+                ),
                 stripe=stripe_client,
                 bot_billing=bot_billing,
             )
             logger.info(
                 "Aura web backend ready: redirect_uri=%s, cookie=%s (secure=%s, samesite=%s), "
-                "session TTL %ds, bot-guild cache %.0fs",
+                "session TTL %ds, bot-guild cache %.0fs, user-guild cache %.0fs",
                 settings.oauth_redirect_uri,
                 settings.session_cookie_name,
                 settings.session_cookie_secure,
                 settings.session_cookie_samesite,
                 settings.session_ttl_seconds,
                 settings.bot_guilds_cache_ttl_seconds,
+                settings.user_guilds_cache_ttl_seconds,
             )
             # Never the key itself: its mode and the Price are all an operator
             # needs to confirm the right configuration is live.
