@@ -34,5 +34,6 @@
   "error_guild_not_manageable": "サブスクリプションを申し込めるのは、あなたが管理していて Aura が参加しているサーバーだけです。",
   "error_already_subscribed": "このサーバーにはすでに有効な Pro サブスクリプションがあります。",
   "error_not_billing_owner": "このサーバーの請求を管理できるのは、サブスクリプションを申し込んだ人だけです。",
-  "error_payment_provider": "Stripe に接続できませんでした。少し待ってからもう一度お試しください。"
+  "error_payment_provider": "Stripe に接続できませんでした。少し待ってからもう一度お試しください。",
+  "error_rate_limited": "リクエストが多すぎます。1分ほど待ってから、もう一度お試しください。"
 }
