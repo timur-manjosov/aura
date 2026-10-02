@@ -926,6 +926,50 @@ class Settings(BaseSettings):
     # Items).
     variant_daily_cap: int = Field(default=200, ge=0, le=1_000_000)
 
+    # --- /aura-ask cost bounds ------------------------------------------------
+    # The sixth ledger (aura.db.ask_state). Until it existed /aura-ask was the
+    # one paid call site with no daily bound: anyone could ask, and the only
+    # throttle was a 30-second per-user cooldown. One slot is one paid answer
+    # (a synthesis call plus its grounding check), claimed only when a question
+    # matched at least one fact and synthesis is about to run -- a question that
+    # matches nothing costs nothing and claims nothing.
+    #
+    # WHICH CAP APPLIES is decided by the plan gate at the moment of the call
+    # (aura.billing.PlanGate.allows_pro), the same single seam every Pro trigger
+    # asks. So BILLING_MODE=disabled and every complimentary guild get the Pro
+    # cap, and a guild whose plan changes mid-day is measured against its new
+    # cap at once while the answers it already spent today keep counting.
+    #
+    # WHEN A CAP IS REACHED the question is not refused: the asker gets, visible
+    # only to them, a note that today's AI answers are used up and up to three
+    # of the facts retrieval already found, with their sources and dates -- no
+    # model call, no slot, no cost (see aura.commands.ask).
+    #
+    # 0 is valid for every one of the three and means "never use the model for
+    # this plan": every matched question gets that free answer instead.
+    #
+    # Sized from the measured cost (reports/quality-diagnosis-2026-10-02.md,
+    # Section 6, which is private): about $0.002 for a typical paid answer and
+    # at most about $0.011 with the output and fact bounds below. Free at 10 a
+    # day is at most ~$0.11 per guild per day; the per-member share of 5 keeps
+    # one member from spending a whole server's allowance alone. Pro has the
+    # guild cap only -- a paying server decides for itself who asks.
+    ask_daily_cap_free: int = Field(default=10, ge=0, le=1_000_000)
+    ask_daily_cap_pro: int = Field(default=25, ge=0, le=1_000_000)
+    ask_user_daily_cap_free: int = Field(default=5, ge=0, le=1_000_000)
+
+    # The output ceiling (max_tokens) on every synthesis call -- the shared
+    # function behind /aura-ask AND proactive relief, so it bounds both. Before
+    # it existed nothing did: the model's own limit is tens of thousands of
+    # tokens, and a prompt-injected "write a very long answer" ran until the
+    # 30-second timeout. A typical answer measured about 100 output tokens, so
+    # 700 is a wide margin for an answer in any of the nine locales (Japanese
+    # and Korean spend more tokens per sentence) while capping the worst case.
+    # An answer cut off by this limit is treated exactly like any unparsable
+    # response: not sent (see aura.synthesis). The lower bound keeps a
+    # misconfiguration from silencing every answer.
+    ask_synthesis_max_output_tokens: int = Field(default=700, ge=256, le=8192)
+
     # --- Cross-guild operator budget (Phase 4a-2) ---------------------------
     # CLAUDE.md's Open Items section named this gap before any code existed for
     # it, and every one of the five daily-cap comments above already points
@@ -961,7 +1005,9 @@ class Settings(BaseSettings):
     # $0.05/day supersession (50 * $0.001) + $0.40/day variant (200 * $0.002)
     # + $0.33/day backfill (30 * $0.011) = ~$1.51/guild/day if every ledger's
     # cap were fully saturated every single day, which the individual caps'
-    # own comments already call an extreme rather than a realistic case. $15
+    # own comments already call an extreme rather than a realistic case. (The
+    # sixth ledger, /aura-ask, joined later and adds at most $0.10/day per Pro
+    # guild, 25 * $0.004 -- not enough to move this default.) $15
     # covers roughly ten such guilds at that extreme simultaneously -- a
     # deliberately generous multiple of "a handful" rather than a tight fit,
     # since this ceiling's job is catching a genuine runaway (a bug, or far
@@ -1032,6 +1078,14 @@ class Settings(BaseSettings):
     # that from being a silent grey area, every send without the check logs a
     # warning naming this variable.
     grounding_check_model: str | None = None
+
+    # The output ceiling (max_tokens) on every grounding check, on both send
+    # paths. The verdict is four booleans and one sentence; a check measured
+    # about 75 output tokens, and a rejection that describes all three findings
+    # stays well under 300. A response cut off by this limit fails closed like
+    # any unparsable one -- the answer is not sent (see aura.grounding). The
+    # lower bound keeps a misconfiguration from failing every check.
+    grounding_max_output_tokens: int = Field(default=300, ge=128, le=4096)
 
     # --- The periodic digest (CLAUDE.md's fourth trigger) -------------------
     # How often the background scheduler wakes to ask which guilds are due for a

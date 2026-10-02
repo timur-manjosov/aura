@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from typing import Final
 
 import litellm
 from litellm.types.utils import ModelResponse
@@ -46,6 +47,7 @@ from pydantic import BaseModel, ValidationError
 
 from aura.config import load_settings
 from aura.db.models import Fact
+from aura.llm_usage import log_llm_usage, was_cut_off
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,14 @@ logger = logging.getLogger(__name__)
 # window -- generous, but not unbounded, since an indefinitely hung request
 # would otherwise leave the user with no feedback at all.
 _REQUEST_TIMEOUT_SECONDS = 30
+
+# Per-fact truncation in the prompt, the same bound and the same plain cut
+# aura.grounding and aura.extraction.supersession already apply to the facts
+# they send. A fact entered by hand through /aura-facts can run to Discord's
+# 4,000-character modal cap, and up to SYNTHESIS_FACT_LIMIT of them go into one
+# call, so without this one call's input had no ceiling. A fact at or under the
+# bound -- every distilled sentence -- is sent exactly as before.
+MAX_PROMPT_FACT_CHARS: Final = 1000
 
 # Falls back to English (see _language_name_for_locale) for anything not
 # listed here -- Aura's 9 officially supported UI locales, per CLAUDE.md.
@@ -195,10 +205,11 @@ def _build_messages(
     language_name = _language_name_for_locale(locale)
 
     def _fact_line(index: int, fact: Fact) -> str:
+        content = fact.content[:MAX_PROMPT_FACT_CHARS]
         if fact_channel_names is None:
-            return f"[{index}] {fact.content}"
+            return f"[{index}] {content}"
         channel_name = fact_channel_names.get(fact.channel_id, str(fact.channel_id))
-        return f"[{index}] (from #{channel_name}, {fact.created_at.isoformat()}) {fact.content}"
+        return f"[{index}] (from #{channel_name}, {fact.created_at.isoformat()}) {content}"
 
     numbered_facts = "\n".join(_fact_line(i, fact) for i, fact in enumerate(facts, start=1))
 
@@ -354,6 +365,12 @@ async def synthesize_answer(
     clean None, so the caller can show one consistent, localized error message
     (Trigger 1) or simply stay silent (Trigger 2) instead of a raw exception.
 
+    Bounded for both triggers: each fact's text is cut to
+    `MAX_PROMPT_FACT_CHARS` in the prompt, and the output to
+    ASK_SYNTHESIS_MAX_OUTPUT_TOKENS. A response stopped at that limit is
+    treated as malformed and returns None. Every call that returns a response
+    writes one usage line (see aura.llm_usage); none of it is content.
+
     The three channel-context parameters deliberately do not take a discord.py
     object: this function stays Discord-connection-free and independently
     testable per CLAUDE.md's testing philosophy, so each caller resolves its own
@@ -396,6 +413,9 @@ async def synthesize_answer(
             # wrapping a genuinely hard partial-coverage question landed on
             # different verdicts across otherwise-identical calls.
             temperature=0.0,
+            # A ceiling on what one call can cost, for both triggers -- see
+            # ask_synthesis_max_output_tokens in aura.config for the sizing.
+            max_tokens=settings.ask_synthesis_max_output_tokens,
         )
 
         # acompletion's return type also covers a streaming response, which
@@ -404,6 +424,12 @@ async def synthesize_answer(
         # check here, not just a type-checker workaround.
         if not isinstance(response, ModelResponse):
             raise TypeError(f"expected a ModelResponse, got {type(response).__name__}")
+
+        log_llm_usage(response, purpose="synthesis", model=model)
+        # An answer stopped at max_tokens is incomplete, even if what arrived
+        # happens to parse: the same path as malformed JSON (see aura.llm_usage).
+        if was_cut_off(response):
+            raise ValueError("response was cut off at the output token limit")
 
         raw_content = response.choices[0].message.content
         if not raw_content or not raw_content.strip():
