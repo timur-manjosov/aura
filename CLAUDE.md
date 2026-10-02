@@ -215,6 +215,27 @@ Therefore, for every implementation, without exception:
   cent-accurate cost/token metering Option B would need, and the payment
   integration itself.
 
+- **`/aura-ask` outside every ledger — RESOLVED (P1, cost bounds).** Until
+  then the direct-query trigger had no daily bound, no output ceiling and no
+  bound on fact or question length; only a 30-second per-user cooldown.
+  `aura.db.ask_state` is now the sixth ledger (same guarded INSERT, claimed
+  just before synthesis and only for a question with at least one matching
+  fact, never refunded), enforcing a per-guild cap by plan
+  (`ASK_DAILY_CAP_FREE` 10, `ASK_DAILY_CAP_PRO` 25; the plan gate's answer at
+  call time, so disabled billing and complimentary guilds are Pro) and a
+  per-member share on Free (`ASK_USER_DAILY_CAP_FREE` 5) in one step. A capped
+  question gets a free, ephemeral answer — a note plus up to three retrieved
+  facts with source links and dates — with no model call. It is counted in
+  the cross-guild budget ($0.004 per row; `hard` mode routes to the same free
+  answer). Shared with proactive relief: `ASK_SYNTHESIS_MAX_OUTPUT_TOKENS`
+  (700) and `GROUNDING_MAX_OUTPUT_TOKENS` (300), a response cut off at either
+  treated as unparsable, facts cut to 1,000 characters in the synthesis prompt
+  (prompts otherwise byte-identical), and one INFO usage line per call with
+  real token counts and no content. Still open: the ephemeral free answer
+  relies on deleting the public "thinking" message first (Discord makes the
+  first followup after a public defer public); a welcome-week quota, an
+  answer cache and a separate Free budget were deliberately left out.
+
 - **The web container holds the bot token (Phase 4b).** Deciding which guilds
   Aura actually runs on is a question Aura's own database cannot answer —
   every `guild_id` in it is a side effect of activity, so a freshly invited
