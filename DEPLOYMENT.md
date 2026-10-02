@@ -426,6 +426,56 @@ topic to a member and two unrelated sentences to an embedding model.
   obeyed, and expansion is one hop only — a chain A–B–C–D contributes B, never
   C and D.
 
+## Daily limits for `/aura-ask`
+
+`/aura-ask` has its own daily ledger (`ask_calls`, created automatically at
+startup like every other table — additive, no migration step, existing rows
+untouched). One row is one **paid** answer: a synthesis call plus its
+grounding check. A question that matches no fact gets the usual "no
+information" reply and writes no row.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ASK_DAILY_CAP_FREE` | 10 | paid answers per guild per UTC day, Free plan |
+| `ASK_DAILY_CAP_PRO` | 25 | paid answers per guild per UTC day, Pro plan |
+| `ASK_USER_DAILY_CAP_FREE` | 5 | paid answers per member per guild per UTC day, Free plan only |
+| `ASK_SYNTHESIS_MAX_OUTPUT_TOKENS` | 700 | output ceiling on every synthesis call (`/aura-ask` **and** proactive relief) |
+| `GROUNDING_MAX_OUTPUT_TOKENS` | 300 | output ceiling on every grounding check (both paths) |
+
+All five are optional; a server `.env` without them gets the defaults.
+
+- **Which cap applies** is the plan gate's answer at the moment of the
+  question. `BILLING_MODE=disabled` and every complimentary guild count as
+  Pro. A plan change mid-day applies to the next question; answers already
+  spent today keep counting.
+- **When a cap is reached** the member is not refused: they get, visible only
+  to them, a note that today's AI answers are used up (and when they come
+  back), plus up to three of the facts retrieval found, each linked to its
+  source message with its date. No model call, no row, no cost. A cap of `0`
+  means every matched question gets this free answer.
+- **The operator budget** counts these rows too (estimated at $0.004 each).
+  In `hard` mode an over-budget day routes `/aura-ask` to the same free answer
+  instead of refusing. `/aura-operator-budget` shows an "Ask" line.
+- **Every question is cut to 1,000 characters**, and every fact to 1,000
+  characters inside the synthesis prompt. A model response stopped at the
+  output ceiling is treated like an unreadable one: `/aura-ask` shows its
+  usual error, proactive relief stays silent, a cut-off grounding check fails
+  closed.
+
+**Reading real usage.** Every synthesis and grounding call writes one INFO
+line with the model and the provider's token counts, never any content:
+
+    docker logs aura-aura-1 2>&1 | grep "LLM usage:"
+    # LLM usage: purpose=synthesis model=… prompt_tokens=1156 completion_tokens=98 finish_reason=stop
+
+and every paid or capped question one line with the guild's first four
+digits and today's count (`grep "/aura-ask in guild"`). Today's paid answers
+per guild, from a backup copy (never the live file):
+
+    sqlite3 -readonly <backup copy> \
+      "SELECT substr(guild_id, 1, 4) || '…', COUNT(*) FROM ask_calls
+       WHERE call_day = strftime('%Y-%m-%d', 'now') GROUP BY guild_id;"
+
 ## Plans and billing (Phase 4c)
 
 Billing ships switched off (`BILLING_MODE=disabled`): a redeploy with this code
@@ -792,6 +842,10 @@ again.
   it is not a code bug.
 - **`/aura-ask` returns nothing / errors:** check `LLM_API_KEY` and
   `LLM_PROVIDER` in `.env`, and confirm the OpenRouter key is funded.
+- **`/aura-ask` says today's AI answers are used up:** a daily cap was reached
+  (see "Daily limits for `/aura-ask`"), or the operator budget is in `hard`
+  mode and exceeded. `docker logs aura-aura-1 | grep "/aura-ask in guild"`
+  shows which cap and the counts.
 - **`/aura-pending` always reports nothing to review:** confirm the channel
   was actually opted into extraction via `/aura-config` — a channel enabled
   only for proactive relief never feeds the extraction queue. Also check

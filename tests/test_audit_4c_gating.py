@@ -540,10 +540,14 @@ class TestEveryEnablingCommandRefusesOnFree:
 
 
 class TestFreeFeaturesNeverAskThePlan:
-    """/aura-ask and manual fact management work with no subscription and a failing status source."""
+    """/aura-ask and manual fact management work with no subscription and a failing status source.
+
+    /aura-ask is the one Free feature that reads the plan, and only to pick which
+    daily answer cap applies (aura.db.ask_state); it is therefore checked by its
+    own tests below rather than by the marker scan.
+    """
 
     FREE_COMMAND_MODULES: Final = (
-        "commands/ask.py",
         "commands/facts.py",
         "commands/pending.py",
         "commands/supersede.py",
@@ -558,6 +562,12 @@ class TestFreeFeaturesNeverAskThePlan:
 
         for marker in ("plan_gate", "allows_pro", "aura.billing", "pro_feature_refusal"):
             assert marker not in source, f"{relative_path} consults the plan ({marker})"
+
+    def test_aura_ask_reads_the_plan_only_to_pick_its_cap(self) -> None:
+        source = (SRC / "commands/ask.py").read_text(encoding="utf-8")
+
+        assert "pro_feature_refusal" not in source
+        assert source.count("allows_pro(") == 1
 
     async def test_aura_ask_answers_although_the_plan_gate_would_explode(
         self, conn: aiosqlite.Connection, embedding_model: TextEmbedding, touches: Touches
@@ -584,7 +594,9 @@ class TestFreeFeaturesNeverAskThePlan:
             await ask_command.callback(fake, "When does the event start?")  # type: ignore[call-arg, arg-type]  # pyright: ignore
 
         fake.followup.send.assert_awaited_once()
-        assert touches.names == []
+        assert "embed" in fake.followup.send.call_args.kwargs
+        # The one touch is the cap lookup, which falls back to the Free caps.
+        assert touches.names == ["plan_gate.allows_pro"]
 
 
 class TestVariantGenerationIsNotGated:

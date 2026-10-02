@@ -1,4 +1,4 @@
-"""The operator-wide brake across all five daily-cap ledgers (Phase 4a-2).
+"""The operator-wide brake across every daily-cap ledger (Phase 4a-2).
 
 CLAUDE.md's own Open Items section named this gap before any code existed for
 it: PROACTIVE_DAILY_CAP (and, since Phase 3a/3b/variant-indexing, its four
@@ -15,7 +15,7 @@ shapes this module. A flat-fee operator does not need to know what any one
 guild spent -- there is nothing to bill them individually for -- they need to
 know whether TOTAL spend across every subscribed guild is still inside what
 the subscription revenue actually covers. That is one number, not five, which
-is why enforce_cross_guild_budget below combines all five ledgers into a
+is why enforce_cross_guild_budget below combines every ledger into a
 single estimate compared against a single budget, rather than giving each
 ledger its own cross-guild ceiling the way the per-guild caps in config.py do.
 
@@ -29,6 +29,10 @@ own daily-cap field already documents in config.py, copied here as fixed
 constants rather than measured per call -- a deliberately rough, conservative
 brake for a single self-funded operator, not a billing system. See
 _COST_PER_CALL_USD below for where each number comes from.
+
+A sixth ledger joined later: /aura-ask's (aura.db.ask_state), the same shape,
+counted the same way. At that call site a HARD-mode refusal is not a bare
+refusal -- the asker gets the free, no-model answer (see aura.commands.ask).
 
 **Two modes, WARN by default.** A crossed budget is logged loudly either way.
 Only HARD mode actually refuses new calls, and only once the combined
@@ -58,13 +62,17 @@ logger = logging.getLogger(__name__)
 
 
 class Ledger(StrEnum):
-    """The five existing per-guild daily-cap ledgers, named the way call sites already do."""
+    """The per-guild daily-cap ledgers, named the way call sites already do."""
 
     PROACTIVE = "proactive"
     EXTRACTION = "extraction"
     SUPERSESSION = "supersession"
     VARIANT = "variant"
     BACKFILL = "backfill"
+    # Added after Phase 4a-2, when /aura-ask got a ledger of its own (see
+    # aura.db.ask_state). The brake's design did not change; it simply has one
+    # more table to count.
+    ASK = "ask"
 
 
 # (table, UTC-day column) for each ledger. Copied from the INSERT statements in
@@ -78,6 +86,7 @@ _LEDGER_TABLES: dict[Ledger, tuple[str, str]] = {
     Ledger.SUPERSESSION: ("supersession_calls", "call_day"),
     Ledger.VARIANT: ("variant_calls", "call_day"),
     Ledger.BACKFILL: ("backfill_calls", "call_day"),
+    Ledger.ASK: ("ask_calls", "call_day"),
 }
 
 # Rough, conservative worst-case USD cost per row -- copied as numbers from the
@@ -109,6 +118,14 @@ _COST_PER_CALL_USD: dict[Ledger, float] = {
     # BACKFILL_DAILY_CAP's comment: backfill spends the SAME distillation call
     # extraction does, at the same per-call cost.
     Ledger.BACKFILL: 0.011,
+    # One /aura-ask row is one synthesis call plus its grounding check. Measured
+    # at about $0.0020 for a typical answer (reports/quality-diagnosis-2026-10-02.md
+    # Section 6.2, from real token counts); doubled to $0.004 as margin for
+    # longer answers and larger fact sets. Not the bounded worst case (~$0.011
+    # with every fact at the 1,000-character cut and the full 700 output
+    # tokens): this brake estimates realistic spend conservatively, as the
+    # figures above do, rather than pricing every call at its ceiling.
+    Ledger.ASK: 0.004,
 }
 
 
@@ -118,7 +135,7 @@ class LedgerSpend(BaseModel):
     Attributes
     ----------
     ledger
-        Which of the five this describes.
+        Which ledger this describes.
     call_count
         Rows in that ledger's table for the day, across ALL guilds.
     estimated_usd
@@ -141,7 +158,7 @@ class CrossGuildBudgetStatus(BaseModel):
     ledgers
         One entry per `Ledger`, in enum order.
     total_estimated_usd
-        The sum across all five.
+        The sum across every ledger.
     budget_usd
         The operator-wide ceiling the total is compared against.
     mode
@@ -210,7 +227,7 @@ async def get_cross_guild_status(
 
     Notes
     -----
-    Read-only: takes no slot, writes nothing. Five cheap COUNT(*) queries, one per ledger, each with no guild_id filter --
+    Read-only: takes no slot, writes nothing. One cheap COUNT(*) query per ledger, each with no guild_id filter --
     the one structural difference from the per-guild counters each ledger
     module already exposes (count_escalations_on and its four siblings), which
     all filter on a specific guild_id. day is taken as a string produced by
@@ -256,7 +273,7 @@ async def enforce_cross_guild_budget(
     budget_usd: float,
     mode: CrossGuildBudgetMode,
 ) -> bool:
-    """Report whether a new call, at any of the five ledgers, may proceed.
+    """Report whether a new call, at any of the ledgers, may proceed.
 
     Parameters
     ----------
@@ -298,7 +315,7 @@ async def enforce_cross_guild_budget(
     module's own docstring on why WARN is the safer default for a single
     self-funded operator.
 
-    Cheap by construction: five indexed COUNT(*) queries, no joins, run only
+    Cheap by construction: one indexed COUNT(*) query per ledger, no joins, run only
     at the point a message, batch, candidate, fact, or backfill tick has
     already cleared every earlier, free gate and is about to claim a real
     per-guild spend slot -- never on Aura's hot path for traffic that would

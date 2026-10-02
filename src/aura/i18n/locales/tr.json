@@ -19,6 +19,8 @@
     "ask_cooldown": "Tekrar sormadan önce lütfen {seconds} saniye bekle.",
     "ask_grounding_rejected": "Bir yanıt hazırladım ama bu sunucuda kayıtlı bilgiler onu tam olarak desteklemiyor, bu yüzden göndermiyorum. Daha belirli bir soru sormayı dene ya da bir moderatöre danış.",
     "ask_grounding_unverified": "Bir yanıt hazırladım ama şu anda bu sunucunun bilgileriyle doğrulayamadım — doğrulamadığım bir yanıtı da göndermem. Lütfen birazdan tekrar dene.",
+    "ask_limit_guild_reached": "Bu sunucudaki bugünkü yapay zekâ yanıtları tükendi; {reset} yenilenecek. Sorunla ilgili kayıtlı olanlar şunlar:",
+    "ask_limit_user_reached": "Bu sunucudaki bugünkü yapay zekâ yanıtlarını kullandın; {reset} yenilenecek. Sorunla ilgili kayıtlı olanlar şunlar:",
     "config_permission_error": "Bunu yapmak için “Sunucuyu Yönet” iznine ihtiyacın var.",
     "config_no_options_error": "Değiştirilecek bir şey olması için en az “proactive” ya da “extraction” belirt.",
     "config_proactive_enabled": "{channel} kanalında proaktif yanıtlar artık **açık**. Aura emin olduğunda orada kendiliğinden yanıt verebilir.",

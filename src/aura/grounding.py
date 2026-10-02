@@ -76,6 +76,7 @@ from pydantic import BaseModel, StrictBool, ValidationError
 
 from aura.config import ModelComponent, Settings
 from aura.db.models import Fact
+from aura.llm_usage import log_llm_usage, was_cut_off
 
 # The same fence-tolerant parser every other call site in this project goes
 # through -- see aura.synthesis._parse_json_response for the measurement behind
@@ -436,7 +437,13 @@ def _apply_evidence_rule(raw: _RawGroundingVerdict) -> bool:
 
 
 async def _request_verdict(
-    *, answer: str, cited_facts: list[Fact], model: str, api_key: str, timeout_seconds: float
+    *,
+    answer: str,
+    cited_facts: list[Fact],
+    model: str,
+    api_key: str,
+    timeout_seconds: float,
+    max_output_tokens: int,
 ) -> bool | None:
     """Ask `model` whether cited_facts support answer. None means no usable verdict.
 
@@ -473,6 +480,9 @@ async def _request_verdict(
                 # same question answers sometimes and stays silent sometimes,
                 # which is indistinguishable from a flaky bot.
                 temperature=0.0,
+                # A ceiling on what one check can cost -- see
+                # grounding_max_output_tokens in aura.config for the sizing.
+                max_tokens=max_output_tokens,
             ),
             timeout=timeout_seconds,
         )
@@ -482,6 +492,13 @@ async def _request_verdict(
         # asserting is a real defensive check, not a type-checker workaround.
         if not isinstance(response, ModelResponse):
             raise TypeError(f"expected a ModelResponse, got {type(response).__name__}")
+
+        log_llm_usage(response, purpose="grounding", model=model)
+        # A verdict stopped at max_tokens is incomplete, even if what arrived
+        # happens to parse; it fails closed like malformed JSON (see
+        # aura.llm_usage).
+        if was_cut_off(response):
+            raise ValueError("response was cut off at the output token limit")
 
         raw_content = response.choices[0].message.content
         if not raw_content or not raw_content.strip():
@@ -574,6 +591,10 @@ async def verify_answer_grounded(
     actually claimed to use (`SynthesisResult.used_fact_ids`), not everything
     retrieved.
 
+    The output is bounded by GROUNDING_MAX_OUTPUT_TOKENS; a verdict stopped at
+    that limit is CHECK_FAILED, like any unparsable one. Every call that
+    returns a response writes one usage line (see aura.llm_usage).
+
     The single entry point both send paths use, so the policy exists once
     instead of twice -- the same reason `aura.synthesis` is one shared function
     behind two triggers.
@@ -599,6 +620,7 @@ async def verify_answer_grounded(
         model=model,
         api_key=settings.llm_api_key.get_secret_value(),
         timeout_seconds=timeout_seconds,
+        max_output_tokens=settings.grounding_max_output_tokens,
     )
     if grounded is None:
         return GroundingOutcome.CHECK_FAILED

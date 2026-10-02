@@ -1,8 +1,8 @@
 """Tests for aura.db.cross_guild_budget: Phase 4a-2's operator-wide brake.
 
-Populates each of the five real ledgers through their OWN acquire functions
+Populates each of the six real ledgers through their OWN acquire functions
 (never raw INSERTs) so this file is honest against the real schema and the
-real per-guild guards those five modules already enforce -- a raw INSERT could
+real per-guild guards those six modules already enforce -- a raw INSERT could
 silently drift from what production actually writes. Real SQLite throughout,
 matching every other ledger test in this project (see test_proactive_state.py's
 own docstring for why): the guarantees under test are the database's.
@@ -18,6 +18,7 @@ import aiosqlite
 import pytest
 
 from aura.config import CrossGuildBudgetMode
+from aura.db.ask_state import try_acquire_ask_call_slot
 from aura.db.backfill_runs import start_backfill_run
 from aura.db.backfill_state import try_acquire_backfill_call_slot
 from aura.db.connection import utc_day
@@ -153,6 +154,18 @@ async def _spend_backfill(
     assert attempt.granted
 
 
+async def _spend_ask(conn: aiosqlite.Connection, *, guild_id: int, user_id: int = 1) -> None:
+    attempt = await try_acquire_ask_call_slot(
+        conn,
+        guild_id=guild_id,
+        user_id=user_id,
+        guild_cap=1_000_000,
+        user_cap=None,
+        now=NOON,
+    )
+    assert attempt.granted
+
+
 class TestGetCrossGuildStatusOnAnEmptyDatabase:
     async def test_every_ledger_reads_zero(self, conn: aiosqlite.Connection) -> None:
         status = await get_cross_guild_status(
@@ -165,6 +178,7 @@ class TestGetCrossGuildStatusOnAnEmptyDatabase:
             Ledger.SUPERSESSION: 0,
             Ledger.VARIANT: 0,
             Ledger.BACKFILL: 0,
+            Ledger.ASK: 0,
         }
         assert not status.over_budget
 
@@ -205,7 +219,7 @@ class TestCrossGuildSummingIsActuallyCrossGuild:
         proactive = next(e for e in status.ledgers if e.ledger is Ledger.PROACTIVE)
         assert proactive.call_count == 5
 
-    async def test_all_five_ledgers_combine_into_one_total(
+    async def test_every_ledger_combines_into_one_total(
         self, conn: aiosqlite.Connection, embedding_model
     ) -> None:
         await _spend_proactive(conn, guild_id=GUILD_A, message_id=1)
@@ -213,6 +227,7 @@ class TestCrossGuildSummingIsActuallyCrossGuild:
         await _spend_supersession(conn, guild_id=GUILD_B)
         await _spend_variant(conn, embedding_model, guild_id=GUILD_B)
         await _spend_backfill(conn, guild_id=GUILD_C)
+        await _spend_ask(conn, guild_id=GUILD_C)
 
         status = await get_cross_guild_status(
             conn, day=DAY, budget_usd=1000.0, mode=CrossGuildBudgetMode.WARN
@@ -224,9 +239,10 @@ class TestCrossGuildSummingIsActuallyCrossGuild:
             Ledger.SUPERSESSION: 1,
             Ledger.VARIANT: 1,
             Ledger.BACKFILL: 1,
+            Ledger.ASK: 1,
         }
-        # 0.003 + 0.011 + 0.001 + 0.002 + 0.011 -- see _COST_PER_CALL_USD.
-        assert status.total_estimated_usd == pytest.approx(0.028)
+        # 0.003 + 0.011 + 0.001 + 0.002 + 0.011 + 0.004 -- see _COST_PER_CALL_USD.
+        assert status.total_estimated_usd == pytest.approx(0.032)
 
     async def test_a_different_utc_day_does_not_contribute(
         self, conn: aiosqlite.Connection
