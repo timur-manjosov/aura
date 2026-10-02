@@ -19,6 +19,8 @@
     "ask_cooldown": "Espera {seconds}s antes de volver a preguntar.",
     "ask_grounding_rejected": "He preparado una respuesta, pero los datos registrados de este servidor no la respaldan del todo, así que no la voy a enviar. Prueba a preguntar de forma más concreta o consulta con un moderador.",
     "ask_grounding_unverified": "He preparado una respuesta, pero ahora mismo no he podido verificarla con los datos de este servidor, y no envío respuestas sin comprobar. Inténtalo de nuevo en un momento.",
+    "ask_limit_guild_reached": "Las respuestas con IA de hoy en este servidor se han agotado; vuelve a haber {reset}. Esto es lo que tengo guardado sobre tu pregunta:",
+    "ask_limit_user_reached": "Ya has usado tus respuestas con IA de hoy en este servidor; vuelve a haber {reset}. Esto es lo que tengo guardado sobre tu pregunta:",
     "config_permission_error": "Necesitas el permiso «Gestionar servidor» para hacer eso.",
     "config_no_options_error": "Indica al menos «proactive» o «extraction» para que haya algo que cambiar.",
     "config_proactive_enabled": "Las respuestas proactivas ahora están **activadas** en {channel}. Aura puede responder por su cuenta cuando esté segura.",

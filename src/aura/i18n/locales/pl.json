@@ -19,6 +19,8 @@
     "ask_cooldown": "Poczekaj {seconds}s, zanim zapytasz ponownie.",
     "ask_grounding_rejected": "Przygotowałam odpowiedź, ale zapisane fakty tego serwera nie potwierdzają jej w pełni, więc jej nie wysyłam. Spróbuj zapytać bardziej konkretnie albo zapytaj moderatora.",
     "ask_grounding_unverified": "Przygotowałam odpowiedź, ale nie udało mi się teraz zweryfikować jej względem faktów tego serwera — a niesprawdzonej odpowiedzi nie wyślę. Spróbuj ponownie za chwilę.",
+    "ask_limit_guild_reached": "Dzisiejsze odpowiedzi AI na tym serwerze się wyczerpały; wrócą {reset}. Oto co mam zapisane na temat twojego pytania:",
+    "ask_limit_user_reached": "Twoje dzisiejsze odpowiedzi AI na tym serwerze się wyczerpały; wrócą {reset}. Oto co mam zapisane na temat twojego pytania:",
     "config_permission_error": "Potrzebujesz uprawnienia „Zarządzaj serwerem”, żeby to zrobić.",
     "config_no_options_error": "Podaj przynajmniej „proactive” albo „extraction”, żeby było co zmienić.",
     "config_proactive_enabled": "Proaktywne odpowiedzi są teraz **włączone** na {channel}. Aura może tam sama zaproponować odpowiedź, gdy jest pewna.",
