@@ -499,6 +499,33 @@ CREATE TABLE IF NOT EXISTS variant_calls (
 CREATE INDEX IF NOT EXISTS idx_variant_calls_guild_day
     ON variant_calls(guild_id, call_day);
 
+-- /aura-ask's spend ledger: one row per paid answer (a synthesis call and the
+-- grounding check that follows it, always spent together), per guild, per UTC
+-- day. The sixth instance of the same append-only, guarded-INSERT shape as the
+-- ledgers above, and until it existed /aura-ask was the one paid call site with
+-- no daily bound at all -- only a 30-second per-user cooldown.
+--
+-- user_id, where the other ledgers carry what the call was ABOUT: this ledger
+-- enforces two ceilings in one atomic step, the guild's and -- on the Free plan
+-- -- each member's share of it (see aura.db.ask_state), so it has to be able to
+-- count one member's rows. Nothing else about the member is stored; the row
+-- records that a paid answer happened, never what was asked.
+--
+-- A question that matches no fact never writes a row: it gets the template
+-- "no information" reply and no model call, so there is nothing to bound.
+CREATE TABLE IF NOT EXISTS ask_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    call_day TEXT NOT NULL
+);
+
+-- One index for both counts the guarded INSERT runs: its (guild_id, call_day)
+-- prefix serves the guild cap, and the full key serves the per-user cap.
+CREATE INDEX IF NOT EXISTS idx_ask_calls_guild_day_user
+    ON ask_calls(guild_id, call_day, user_id);
+
 -- Phase 3e's periodic digest (CLAUDE.md's FOURTH trigger): where a guild's
 -- digest is posted, how often, and whether it is on at all.
 --
