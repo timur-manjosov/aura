@@ -1,0 +1,12 @@
+# Japanese. Words that never carry the subject of a question about a server.
+#
+# One or more words per line; "#" starts a comment. Japanese is written without
+# spaces, so a question is mostly one long token and these entries only match a
+# word the asker set apart with a space or punctuation ("ルール について").
+# Words inside a longer run are left to IDF -- see aura.retrieval.stopwords.
+は が を に で の と も か へ や
+です ですか ます ますか でしょうか
+何 なに なん いつ どこ どう どうして なぜ だれ 誰 どれ どの どんな
+教えて 教えてください ください について とは って
+こんにちは ありがとう ありがとうございます お願いします よろしく
+今日 明日 昨日 今 情報 これ それ あれ ここ そこ

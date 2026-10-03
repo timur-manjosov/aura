@@ -1,0 +1,30 @@
+# German. Words that never carry the subject of a question about a server.
+#
+# One or more words per line; "#" starts a comment. Every word is normalized
+# exactly like a question (lower case, umlauts and other Latin diacritics
+# removed), so "für" also covers a question typed as "fur".
+#
+# This list and en-US.txt are the list the quality diagnosis (2026-10-02)
+# fixed BEFORE it measured anything, so its numbers are not the product of
+# tuning a list to a test set. Keep additions rare: IDF, not this file, is the
+# main protection against common words -- see aura.retrieval.stopwords.
+#
+# Known collisions, kept so the measured behaviour stays what was measured:
+# "die", "hat", "man", "war", "bin", "will" and "mag" are also English
+# content words, and this list applies to every guild. A question about a
+# clan "war" still reaches its fact through the embedding and its other words.
+der die das den dem des ein eine einen einem einer eines kein keine keinen
+und oder aber doch denn auch noch schon nur sehr mal ja nein nicht nichts
+ist sind war waren bin bist sei seid wird werden wurde wurden hat haben hatte
+hast habe gibt gibts geben gab es er sie ihr wir ich du man mich mir dich dir
+uns euch sich mein meine dein deine sein seine unser unsere euer
+was wer wie wo wann warum wieso weshalb welche welcher welches welchen woher
+wohin womit wofür worum wozu kann kannst können darf darfst dürfen muss musst
+müssen soll sollst sollen will willst wollen mag möchte möchten
+mit von vom zu zum zur für bei beim im in am an auf aus über unter nach vor
+seit bis um durch gegen ohne als wenn ob dass weil so da dort hier heute
+morgen gestern jetzt gerade eigentlich bitte danke hallo hi hey los passiert
+passieren geht gehen läuft machen macht mache findet finden statt stattfinden
+diese dieser dieses diesen diesem alle allen jede jeder jedes jeden etwas
+infos info information informationen erzähl erzähle erzählen sag sage sagen
+weißt wissen weiß thema bezüglich
