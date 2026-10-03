@@ -14,6 +14,7 @@
     "fact_search_no_matches": "Aucun fait ne correspond à « {query} ».",
     "ask_not_configured": "Le système de questions-réponses d'Aura n'est pas encore configuré sur ce serveur. Demande à un admin de le configurer.",
     "ask_no_info": "Je n'ai pas encore d'informations à ce sujet.",
+    "ask_no_info_related": "Je n'ai rien de précis à ce sujet. Peut-être en rapport :",
     "ask_error": "Une erreur s'est produite en préparant une réponse. Réessaie dans un instant.",
     "ask_sources_label": "Sources",
     "ask_cooldown": "Attends {seconds}s avant de reposer une question.",

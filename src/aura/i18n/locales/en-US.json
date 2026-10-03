@@ -14,6 +14,7 @@
     "fact_search_no_matches": "No facts matched \"{query}\".",
     "ask_not_configured": "Aura's question-answering isn't set up on this server yet. Ask a server admin to configure it.",
     "ask_no_info": "I don't have any information about that yet.",
+    "ask_no_info_related": "I don't have anything exact on that. Possibly related:",
     "ask_error": "Something went wrong while putting together an answer. Please try again in a moment.",
     "ask_sources_label": "Sources",
     "ask_cooldown": "Please wait {seconds}s before asking again.",

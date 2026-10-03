@@ -266,11 +266,52 @@ class Settings(BaseSettings):
     # project's embedding model -- 0.4 sits comfortably above the
     # "unrelated" end with real margin to spare, while still being loose
     # enough that a reasonably-phrased question matches its facts. This is
-    # specifically the direct-query bar: Phase 2's proactive relief reuses
-    # find_similar_facts too but needs its own, much stricter threshold,
-    # since a wrong direct answer is only shown to the person who asked,
-    # while a wrong proactive interruption is unsolicited for everyone.
+    # specifically the direct-query bar. Proactive relief reuses
+    # find_similar_facts with its own threshold, PROACTIVE_SIMILARITY_THRESHOLD
+    # below -- since the 2026-08-15 operational decision a LOOSER one (0.20),
+    # backstopped by the model's own answers_question judgement.
+    #
+    # Since the hybrid retrieval of 2026-10-02 this is no longer the only way a
+    # fact reaches /aura-ask's synthesis: a fact below it still qualifies when
+    # the question's own words cover it (the three ASK_LEXICAL_* settings
+    # below; see aura.retrieval.hybrid). A fact at or above it qualifies
+    # exactly as before.
     similarity_threshold: float = 0.4
+
+    # --- /aura-ask word matching (hybrid retrieval) -------------------------
+    # For a single keyword, an inflected form, a compound or a casual phrasing
+    # the embedding model scores near its noise floor (~0.20 against ANY fact),
+    # so "Mentoriate" never reached two facts about "Mentoriat". The question's
+    # own words close that gap, locally and for free: a fact also qualifies
+    # when its lexical coverage (aura.retrieval.lexical: the IDF-weighted share
+    # of the question's content words the fact contains, inflection, compounds
+    # and long-word typos included) reaches the first number below while its
+    # similarity reaches the second. Qualifying facts are then ranked by
+    # similarity + the third number x coverage.
+    #
+    # All three come from the quality diagnosis of 2026-10-02 (Section 4),
+    # measured on 77 hand-written questions over a real guild's facts plus 24
+    # unrelated ones: 74 instead of 47 questions found their facts, the same 6
+    # unrelated questions selected anything as before, precision 0.90 instead
+    # of 0.83. Used by /aura-ask only; proactive relief and extraction dedup
+    # never read them.
+    #
+    # COVERAGE: half of the question's weighted subject must be in the fact.
+    # One rare word of a two-word question is enough; one common word next to a
+    # rare one that no fact contains ("Owner vom Server") is not. Above 0 by
+    # construction -- 0 would admit every fact above the floor.
+    ask_lexical_coverage_threshold: float = Field(default=0.5, gt=0.0, le=1.0, allow_inf_nan=False)
+    # FLOOR: a fact found by its words must still not be unrelated in meaning.
+    # Without it, "Wie werde ich Mentor?" matched a maintenance fact through
+    # "werde"/"werden" at a similarity of -0.03. 0.05 removed that and lost
+    # nothing measured; 0.10 already cost one question one of its two facts,
+    # 0.15 a question its only match.
+    ask_lexical_similarity_floor: float = Field(default=0.05, ge=-1.0, le=1.0, allow_inf_nan=False)
+    # RANKING WEIGHT: how much coverage adds when qualifying facts compete for
+    # the SYNTHESIS_FACT_LIMIT places. 0.5 puts a fact containing the asked
+    # word ahead of one that merely shares the sentence shape ("Wann findet ...
+    # statt?"), which the embedding alone ranked first. 0 ranks by similarity.
+    ask_lexical_ranking_weight: float = Field(default=0.5, ge=0.0, le=10.0, allow_inf_nan=False)
 
     # --- Proactive relief (CLAUDE.md's second trigger) ---------------------
     # Every number below is a PLACEHOLDER pending recalibration against real

@@ -17,12 +17,14 @@ import discord
 import pytest
 from pydantic import SecretStr
 
+import aura.main
 from aura.backfill import ClientBackfillGateway
 from aura.billing import PlanGate
 from aura.config import Settings
 from aura.main import AuraClient, build_intents
 from aura.proactive.gate import ProactiveGateConfig
 from aura.proactive.grace import GraceRegistry
+from aura.retrieval.stopwords import StopwordLoadError
 
 GUILD_A = 100000000000000001
 
@@ -625,3 +627,56 @@ class TestBillingWiring:
             task = getattr(client, task_name)
             if task is not None:
                 task.cancel()
+
+
+class TestAskRetrievalStartup:
+    """Hybrid retrieval: its stopword files are read once at startup, and their absence is loud, not fatal."""
+
+    @staticmethod
+    async def _run_setup_hook(client: AuraClient) -> None:
+        async def to_thread(function: object, *args: object, **kwargs: object) -> object:
+            # Only the stopword load really runs; the embedding model and the
+            # detectors stay stubbed exactly as in _setup_hook_patches.
+            if function is aura.main.shipped_stopword_lists:
+                return aura.main.shipped_stopword_lists()
+            return MagicMock()
+
+        patches = _setup_hook_patches(client)
+        with contextlib.ExitStack() as stack:
+            for index, active in enumerate(patches):
+                if index != 5:  # 5 is asyncio.to_thread, replaced below
+                    stack.enter_context(active)
+            stack.enter_context(patch("aura.main.asyncio.to_thread", to_thread))
+            await client.setup_hook()
+
+    async def test_the_ready_line_names_the_gate_and_every_locale(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = _client()
+        client.db = MagicMock()
+        with caplog.at_level(logging.INFO, logger="aura.main"):
+            await self._run_setup_hook(client)
+        [line] = [r.getMessage() for r in caplog.records if "/aura-ask retrieval" in r.getMessage()]
+        assert line == (
+            "/aura-ask retrieval ready: similarity>=0.40, or word coverage>=0.50 with "
+            "similarity>=0.05; ranked by similarity + 0.50 x coverage; stopwords for 9 locale(s)"
+        )
+
+    async def test_missing_stopword_files_warn_and_startup_continues(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = _client()
+        client.db = MagicMock()
+
+        def unreadable() -> None:
+            raise StopwordLoadError("simulated")
+
+        with (
+            patch("aura.main.shipped_stopword_lists", unreadable),
+            caplog.at_level(logging.INFO, logger="aura.main"),
+        ):
+            await self._run_setup_hook(client)
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("word matching unavailable" in r.getMessage() for r in warnings)
+        assert not any("/aura-ask retrieval ready" in r.getMessage() for r in caplog.records)
+        assert isinstance(client.plan_gate, PlanGate)  # the rest of startup ran

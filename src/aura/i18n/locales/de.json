@@ -14,6 +14,7 @@
     "fact_search_no_matches": "Keine Fakten gefunden für „{query}“.",
     "ask_not_configured": "Auras Frage-Antwort-Funktion ist auf diesem Server noch nicht eingerichtet. Bitte einen Admin, sie zu konfigurieren.",
     "ask_no_info": "Dazu habe ich noch keine Informationen.",
+    "ask_no_info_related": "Dazu ist nichts Genaues gespeichert. Vielleicht verwandt:",
     "ask_error": "Beim Erstellen einer Antwort ist etwas schiefgelaufen. Bitte versuch es gleich noch einmal.",
     "ask_sources_label": "Quellen",
     "ask_cooldown": "Bitte warte {seconds}s, bevor du erneut fragst.",
