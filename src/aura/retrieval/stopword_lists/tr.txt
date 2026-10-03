@@ -1,0 +1,16 @@
+# Turkish. Words that never carry the subject of a question about a server.
+#
+# One or more words per line; "#" starts a comment. Every word is normalized
+# exactly like a question: lower case, and dotless "ı" folded to "i" like every
+# other Latin diacritic, so "nasıl", "nasil" and "NASIL" are the same word.
+#
+# Left out ON PURPOSE: "zaman" ("ne zaman" is "when", but "zaman" alone is
+# "time", a subject in its own right). Kept although they are first names in
+# other languages: "kim" ("who") and "ben" ("I") -- they open too many Turkish
+# questions to leave to IDF. See aura.retrieval.stopwords.
+bir ve veya ile ama fakat ancak da de mi mı mu mü ne neden niçin niye nasıl
+nerede nereye hangi hangisi kim kime kimin kaç
+bu şu o bunlar şunlar onlar ben sen biz siz benim senin bizim sizin
+için gibi kadar daha çok en var yok değil olan olarak oldu olur olacak
+hakkında bilgi bilgiler merhaba selam teşekkürler sağol lütfen söyle söyler
+misin musun biliyor bugün yarın dün şimdi burada orada

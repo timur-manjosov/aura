@@ -320,6 +320,19 @@ class TestStaticImportSurface:
         # ...and even so it reaches no knowledge-model writer.
         assert not (names & _FORBIDDEN_FACT_WRITERS), names & _FORBIDDEN_FACT_WRITERS
 
+    @pytest.mark.parametrize("relative_path", [*_PHASE_MODULES, "proactive/responder.py"])
+    def test_no_module_on_the_path_reaches_hybrid_retrieval(self, relative_path: str) -> None:
+        # /aura-ask's word matching admits facts below a similarity bar. Stage 2
+        # and the responder are calibrated on PROACTIVE_SIMILARITY_THRESHOLD
+        # alone; letting aura.retrieval in would loosen an unprompted gate
+        # without recalibrating it.
+        offending = [
+            module
+            for module, _ in _imports_of(relative_path)
+            if module == "aura.retrieval" or module.startswith("aura.retrieval.")
+        ]
+        assert offending == [], f"{relative_path} imports {offending}"
+
     def test_the_listener_delegates_synthesis_rather_than_importing_it(self) -> None:
         # The listener routes an eligible message onward; keeping the break in
         # exactly one module means the listener must not pull synthesis into its
@@ -520,6 +533,53 @@ class TestDataSurface:
             lowered = statement.lower()
             assert "facts" not in lowered or "proactive_" in lowered, statement
             assert "fact_links" not in lowered, statement
+
+    async def test_the_responder_running_in_full_uses_embedding_retrieval_only(
+        self, conn: aiosqlite.Connection, detector: QuestionDetector
+    ) -> None:
+        # The runtime half of the static check above: with every entry point of
+        # /aura-ask's hybrid retrieval armed, the whole proactive path -- gate,
+        # responder, synthesis, post -- runs to the end, through
+        # find_similar_facts and nothing else.
+        await _seed_fact(conn)
+        message = _make_message()
+        message.channel.send = AsyncMock()
+        message.guild.preferred_locale = "en-US"
+        result = aura.synthesis.SynthesisResult(
+            answer="ans", used_fact_ids=[1], answers_question=True
+        )
+        find_spy = AsyncMock(wraps=aura.embeddings.find_similar_facts)
+        tripwires = {
+            "retrieve_for_question": patch(
+                "aura.retrieval.hybrid.retrieve_for_question", side_effect=AssertionError
+            ),
+            "index_for": patch(
+                "aura.retrieval.index_cache.LexicalIndexCache.index_for",
+                side_effect=AssertionError,
+            ),
+            "coverage": patch(
+                "aura.retrieval.lexical.LexicalIndex.coverage", side_effect=AssertionError
+            ),
+            "build": patch("aura.retrieval.lexical.LexicalIndex.build", side_effect=AssertionError),
+        }
+        started = {name: cm.start() for name, cm in tripwires.items()}
+        try:
+            with (
+                patch("aura.proactive.responder.synthesize_answer", AsyncMock(return_value=result)),
+                patch("aura.proactive.responder.find_similar_facts", find_spy),
+                patch("aura.proactive.gate.find_similar_facts", find_spy),
+            ):
+                await _run_pipeline(
+                    conn, detector, message=message, settings=_configured_settings()
+                )
+        finally:
+            for cm in tripwires.values():
+                cm.stop()
+
+        assert message.channel.send.await_count == 1  # the path really ran to a post
+        assert find_spy.await_count == 2  # Stage 2 once, the responder once
+        for name, mock in started.items():
+            assert mock.call_count == 0, f"{name} was reached"
 
     async def test_the_knowledge_model_is_byte_for_byte_unchanged_after_a_burst(
         self, conn: aiosqlite.Connection, detector: QuestionDetector

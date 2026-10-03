@@ -111,6 +111,24 @@ Two things make this safe rather than merely louder:
 
 One correction this also forced: through Phase 2b-3 the responder selected facts using `SIMILARITY_THRESHOLD` (0.40, the direct-query bar) while the gate escalated on `PROACTIVE_SIMILARITY_THRESHOLD` (0.30). A message whose best fact fell between the two was granted a budget slot and then found nothing to answer from — 45 of 580 corpus cases, and 111 once the gap stopped blocking. Trigger 2 now uses one bar end to end.
 
+## How `/aura-ask` Finds Facts: Its Words as Well as Its Meaning
+
+The direct-query trigger scores every active fact two ways and hands a fact to synthesis when **either** says it fits (`aura.retrieval.hybrid`):
+
+- **Embedding similarity** — `find_similar_facts`, asked for every fact — at or above `SIMILARITY_THRESHOLD` (0.40), unchanged; or
+- **Lexical coverage** (`aura.retrieval.lexical`) at or above `ASK_LEXICAL_COVERAGE_THRESHOLD` (0.5), provided similarity still reaches `ASK_LEXICAL_SIMILARITY_FLOOR` (0.05). Coverage is the IDF-weighted share of the question's content words a fact contains, words compared by character n-grams (bigrams for spaceless scripts), so inflection, compounds and single typos in words of seven or more letters match without a stemmer per language.
+
+Qualifying facts are ranked by similarity + `ASK_LEXICAL_RANKING_WEIGHT` (0.5) × coverage, the first `SYNTHESIS_FACT_LIMIT` (5) are kept, and link expansion runs as before. When nothing qualifies, up to three facts with coverage ≥ 0.25 are listed verbatim as "possibly related" — no model, no ledger slot.
+
+**Why.** The embedding model scores a bare keyword, an inflected form or a compound near its noise floor (about 0.20 against *any* fact), so "Mentoriate" never reached two facts about a "Mentoriat". On the quality diagnosis' 77 hand-written questions over a real guild's facts, hybrid retrieval found the facts for 73 instead of 47, with the same 6 of 24 unrelated questions selecting anything and precision 0.90 instead of 0.83; on an invented guild of 2,000 facts, 197 of 200 instead of 140 (`scripts/evaluate_ask_retrieval.py`; the private numbers are in the gitignored P2 report). The model is still paid only for judgment over facts it is handed — the words decide which facts it sees, never what it says.
+
+**Invariants.**
+- Proactive relief and extraction dedup are **not** hybrid: they call `find_similar_facts` / `best_similarity` with their own calibrated thresholds, and `tests/test_structural_boundaries.py` keeps every module except `aura.commands.ask` and `aura.main` from importing `aura.retrieval`.
+- Word matching never makes `/aura-ask` fail: if it cannot run (stopword files missing, a scorer bug), the selection is exactly the previous similarity-only one and one WARNING is logged. Setting `ASK_LEXICAL_SIMILARITY_FLOOR` to `SIMILARITY_THRESHOLD` and `ASK_LEXICAL_RANKING_WEIGHT=0` reproduces that selection deliberately (asserted by a test).
+- All of it — hashing the guild's facts, building or reusing its index, scoring, ranking — runs in a worker thread. The per-guild index is cached under a digest of the exact (fact ID, content) pairs it was built from, so any change to a guild's facts, including a hand edit in the database, rebuilds it; the cache is bounded (64 MB, 256 guilds).
+
+**Data files.** One stopword list per supported locale in `src/aura/retrieval/stopword_lists/<locale>.txt`, applied as their union to every guild (a guild's facts may be in any language). IDF is the main protection against common words; the lists only catch question words that appear in no fact. Each file's header names the words left out because they are content words in another language ("son", "car", "ten", ...) and the collisions kept on purpose.
+
 ## Core Principles
 
 ### Performance
@@ -155,7 +173,7 @@ both are configured in `pyproject.toml` and installed from
 
 ### Scalability & Extensibility
 Code should be structured so none of the following ever require touching core logic:
-- A new language → add one locale file.
+- A new language → add one locale file (plus, for `/aura-ask`'s word matching, one stopword list in `src/aura/retrieval/stopword_lists/`; a test names any supported locale that lacks one).
 - A new LLM provider → zero code changes (that's what `litellm` is for).
 - A new fact-extraction rule → an isolated, independently testable unit.
 
@@ -196,6 +214,18 @@ Therefore, for every implementation, without exception:
 - Test fact-extraction and matching logic as pure functions/units, independent of Discord — a live Discord connection should never be required to verify this logic is correct.
 
 ## Open Items (deferred, tracked here so they are not lost)
+
+- **Hybrid retrieval is `/aura-ask`'s alone (P2).** `find_similar_facts` and
+  `best_similarity` remain the only retrieval of proactive relief and of
+  extraction dedup, deliberately: both are calibrated against embedding
+  similarity alone (`PROACTIVE_SIMILARITY_THRESHOLD` 0.20,
+  `EXTRACTION_DEDUP_SIMILARITY_THRESHOLD` 0.53), and word matching would loosen
+  them without a recalibration. Bringing words to either is a project of its
+  own. Also open from P2: two facts about one recurring event at different
+  times (the Mentoriat pair) now both reach synthesis, and the current prompt
+  may call them contradictory — that is the answer contract's job (P4); and a
+  question typed entirely in capitals scores barely above the 0.05 floor on
+  the embedding (0.054–0.059 measured), so the floor is close to rejecting it.
 
 - **Cross-guild shared budget — RESOLVED in Phase 4a-2.** The note that used to
   stand here said the five per-guild daily caps bound one guild's worst case

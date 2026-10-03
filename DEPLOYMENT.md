@@ -476,6 +476,62 @@ per guild, from a backup copy (never the live file):
       "SELECT substr(guild_id, 1, 4) || '…', COUNT(*) FROM ask_calls
        WHERE call_day = strftime('%Y-%m-%d', 'now') GROUP BY guild_id;"
 
+## How `/aura-ask` finds facts (hybrid retrieval)
+
+`/aura-ask` scores every active fact two ways and hands a fact to the model
+when **either** says it fits:
+
+- its embedding similarity reaches `SIMILARITY_THRESHOLD` (unchanged), or
+- the question's own words cover it -- inflected forms, compounds and typos in
+  long words included ("Mentoriate", "Matheklausuren") -- by at least
+  `ASK_LEXICAL_COVERAGE_THRESHOLD`, while its similarity is at least
+  `ASK_LEXICAL_SIMILARITY_FLOOR`.
+
+The facts that qualify are ranked by similarity plus
+`ASK_LEXICAL_RANKING_WEIGHT` × coverage; the best five go to the model, then
+linked facts as before. When nothing qualifies but some facts contain part of
+the question, up to three of them are listed verbatim under "possibly related"
+-- no model call, no `ask_calls` row, as visible as the plain "no information"
+reply it replaces.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ASK_LEXICAL_COVERAGE_THRESHOLD` | 0.5 | share of the question's (rarity-weighted) words a fact must contain; above 0, at most 1 |
+| `ASK_LEXICAL_SIMILARITY_FLOOR` | 0.05 | similarity a fact found by its words must still reach (-1 … 1) |
+| `ASK_LEXICAL_RANKING_WEIGHT` | 0.5 | how much word coverage adds when facts are ranked (0 … 10) |
+
+All three are optional; a server `.env` without them gets the defaults. They
+apply to `/aura-ask` only -- proactive relief and the extraction duplicate
+check still use embedding similarity alone, with their own thresholds.
+
+**Data files.** The word matcher ignores function words listed in
+`src/aura/retrieval/stopword_lists/<locale>.txt`, one file per supported
+locale. They are part of `src/` and so of the image; nothing to configure.
+
+**What to look for in the log.** At startup, once:
+
+    /aura-ask retrieval ready: similarity>=0.40, or word coverage>=0.50 with similarity>=0.05; ranked by similarity + 0.50 x coverage; stopwords for 9 locale(s)
+
+A WARNING `/aura-ask word matching unavailable` instead means the stopword
+files could not be read: questions are then answered from similarity alone,
+exactly as before hybrid retrieval, and nothing else is affected. Per question,
+counts only (no question or fact text, first four guild digits):
+
+    /aura-ask retrieval in guild 1000…: 2 of 11 active fact(s) selected, 2 by words alone, 0 possibly related
+
+**Switching word matching off without a rollback.** Set
+`ASK_LEXICAL_SIMILARITY_FLOOR` to the value of `SIMILARITY_THRESHOLD` (0.4)
+and `ASK_LEXICAL_RANKING_WEIGHT=0`, then restart the bot
+(`docker compose up -d --no-deps aura`): the selection is then exactly the
+previous similarity-only one, and the "possibly related" list never appears
+(asserted by a test).
+
+**Memory and CPU.** Each guild's word index is built in a worker thread when
+its facts change and kept in memory (at most 64 MB and 256 guilds in total,
+least recently used dropped first); a question then costs well under a
+millisecond of matching. Measured: index build about 50 ms for 2,000 facts,
+about 0.4 MB of memory for 2,000 ordinary facts.
+
 ## Plans and billing (Phase 4c)
 
 Billing ships switched off (`BILLING_MODE=disabled`): a redeploy with this code

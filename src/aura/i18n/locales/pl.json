@@ -14,6 +14,7 @@
     "fact_search_no_matches": "Żaden fakt nie pasuje do „{query}”.",
     "ask_not_configured": "Funkcja pytań i odpowiedzi Aury nie jest jeszcze skonfigurowana na tym serwerze. Poproś administratora, żeby ją skonfigurował.",
     "ask_no_info": "Nie mam jeszcze żadnych informacji na ten temat.",
+    "ask_no_info_related": "Nie mam na ten temat nic dokładnego. Być może powiązane:",
     "ask_error": "Coś poszło nie tak podczas przygotowywania odpowiedzi. Spróbuj ponownie za chwilę.",
     "ask_sources_label": "Źródła",
     "ask_cooldown": "Poczekaj {seconds}s, zanim zapytasz ponownie.",

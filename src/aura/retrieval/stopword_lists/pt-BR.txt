@@ -1,0 +1,19 @@
+# Brazilian Portuguese. Words that never carry the subject of a question about
+# a server.
+#
+# One or more words per line; "#" starts a comment. Every word is normalized
+# exactly like a question (lower case, accents removed: "é" = "e").
+#
+# Left out ON PURPOSE, because the same spelling is a content word in another
+# supported language and this list applies to every guild: "era" (English
+# "era"), "ali" (a first name in Turkish and English), "rola" (Polish "role").
+# IDF handles them where they are common -- see aura.retrieval.stopwords.
+o a os as um uma uns umas do da dos das no na nos nas ao aos pelo pela
+e ou mas que quem qual quais quando onde como quanto quanta quantos quantas
+porque
+é são eram foi foram ser estar está estão estava tem têm ter há haver
+eu você vocês ele ela nós eles elas me te se lhe meu minha seu sua nosso nossa
+de em com sem para pra por sobre entre até desde
+muito mais também já aqui hoje amanhã ontem agora
+olá oi obrigado obrigada valeu favor saber sabe diz dizer
+informação informações assunto acontece

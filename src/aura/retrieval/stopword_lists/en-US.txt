@@ -1,0 +1,16 @@
+# English. Words that never carry the subject of a question about a server.
+#
+# One or more words per line; "#" starts a comment. Every word is normalized
+# exactly like a question (lower case, Latin diacritics removed).
+#
+# This list and de.txt are the list the quality diagnosis (2026-10-02) fixed
+# BEFORE it measured anything. Keep additions rare: IDF, not this file, is the
+# main protection against common words -- see aura.retrieval.stopwords.
+#
+# Known collisions, kept so the measured behaviour stays what was measured:
+# "may" is also the month, "will" and "can" are also nouns.
+the a an and or but is are was were be been am do does did to of in on at for
+with by from about what who when where why how which can could may might
+should would will shall i you he she it we they me my your our their this
+that these those there here please thanks hi hello hey any some get got tell
+know info information whats

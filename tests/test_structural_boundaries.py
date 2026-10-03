@@ -25,6 +25,14 @@ so each is pinned here.
      of `sqlite3` in `aura_web` is that separation being given up, and it would
      otherwise be noticed only in review.
 
+  4. **Hybrid retrieval is /aura-ask's alone.** `aura.retrieval` lets a fact
+     reach synthesis by its words below SIMILARITY_THRESHOLD. Proactive relief
+     and extraction dedup are calibrated against embedding similarity alone
+     (PROACTIVE_SIMILARITY_THRESHOLD, EXTRACTION_DEDUP_SIMILARITY_THRESHOLD);
+     an import of `aura.retrieval` there would loosen a calibrated gate without
+     anyone recalibrating it. Only the /aura-ask command and the startup log
+     in `main` may use it.
+
 Static, by AST, deliberately: an import that is never in scope cannot be called
 by accident later, and the check does not need either service to be runnable.
 """
@@ -161,3 +169,63 @@ class TestWebBackendIsSeparateFromTheBot:
         files = _python_files(_REPO_ROOT / "web/backend/aura_web")
         assert len(files) >= 15
         assert any(path.name == "app.py" for path in files)
+
+
+class TestHybridRetrievalIsAskOnly:
+    """Rule 4: only /aura-ask (and the startup log) reach aura.retrieval."""
+
+    _ALLOWED: frozenset[str] = frozenset({"src/aura/commands/ask.py", "src/aura/main.py"})
+
+    @staticmethod
+    def _importers() -> dict[str, list[str]]:
+        importers: dict[str, list[str]] = {}
+        for path in _python_files(_REPO_ROOT / "src" / "aura"):
+            relative = str(path.relative_to(_REPO_ROOT))
+            if relative.startswith("src/aura/retrieval/"):
+                continue
+            modules = sorted(
+                module
+                for module in _imported_modules(path)
+                if module == "aura.retrieval" or module.startswith("aura.retrieval.")
+            )
+            if modules:
+                importers[relative] = modules
+        return importers
+
+    def test_nothing_but_the_ask_command_and_startup_imports_it(self) -> None:
+        offenders = {path: modules for path, modules in self._importers().items()}
+        assert set(offenders) <= self._ALLOWED, (
+            f"{sorted(set(offenders) - self._ALLOWED)} import aura.retrieval; proactive "
+            "relief and extraction dedup must keep their embedding-only retrieval"
+        )
+
+    @pytest.mark.parametrize(
+        "package",
+        ["proactive", "extraction", "backfill", "digest", "onboarding", "db", "billing"],
+    )
+    def test_no_module_of_a_calibrated_path_imports_it(self, package: str) -> None:
+        importers = self._importers()
+        assert not [path for path in importers if path.startswith(f"src/aura/{package}/")]
+
+    @pytest.mark.parametrize(
+        "relative_path", ["embeddings.py", "facts_service.py", "variants_service.py"]
+    )
+    def test_the_shared_similarity_modules_do_not_import_it(self, relative_path: str) -> None:
+        assert f"src/aura/{relative_path}" not in self._importers()
+
+    def test_the_check_would_catch_an_import(self) -> None:
+        # The ask command does import it; if this ever stops being true, the
+        # rule above is passing for the wrong reason.
+        assert "src/aura/commands/ask.py" in self._importers()
+        assert len(_python_files(_REPO_ROOT / "src" / "aura" / "proactive")) >= 6
+
+    def test_the_package_itself_reaches_no_discord_and_no_llm(self) -> None:
+        for path in _python_files(_REPO_ROOT / "src" / "aura" / "retrieval"):
+            imported = {_top_level(module) for module in _imported_modules(path)}
+            assert not imported & (_LLM_CLIENT_MODULES | {"discord", "httpx", "aiohttp"}), path
+
+    def test_the_scorer_reaches_no_database_either(self) -> None:
+        for name in ("lexical.py", "stopwords.py", "index_cache.py"):
+            modules = set(_imported_modules(_REPO_ROOT / "src/aura/retrieval" / name))
+            assert not {_top_level(module) for module in modules} & _DATABASE_MODULES
+            assert not any(module.startswith("aura.db") for module in modules), name

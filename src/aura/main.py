@@ -35,6 +35,7 @@ from aura.db.pending_facts import verify_pending_facts_schema
 from aura.db.proactive_signals import OutdatedDiagnosticTableError, verify_signal_schema
 from aura.db.subscriptions import load_subscription_records, verify_subscriptions_schema
 from aura.digest import ClientDigestGateway, run_digest_scheduler
+from aura.embeddings import SYNTHESIS_FACT_LIMIT
 from aura.extraction import (
     create_fact_worthiness_detector,
     handle_extraction_message,
@@ -45,6 +46,8 @@ from aura.i18n import DEFAULT_LOCALE, TranslationLoadError, Translator, get_tran
 from aura.logging_config import configure_logging
 from aura.onboarding import ClientOnboardingGateway, handle_member_join
 from aura.proactive import GraceRegistry, ProactiveGateConfig, QuestionDetector, handle_message
+from aura.retrieval.hybrid import HybridRetrievalConfig
+from aura.retrieval.stopwords import StopwordLoadError, shipped_stopword_lists
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +200,33 @@ class AuraClient(discord.Client):
             self.settings.proactive_grace_period_seconds,
             proactive_llm,
         )
+
+        # /aura-ask's word matching reads its stopword files here, once, so a
+        # deployment whose image lacks them says so at startup instead of on
+        # the first question -- where it would still answer, from embedding
+        # similarity alone (see aura.retrieval.hybrid).
+        ask_retrieval = HybridRetrievalConfig.from_settings(
+            self.settings, fact_limit=SYNTHESIS_FACT_LIMIT
+        )
+        try:
+            stopword_lists = await asyncio.to_thread(shipped_stopword_lists)
+        except StopwordLoadError:
+            logger.warning(
+                "/aura-ask word matching unavailable: its stopword files could not be read; "
+                "questions are answered from embedding similarity alone",
+                exc_info=True,
+            )
+        else:
+            logger.info(
+                "/aura-ask retrieval ready: similarity>=%.2f, or word coverage>=%.2f with "
+                "similarity>=%.2f; ranked by similarity + %.2f x coverage; stopwords for %d "
+                "locale(s)",
+                ask_retrieval.similarity_threshold,
+                ask_retrieval.coverage_threshold,
+                ask_retrieval.similarity_floor,
+                ask_retrieval.ranking_weight,
+                len(stopword_lists),
+            )
 
         # Phase 3a-2: the second detector, built here for exactly the reasons
         # the first one is -- one-time exemplar embedding that must be finished

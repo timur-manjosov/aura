@@ -1,0 +1,20 @@
+# Polish. Words that never carry the subject of a question about a server.
+#
+# One or more words per line; "#" starts a comment. Every word is normalized
+# exactly like a question: lower case, and "ł" folded to "l" like every other
+# Latin diacritic, so "gdzie"/"kiedy" and "dzięki"/"dzieki" match as typed.
+#
+# Left out ON PURPOSE, because the same spelling is a content word in another
+# supported language and this list applies to every guild: "ten" (English
+# "ten"), "one" (English "one"), "pod" (English "pod"). IDF handles them where
+# they are common -- see aura.retrieval.stopwords. Kept although English has the
+# same spelling as a noun: "ale" ("but") -- too frequent to leave to IDF.
+i a o u w z we ze na do od po za przez przy dla bez nad przed między oraz lub
+albo ale czy że jak gdzie kiedy kto co czego czym komu który która które
+którzy jaki jaka jakie jakim ile dlaczego czemu
+jest są był była było były być ma mają mam masz mieć jestem jesteś
+ja ty on ona ono my wy oni mi mnie ci tobie go jej mu nam wam ich się
+mój moja moje twój twoja swój nasz nasza wasz to ta te tego tej tym
+tu tutaj tam dziś dzisiaj jutro wczoraj teraz już też także bardzo więcej
+proszę dzięki dziękuję cześć hej siema powiedz powiedzieć wiesz wiedzieć
+informacje informacja temat temacie odnośnie dzieje można mogę trzeba

@@ -14,6 +14,7 @@
     "fact_search_no_matches": "\"{query}\"와(과) 일치하는 팩트가 없어요.",
     "ask_not_configured": "이 서버에서는 아직 Aura의 질문 응답 기능이 설정되지 않았어요. 서버 관리자에게 설정을 부탁해 보세요.",
     "ask_no_info": "그것에 대한 정보는 아직 없어요.",
+    "ask_no_info_related": "그것에 대한 정확한 정보는 없어요. 관련이 있을 수도 있는 내용:",
     "ask_error": "답변을 준비하는 중 문제가 발생했어요. 잠시 후 다시 시도해 주세요.",
     "ask_sources_label": "출처",
     "ask_cooldown": "다시 질문하기 전에 {seconds}초만 기다려 주세요.",

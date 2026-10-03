@@ -1,0 +1,23 @@
+# Spanish. Words that never carry the subject of a question about a server.
+#
+# One or more words per line; "#" starts a comment. Every word is normalized
+# exactly like a question (lower case, accents removed: "qué" = "que").
+#
+# Left out ON PURPOSE, because the same spelling is a content word in another
+# supported language and this list applies to every guild: "son" (English
+# "son"), "era" (English "era"), "sin" (English "sin"), "dice" (English "dice").
+# IDF handles them where they are common -- see aura.retrieval.stopwords.
+# Kept although English has the same spelling as a noun: "hay", "con", "dime" --
+# each opens too many Spanish questions to leave to IDF.
+el la los las un una unos unas lo al del
+y o pero sino ni que quien quienes cual cuales cuando donde adonde como
+cuanto cuanta cuantos cuantas porque
+es está están estaba estaban fue fueron ser estar esta este esto estos estas
+ese esa eso esos esas hay había hace hacen haber ha han he has hemos
+yo tú tu él ella nosotros nosotras vosotros ellos ellas me te se nos os le les
+mi mis su sus nuestro nuestra
+de en con para por sobre entre hasta desde hacia según durante
+puedo puede pueden podemos debo debe deben quiero quiere
+hola gracias favor alguien algo algún alguna todo todos toda todas cada
+muy más también ya aquí allí ahí hoy mañana ayer ahora
+saber sabes sabe dime decir información informaciones tema pasa pasando

@@ -11,11 +11,18 @@ has agreed. Which caps apply is the plan gate's answer at that moment. When a
 cap or the brake says no, the asker is not refused: they get, visible only to
 them, a note that today's AI answers are used up and up to three of the facts
 retrieval already found -- no model call, no slot, no cost.
+
+**Which facts an answer is built from** is decided by aura.retrieval.hybrid:
+every active fact is scored by embedding similarity (find_similar_facts, asked
+for all of them) and by how much of the question's own wording it contains,
+and a fact qualifies on either. A keyword, an inflected form or a compound
+finds the fact that contains it even where the embedding scores it as noise.
 """
 
 from __future__ import annotations
 
 import logging
+import sys
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Final
 
@@ -30,7 +37,7 @@ from aura.db.connection import utc_day, utc_now
 from aura.db.cross_guild_budget import enforce_cross_guild_budget
 from aura.db.models import Fact
 from aura.discord_context import channel_display_name, fact_channel_names
-from aura.embeddings import find_similar_facts
+from aura.embeddings import SYNTHESIS_FACT_LIMIT, find_similar_facts
 from aura.grounding import (
     ASK_GROUNDING_TIMEOUT_SECONDS,
     GroundingOutcome,
@@ -39,6 +46,7 @@ from aura.grounding import (
 from aura.i18n import t
 from aura.links_service import expand_with_linked_facts
 from aura.rendering import discord_timestamp, inline_fact_text, source_link
+from aura.retrieval.hybrid import HybridRetrievalConfig, retrieve_for_question
 from aura.synthesis import synthesize_answer
 
 if TYPE_CHECKING:
@@ -70,6 +78,13 @@ _FREE_ANSWER_FACT_LIMIT: Final = 3
 # How much of a guild ID a log line may carry: enough to tell a handful of
 # guilds apart while reading the log, not enough to identify one.
 _LOGGED_GUILD_ID_DIGITS: Final = 4
+
+# find_similar_facts' top_k for "every active fact". The hybrid gate needs each
+# fact's similarity, not only the five most similar: a fact that ranks sixth by
+# embedding may be the one that contains the asked word. find_similar_facts
+# already scores every fact and only then cuts the list, so asking for all of
+# them costs nothing extra.
+_EVERY_ACTIVE_FACT: Final = sys.maxsize
 
 
 def _truncate(content: str, limit: int) -> str:
@@ -216,10 +231,30 @@ def _free_answer_embed(
     )
     reset = int(_next_utc_midnight(now).timestamp())
     note = t(key, locale, reset=f"<t:{reset}:R>")
+    return _fact_list_embed(note, facts[:_FREE_ANSWER_FACT_LIMIT])
+
+
+def _fact_list_embed(note: str, facts: list[Fact]) -> discord.Embed:
+    """Build a no-model reply: a note, then each fact verbatim with its source and date.
+
+    Parameters
+    ----------
+    note
+        The localized sentence above the list.
+    facts
+        The facts to list, in order. Every one is shown.
+
+    Returns
+    -------
+    discord.Embed
+        The note, a blank line, then one line per fact: its sentence as a link
+        to the source message and the date it was recorded, cut to Discord's
+        description limit.
+    """
     lines = [
         f"• [{inline_fact_text(fact.content)}]({source_link(fact)}) · "
         f"{discord_timestamp(fact.created_at)}"
-        for fact in facts[:_FREE_ANSWER_FACT_LIMIT]
+        for fact in facts
     ]
     return discord.Embed(
         description=_truncate(note + "\n\n" + "\n".join(lines), _ANSWER_DISPLAY_LIMIT)
@@ -331,23 +366,49 @@ async def ask_command(interaction: discord.Interaction[AuraClient], question: st
     # retrieval matched is the question the model reads.
     question = question[:_MAX_QUESTION_CHARS]
 
-    results = await find_similar_facts(db, model, guild_id=interaction.guild_id, query=question)
-    relevant_facts = [fact for fact, score in results if score >= settings.similarity_threshold]
+    results = await find_similar_facts(
+        db, model, guild_id=interaction.guild_id, query=question, top_k=_EVERY_ACTIVE_FACT
+    )
+    retrieval = await retrieve_for_question(
+        results,
+        question=question,
+        guild_id=interaction.guild_id,
+        config=HybridRetrievalConfig.from_settings(settings, fact_limit=SYNTHESIS_FACT_LIMIT),
+    )
+    relevant_facts = retrieval.facts
+    logger.info(
+        "/aura-ask retrieval in guild %s: %d of %d active fact(s) selected, %d by words "
+        "alone, %d possibly related%s",
+        _guild_log_label(interaction.guild_id),
+        len(relevant_facts),
+        retrieval.active_fact_count,
+        retrieval.found_by_words_only,
+        len(retrieval.related),
+        "" if retrieval.lexical_available else " (word matching unavailable)",
+    )
 
     if not relevant_facts:
         # A normal outcome, not an error -- Aura simply doesn't have
         # anything relevant yet. No LLM call: this both saves cost and
         # avoids handing the model irrelevant facts and having it try to
-        # answer anyway.
-        await interaction.followup.send(t("ask_no_info", locale))
+        # answer anyway. Facts that contain part of what was asked are
+        # listed verbatim, as possibly related -- shown, never interpreted,
+        # so nothing in the reply can be invented; still no slot, no cost,
+        # and as visible as the plain reply it replaces.
+        if retrieval.related:
+            await interaction.followup.send(
+                embed=_fact_list_embed(t("ask_no_info_related", locale), retrieval.related_facts)
+            )
+        else:
+            await interaction.followup.send(t("ask_no_info", locale))
         return
 
     # CLAUDE.md's fourth knowledge-model component, on the read path: a fact a
     # moderator deliberately linked to one of these becomes available to cite
     # too, resolved through any supersession that has happened since. Only the
     # candidate set widens -- what is actually cited stays the synthesis model's
-    # decision, and the threshold above is untouched, so this can never turn a
-    # question Aura has nothing for into one it answers anyway (an empty
+    # decision, and the retrieval gate above is untouched, so this can never
+    # turn a question Aura has nothing for into one it answers anyway (an empty
     # relevant_facts already returned, above).
     synthesis_facts = await expand_with_linked_facts(
         db, guild_id=interaction.guild_id, facts=relevant_facts

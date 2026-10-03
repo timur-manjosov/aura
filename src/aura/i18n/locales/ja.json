@@ -14,6 +14,7 @@
     "fact_search_no_matches": "「{query}」に一致するファクトはありませんでした。",
     "ask_not_configured": "このサーバーではAuraの質問応答機能がまだ設定されていません。管理者に設定をお願いしてください。",
     "ask_no_info": "それについての情報はまだありません。",
+    "ask_no_info_related": "それについて正確な情報はありません。関連しているかもしれないもの：",
     "ask_error": "回答の作成中に問題が発生しました。少し時間をおいてもう一度試してください。",
     "ask_sources_label": "情報源",
     "ask_cooldown": "もう一度質問する前に{seconds}秒待ってください。",

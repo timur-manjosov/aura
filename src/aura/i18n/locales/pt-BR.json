@@ -14,6 +14,7 @@
     "fact_search_no_matches": "Nenhum fato correspondeu a “{query}”.",
     "ask_not_configured": "A função de perguntas e respostas da Aura ainda não foi configurada neste servidor. Peça a um admin para configurá-la.",
     "ask_no_info": "Ainda não tenho nenhuma informação sobre isso.",
+    "ask_no_info_related": "Não tenho nada exato sobre isso. Talvez esteja relacionado:",
     "ask_error": "Algo deu errado ao montar uma resposta. Tente novamente daqui a pouco.",
     "ask_sources_label": "Fontes",
     "ask_cooldown": "Espere {seconds}s antes de perguntar de novo.",

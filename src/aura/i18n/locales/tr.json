@@ -14,6 +14,7 @@
     "fact_search_no_matches": "“{query}” ile eşleşen hiçbir gerçek yok.",
     "ask_not_configured": "Aura'nın soru-cevap özelliği bu sunucuda henüz ayarlanmadı. Bir sunucu yöneticisinden bunu ayarlamasını iste.",
     "ask_no_info": "Bununla ilgili henüz bir bilgim yok.",
+    "ask_no_info_related": "Bununla ilgili tam olarak kayıtlı bir şey yok. Belki ilgili olabilir:",
     "ask_error": "Bir yanıt hazırlanırken bir şeyler ters gitti. Lütfen birazdan tekrar dene.",
     "ask_sources_label": "Kaynaklar",
     "ask_cooldown": "Tekrar sormadan önce lütfen {seconds} saniye bekle.",

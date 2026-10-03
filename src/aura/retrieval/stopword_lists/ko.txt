@@ -1,0 +1,12 @@
+# Korean. Words that never carry the subject of a question about a server.
+#
+# One or more words per line; "#" starts a comment. Korean separates words
+# with spaces but attaches particles to them ("규칙은"), so only a particle or
+# question word standing on its own is caught here; the rest is left to IDF --
+# see aura.retrieval.stopwords.
+이 가 은 는 을 를 에 에서 의 와 과 도 로 으로
+무엇 뭐 뭐야 뭔가요 언제 어디 어디서 어떻게 왜 누구 어느 어떤 몇
+있나요 있어요 있어 없나요 인가요 입니다 이에요 예요
+알려줘 알려주세요 주세요 대해 대해서 관련 정보
+안녕 안녕하세요 감사합니다 고마워 오늘 내일 어제 지금
+그리고 그런데 하지만 또는

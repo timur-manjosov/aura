@@ -81,6 +81,7 @@ ignore = [
 # because pytest.ini and each script's own sys.path edit put those roots on the
 # path; without naming them here isort files them under third-party.
 known-first-party = [
+    "ask_retrieval_eval",
     "aura",
     "aura_web",
     "bakeoff_cases",
