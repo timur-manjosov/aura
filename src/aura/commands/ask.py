@@ -17,6 +17,16 @@ every active fact is scored by embedding similarity (find_similar_facts, asked
 for all of them) and by how much of the question's own wording it contains,
 and a fact qualifies on either. A keyword, an inflected form or a compound
 finds the fact that contains it even where the embedding scores it as noise.
+
+**Two answer formats** (ANSWER_FORMAT). LEGACY, the default, is the free-text
+answer of aura.synthesis checked by aura.grounding; every message it sends is
+exactly what it was before the setting existed. V2 is the structured answer
+contract (aura.answer_contract), checked statement by statement
+(aura.answer_check) and sent as an answer card (aura.answer_card) -- and every
+other reply of this command (no information, possibly related, the daily limit,
+the errors) as a card of the same design. V2 ships dark: retrieval, the slot,
+the caps and the free answer's rules are the same in both formats; only the
+synthesis, the check and the look differ.
 """
 
 from __future__ import annotations
@@ -30,8 +40,20 @@ import aiosqlite
 import discord
 from discord import app_commands
 
+from aura.answer_card import (
+    AnswerCard,
+    build_answer_card,
+    build_fact_list_card,
+    build_notice_card,
+    card_to_embed,
+    card_to_layout_view,
+    card_to_plain_text,
+    components_v2_available,
+)
+from aura.answer_check import build_statements, verify_answer_v2
+from aura.answer_contract import synthesize_contract_answer
 from aura.billing import PlanGate
-from aura.config import ModelComponent, Settings
+from aura.config import AnswerFormat, CardStyle, ModelComponent, Settings
 from aura.db.ask_state import AskCallOutcome, try_acquire_ask_call_slot
 from aura.db.connection import utc_day, utc_now
 from aura.db.cross_guild_budget import enforce_cross_guild_budget
@@ -48,6 +70,7 @@ from aura.links_service import expand_with_linked_facts
 from aura.rendering import discord_timestamp, inline_fact_text, source_link
 from aura.retrieval.hybrid import HybridRetrievalConfig, retrieve_for_question
 from aura.synthesis import synthesize_answer
+from aura.theme import MessageKind
 
 if TYPE_CHECKING:
     from aura.main import AuraClient
@@ -224,14 +247,33 @@ def _free_answer_embed(
     shown, never rephrased -- the answer is true by construction because it is
     only what was recorded.
     """
+    return _fact_list_embed(_limit_note(outcome, locale, now=now), facts[:_FREE_ANSWER_FACT_LIMIT])
+
+
+def _limit_note(outcome: AskCallOutcome, locale: str, *, now: datetime) -> str:
+    """Return the note a capped question gets: which cap, and when it resets.
+
+    Parameters
+    ----------
+    outcome
+        Which ceiling refused the paid answer; picks the member or guild note.
+    locale
+        The asker's locale.
+    now
+        The moment of the question.
+
+    Returns
+    -------
+    str
+        The localized note, with the reset as a relative Discord timestamp.
+    """
     key = (
         "ask_limit_user_reached"
         if outcome is AskCallOutcome.USER_CAP_REACHED
         else "ask_limit_guild_reached"
     )
     reset = int(_next_utc_midnight(now).timestamp())
-    note = t(key, locale, reset=f"<t:{reset}:R>")
-    return _fact_list_embed(note, facts[:_FREE_ANSWER_FACT_LIMIT])
+    return t(key, locale, reset=f"<t:{reset}:R>")
 
 
 def _fact_list_embed(note: str, facts: list[Fact]) -> discord.Embed:
@@ -287,6 +329,27 @@ async def _send_free_answer(
     an answer the channel can see beats none, and its content is only facts
     the channel's members could already ask about.
     """
+    await _remove_public_deferral(interaction)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+async def _remove_public_deferral(interaction: discord.Interaction[AuraClient]) -> None:
+    """Delete the public "thinking" message so that the next followup can be ephemeral.
+
+    Parameters
+    ----------
+    interaction
+        The deferred interaction.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    See `_send_free_answer` for why the deferral has to go first. A failed
+    delete is logged and otherwise ignored.
+    """
     try:
         await interaction.delete_original_response()
     except discord.HTTPException:
@@ -294,7 +357,173 @@ async def _send_free_answer(
             "/aura-ask could not remove its deferred message before a free answer; "
             "the reply may be visible to the channel"
         )
-    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+async def _send_card(
+    interaction: discord.Interaction[AuraClient],
+    card: AnswerCard,
+    *,
+    style: CardStyle,
+    ephemeral: bool = False,
+) -> None:
+    """Send a v2 card in the configured style, falling back to plain text if Discord refuses it.
+
+    Parameters
+    ----------
+    interaction
+        The deferred interaction.
+    card
+        The card to send.
+    style
+        ANSWER_CARD_STYLE: a classic embed or a Components V2 container.
+    ephemeral
+        Whether only the asker may see it (the daily-limit answer).
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Every send disables mentions: an embed would not notify anyone anyway, but
+    a container's text and the plain-text fallback could. A 400 from Discord
+    means the card itself was refused (a limit this module did not foresee);
+    the same content then goes out once more as plain text, so the asker still
+    gets the answer. Any other failure propagates, as in the legacy format.
+    """
+    no_mentions = discord.AllowedMentions.none()
+    if style is CardStyle.CONTAINER and not components_v2_available():
+        logger.warning(
+            "/aura-ask: ANSWER_CARD_STYLE=container needs discord.py 2.6 or later; "
+            "sending the card as an embed"
+        )
+        style = CardStyle.EMBED
+    try:
+        if style is CardStyle.CONTAINER:
+            await interaction.followup.send(
+                view=card_to_layout_view(card), ephemeral=ephemeral, allowed_mentions=no_mentions
+            )
+        else:
+            await interaction.followup.send(
+                embed=card_to_embed(card), ephemeral=ephemeral, allowed_mentions=no_mentions
+            )
+    except discord.HTTPException as exc:
+        if exc.status != 400:
+            raise
+        logger.warning(
+            "/aura-ask: Discord refused a %s card (HTTP 400); sending it as plain text", style.value
+        )
+        await interaction.followup.send(
+            card_to_plain_text(card), ephemeral=ephemeral, allowed_mentions=no_mentions
+        )
+
+
+async def _answer_in_v2(
+    interaction: discord.Interaction[AuraClient],
+    *,
+    settings: Settings,
+    question: str,
+    locale: str,
+    synthesis_facts: list[Fact],
+) -> None:
+    """Answer in the v2 format: contract synthesis, the statement check, an answer card.
+
+    Parameters
+    ----------
+    interaction
+        The deferred interaction; its paid slot is already claimed.
+    settings
+        Loaded configuration: the v2 model, its checker and the card style.
+    question
+        The question, already cut to `_MAX_QUESTION_CHARS`.
+    locale
+        The asker's locale.
+    synthesis_facts
+        The retrieved facts plus their links -- the only content the answer may use.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    An answer that cites no fact is shown as the "no information" notice, not
+    as the model's own sentence: with no fact behind it there is nothing for
+    the reader to check, and nothing the model may have said. The check reads
+    exactly the lead and the points the card displays, each against the facts
+    it rests on (aura.answer_check); the card's notes are templates and are not
+    checked. A refused or unverified answer gets the same honest notice the
+    legacy format gives, as a card. One INFO line per answer records the
+    outcome, never content.
+    """
+    style = settings.answer_card_style
+    assert interaction.guild_id is not None  # guaranteed by guild_only()
+    guild_label = _guild_log_label(interaction.guild_id)
+    model_name = settings.resolve_model(ModelComponent.ANSWER_V2)
+    assert model_name is not None  # guaranteed by is_llm_configured() in the caller
+    answer = await synthesize_contract_answer(
+        synthesis_facts, question, locale, model=model_name, settings=settings
+    )
+    if answer is None:
+        logger.info("/aura-ask v2 answer in guild %s: synthesis failed", guild_label)
+        await _send_card(
+            interaction,
+            build_notice_card(MessageKind.ERROR, t("ask_error", locale), question=question),
+            style=style,
+        )
+        return
+    if not answer.used_fact_ids:
+        logger.info("/aura-ask v2 answer in guild %s: no fact cited", guild_label)
+        await _send_card(
+            interaction,
+            build_notice_card(MessageKind.RELATED, t("ask_no_info", locale), question=question),
+            style=style,
+        )
+        return
+
+    facts_by_id = {fact.id: fact for fact in synthesis_facts}
+    cited_facts = [facts_by_id[fact_id] for fact_id in answer.used_fact_ids]
+    card = build_answer_card(
+        answer,
+        synthesis_facts,
+        question=question,
+        locale=locale,
+        channel_names=fact_channel_names(
+            interaction.guild, {fact.channel_id for fact in cited_facts}
+        ),
+    )
+    assert card.checked_lead is not None  # always set on an answer card
+    outcome = await verify_answer_v2(
+        build_statements(
+            card.checked_lead,
+            [(point.text, point.fact_ids) for point in card.checked_points],
+            card.cited_fact_ids,
+        ),
+        [facts_by_id[fact_id] for fact_id in card.cited_fact_ids],
+        settings=settings,
+        timeout_seconds=ASK_GROUNDING_TIMEOUT_SECONDS,
+    )
+    logger.info(
+        "/aura-ask v2 answer in guild %s: %s (%d point(s), %d source(s), answers_question=%s)",
+        guild_label,
+        outcome.value,
+        len(card.checked_points),
+        len(card.cited_fact_ids),
+        answer.answers_question,
+    )
+    if outcome is not GroundingOutcome.GROUNDED:
+        key = (
+            "ask_grounding_rejected"
+            if outcome is GroundingOutcome.UNGROUNDED
+            else "ask_grounding_unverified"
+        )
+        await _send_card(
+            interaction,
+            build_notice_card(MessageKind.ERROR, t(key, locale), question=question),
+            style=style,
+        )
+        return
+    await _send_card(interaction, card, style=style)
 
 
 async def _handle_ask_command_error(
@@ -353,7 +582,22 @@ async def ask_command(interaction: discord.Interaction[AuraClient], question: st
     client = interaction.client
     settings = client.settings
 
-    if not settings.is_llm_configured(ModelComponent.SYNTHESIS):
+    # ANSWER_FORMAT=v2 ships dark: with the default, every branch below sends
+    # exactly the legacy reply, and only a deployment that selects v2 takes the
+    # card branches.
+    answer_v2 = settings.answer_format is AnswerFormat.V2
+    answer_component = ModelComponent.ANSWER_V2 if answer_v2 else ModelComponent.SYNTHESIS
+
+    if not settings.is_llm_configured(answer_component):
+        if answer_v2:
+            await _send_card(
+                interaction,
+                build_notice_card(
+                    MessageKind.ERROR, t("ask_not_configured", locale), question=question
+                ),
+                style=settings.answer_card_style,
+            )
+            return
         await interaction.followup.send(t("ask_not_configured", locale))
         return
 
@@ -395,6 +639,24 @@ async def ask_command(interaction: discord.Interaction[AuraClient], question: st
         # listed verbatim, as possibly related -- shown, never interpreted,
         # so nothing in the reply can be invented; still no slot, no cost,
         # and as visible as the plain reply it replaces.
+        if answer_v2:
+            await _send_card(
+                interaction,
+                (
+                    build_fact_list_card(
+                        MessageKind.RELATED,
+                        t("ask_no_info_related", locale),
+                        retrieval.related_facts,
+                        question=question,
+                    )
+                    if retrieval.related
+                    else build_notice_card(
+                        MessageKind.RELATED, t("ask_no_info", locale), question=question
+                    )
+                ),
+                style=settings.answer_card_style,
+            )
+            return
         if retrieval.related:
             await interaction.followup.send(
                 embed=_fact_list_embed(t("ask_no_info_related", locale), retrieval.related_facts)
@@ -429,8 +691,32 @@ async def ask_command(interaction: discord.Interaction[AuraClient], question: st
         now=now,
     )
     if outcome is not AskCallOutcome.GRANTED:
+        if answer_v2:
+            await _remove_public_deferral(interaction)
+            await _send_card(
+                interaction,
+                build_fact_list_card(
+                    MessageKind.LIMIT,
+                    _limit_note(outcome, locale, now=now),
+                    relevant_facts[:_FREE_ANSWER_FACT_LIMIT],
+                    question=question,
+                ),
+                style=settings.answer_card_style,
+                ephemeral=True,
+            )
+            return
         await _send_free_answer(
             interaction, _free_answer_embed(relevant_facts, outcome, locale, now=now)
+        )
+        return
+
+    if answer_v2:
+        await _answer_in_v2(
+            interaction,
+            settings=settings,
+            question=question,
+            locale=locale,
+            synthesis_facts=synthesis_facts,
         )
         return
 

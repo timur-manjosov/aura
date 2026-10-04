@@ -195,5 +195,11 @@
     "plan_state_payment_grace": "⚠️ The last payment for this server's Pro subscription failed. Pro stays on until {date}. The person who subscribed can update the payment method in the billing portal before then; otherwise this server moves to Free.",
     "plan_free_includes": "Free includes /aura-ask and managing facts by hand. Proactive answers, automatic fact extraction, digests, onboarding messages and history backfill need Pro.",
     "plan_multiple_subscriptions": "⚠️ This server has {count} active subscriptions, and one is enough. Whoever paid for an extra one can cancel it in the billing portal.",
-    "plan_manage_link": "Manage the plan: {url}"
+    "plan_manage_link": "Manage the plan: {url}",
+    "answer_not_recorded": "Not recorded: {topics}.",
+    "answer_list_separator": ", ",
+    "answer_footer": "Aura answers only from facts recorded on this server.",
+    "answer_source_message": "Message",
+    "answer_note_conflict": "These facts contradict each other, and none says which one applies.",
+    "answer_note_unclear": "The facts don't say whether both still apply."
 }

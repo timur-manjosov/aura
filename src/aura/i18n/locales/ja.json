@@ -195,5 +195,11 @@
     "plan_state_payment_grace": "⚠️ このサーバーの Pro サブスクリプションの最新の支払いに失敗しました。Pro は {date} まで有効です。それまでにサブスクリプションを申し込んだ人が請求ポータルで支払い方法を更新しないと、このサーバーは Free に移行します。",
     "plan_free_includes": "Free には /aura-ask と手動でのファクト管理が含まれます。プロアクティブ返信、自動ファクト抽出、定期ダイジェスト、オンボーディングメッセージ、履歴の読み取りには Pro が必要です。",
     "plan_multiple_subscriptions": "⚠️ このサーバーには有効なサブスクリプションが {count} 件あります。1 件で十分です。余分に支払った人は請求ポータルで解約できます。",
-    "plan_manage_link": "プランを管理: {url}"
+    "plan_manage_link": "プランを管理: {url}",
+    "answer_not_recorded": "記録なし：{topics}。",
+    "answer_list_separator": "、",
+    "answer_footer": "Auraはこのサーバーに記録された情報だけをもとに回答します。",
+    "answer_source_message": "メッセージ",
+    "answer_note_conflict": "これらの情報は互いに矛盾しており、どちらが有効かは記録されていません。",
+    "answer_note_unclear": "両方がまだ有効かどうかは、記録からはわかりません。"
 }

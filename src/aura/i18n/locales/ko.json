@@ -195,5 +195,11 @@
     "plan_state_payment_grace": "⚠️ 이 서버의 Pro 구독 최근 결제가 실패했어요. Pro는 {date}까지 유지돼요. 그 전에 구독한 사람이 결제 포털에서 결제 수단을 업데이트하지 않으면 이 서버는 Free로 바뀌어요.",
     "plan_free_includes": "Free에는 /aura-ask와 팩트 직접 관리가 포함돼요. 능동적 답변, 자동 팩트 추출, 정기 요약, 온보딩 메시지, 기록 읽기에는 Pro가 필요해요.",
     "plan_multiple_subscriptions": "⚠️ 이 서버에는 활성 구독이 {count}개 있어요. 하나면 충분해요. 추가로 결제한 사람은 결제 포털에서 해지할 수 있어요.",
-    "plan_manage_link": "플랜 관리: {url}"
+    "plan_manage_link": "플랜 관리: {url}",
+    "answer_not_recorded": "기록 없음: {topics}.",
+    "answer_list_separator": ", ",
+    "answer_footer": "Aura는 이 서버에 기록된 정보만으로 답변합니다.",
+    "answer_source_message": "메시지",
+    "answer_note_conflict": "이 정보들은 서로 모순되며, 어느 쪽이 유효한지는 기록되어 있지 않습니다.",
+    "answer_note_unclear": "두 가지가 모두 아직 유효한지는 기록에 나와 있지 않습니다."
 }
