@@ -9,12 +9,15 @@ What must hold:
   checks every displayed statement, and sends cards; the slot, the caps and the
   free answer's rules are the legacy ones.
 * Proactive relief in v2 stays silent on conflicts and "unclear if same" pairs.
+* The ANSWER_V2_* route goes with /aura-ask's answer only, never with proactive
+  relief's model; the check route goes with every check (issue #11).
 * The operator preview is operator-only, ephemeral, and touches no model, no
   ledger and no database.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -26,6 +29,7 @@ import numpy as np
 import pytest
 from discord import app_commands
 from fastembed import TextEmbedding
+from litellm.types.utils import ModelResponse
 
 from aura.answer_contract import validate_contract
 from aura.billing import PlanGate
@@ -698,6 +702,116 @@ class TestProactive:
             )
 
         assert isinstance(message.channel.send.await_args.kwargs["view"], discord.ui.LayoutView)  # type: ignore[union-attr]
+
+
+# --- the request route per trigger (issue #11) -----------------------------------------
+
+# A route for ANSWER_V2_MODEL pinned to providers that may not serve any other
+# model, plus a separate route for the checker.
+_ROUTED: dict[str, object] = {
+    "answer_v2_model": "openrouter/fake/answer",
+    "answer_v2_providers": "DeepInfra,Together",
+    "answer_v2_reasoning": "off",
+    "answer_v2_deny_data_collection": True,
+    "answer_v2_check_providers": "Google",
+    "answer_v2_check_reasoning": "low",
+}
+_ANSWER_ROUTE: dict[str, object] = {
+    "provider": {
+        "order": ["DeepInfra", "Together"],
+        "allow_fallbacks": False,
+        "data_collection": "deny",
+    },
+    "reasoning": {"enabled": False},
+}
+_CHECK_ROUTE: dict[str, object] = {
+    "provider": {"order": ["Google"], "allow_fallbacks": False, "data_collection": "deny"},
+    "reasoning": {"effort": "low"},
+}
+
+
+def _model_reply(payload: object) -> MagicMock:
+    response = MagicMock(spec=ModelResponse)
+    choice = MagicMock()
+    choice.message.content = json.dumps(payload)
+    choice.finish_reason = "stop"
+    response.choices = [choice]
+    response.usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+    return response
+
+
+def _contract_reply(lead: str) -> MagicMock:
+    return _model_reply(
+        {
+            "request_reading": "r",
+            "fact_notes": [{"n": 1, "covers": "c"}],
+            "relations": [],
+            "not_covered_topics": [],
+            "tone": "neutral",
+            "lead": lead,
+            "points": [],
+            "used_fact_numbers": [1],
+            "answers_question": True,
+        }
+    )
+
+
+_GROUNDED_REPLY: dict[str, object] = {"statements": [{"id": "L", "issues": [], "supported": True}]}
+
+
+def _two_calls(lead: str) -> AsyncMock:
+    # aura.answer_contract and aura.answer_check share one litellm module, so
+    # one mock serves both calls; the synthesis comes first, the check second.
+    return AsyncMock(side_effect=[_contract_reply(lead), _model_reply(_GROUNDED_REPLY)])
+
+
+def _calls_by_model(completion: AsyncMock) -> dict[str, dict[str, Any]]:
+    assert completion.await_count == 2
+    return {call.kwargs["model"]: call.kwargs for call in completion.await_args_list}
+
+
+class TestRoutePerTrigger:
+    async def test_ask_sends_the_answer_route_and_the_check_route(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        await _add(conn, embedding_model, "The event starts on Saturday at 18:00.")
+        completion = _two_calls("The event starts on Saturday at 18:00.")
+        with patch("aura.answer_contract.litellm.acompletion", completion):
+            interaction = _interaction(conn, embedding_model, _v2(**_ROUTED))
+            await _ask(interaction)
+
+        calls = _calls_by_model(completion)
+        assert calls["openrouter/fake/answer"]["extra_body"] == _ANSWER_ROUTE
+        assert calls["openrouter/fake/check"]["extra_body"] == _CHECK_ROUTE
+        assert _sent(interaction)["embed"].colour.value == ACCENT_COLORS[MessageKind.ANSWER]
+
+    async def test_proactive_sends_its_own_model_without_the_answer_route(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        _, message = await _proactive_setup(conn)
+        completion = _two_calls("The rules are in #welcome.")
+        settings = _settings(
+            proactive_answer_format="v2", proactive_model="openrouter/fake/proactive", **_ROUTED
+        )
+        with patch("aura.answer_contract.litellm.acompletion", completion):
+            outcome = await _respond(conn, message, settings)
+
+        assert outcome.posted is True
+        calls = _calls_by_model(completion)
+        assert "extra_body" not in calls["openrouter/fake/proactive"]
+        assert calls["openrouter/fake/check"]["extra_body"] == _CHECK_ROUTE
+
+    async def test_ask_without_route_settings_sends_no_extra_fields(
+        self, conn: aiosqlite.Connection, embedding_model: TextEmbedding
+    ) -> None:
+        await _add(conn, embedding_model, "The event starts on Saturday at 18:00.")
+        completion = _two_calls("The event starts on Saturday at 18:00.")
+        with patch("aura.answer_contract.litellm.acompletion", completion):
+            await _ask(_interaction(conn, embedding_model, _v2()))
+
+        calls = _calls_by_model(completion)
+        assert "extra_body" not in calls["openrouter/fake/synth"]
+        assert "extra_body" not in calls["openrouter/fake/check"]
 
 
 # --- the operator preview -------------------------------------------------------------

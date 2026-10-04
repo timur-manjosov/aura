@@ -178,7 +178,9 @@ async def _respond_in_v2(
     locale
         The guild's locale.
     proactive_model
-        The resolved proactive model.
+        The resolved proactive model. It is sent without the ANSWER_V2_*
+        route, which describes ANSWER_V2_MODEL; the check is sent with its
+        own route, since both triggers use the same checker.
 
     Returns
     -------

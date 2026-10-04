@@ -562,6 +562,13 @@ Proactive relief has its own switch, `PROACTIVE_ANSWER_FORMAT`, which stays
 | `ANSWER_V2_REASONING` / `ANSWER_V2_CHECK_REASONING` | empty | reasoning level: empty (model default), `off`, `low`, `medium`, `high` |
 | `ANSWER_V2_DENY_DATA_COLLECTION` | `false` | use only providers that neither retain nor train on the data |
 
+The route lines describe one model each. `ANSWER_V2_PROVIDERS`,
+`ANSWER_V2_REASONING` and the data policy go with `/aura-ask`'s v2 answer only:
+proactive relief's v2 path writes with `PROACTIVE_MODEL`, which the providers
+pinned for `ANSWER_V2_MODEL` may not serve, so it is sent without them. The
+`*_CHECK_*` lines and the data policy go with every v2 check, whichever trigger
+asked for it.
+
 `v2` on either switch **requires a checker model** (`ANSWER_V2_CHECK_MODEL` or
 `GROUNDING_CHECK_MODEL`): without one the bot refuses to start, rather than send
 unchecked answers. The legacy format's "no checker configured, send anyway"

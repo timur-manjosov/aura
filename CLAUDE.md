@@ -285,7 +285,13 @@ Therefore, for every implementation, without exception:
   are in the P4 report. (4) Per-plan models (P5) hook into `resolve_model`;
   only the settings for one v2 model and one checker exist. (5) A pinned
   OpenRouter provider can slow down sharply under parallel load (measured for
-  DeepSeek on DeepInfra); pin two providers if that model is chosen.
+  DeepSeek on DeepInfra); pin two providers if that model is chosen. (6) Only
+  the two v2 calls have route settings (`ANSWER_V2_*`, `ANSWER_V2_CHECK_*`),
+  and the answer route goes with `ANSWER_V2_MODEL` alone (issue #11). Every
+  other call — proactive relief in either format, extraction, supersession —
+  goes through OpenRouter's default routing, so switching one of them to an
+  open-weights model needs route settings of its own first, or it may land on
+  any of that model's providers.
 
 - **Cross-guild shared budget — RESOLVED in Phase 4a-2.** The note that used to
   stand here said the five per-guild daily caps bound one guild's worst case
