@@ -157,6 +157,29 @@ ARMS: Final[dict[str, Arm]] = {
             provider_note="Google AI Studio / Vertex (US); reasoning effort low",
         ),
         Arm(
+            "gemini38-vertex",
+            "openrouter/google/gemini-3.8-flash",
+            ModelPrice(0.75, 3.75),
+            ArmRouting(
+                provider_order=("Google",),
+                data_collection_deny=True,
+                reasoning={"effort": "low"},
+                max_tokens=2000,
+            ),
+            provider_note="Google Vertex (US), pinned, data_collection=deny; reasoning low",
+        ),
+        Arm(
+            "deepseek-2p",
+            "openrouter/deepseek/deepseek-v4.1-flash",
+            ModelPrice(0.30, 1.20),
+            ArmRouting(
+                provider_order=("DeepInfra", "Together"),
+                data_collection_deny=True,
+                reasoning={"enabled": False},
+            ),
+            provider_note="DeepInfra then Together (US), data_collection=deny; reasoning off",
+        ),
+        Arm(
             "gemini38",
             "openrouter/google/gemini-3.8-flash",
             ModelPrice(0.75, 3.75),
