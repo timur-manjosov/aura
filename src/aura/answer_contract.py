@@ -623,6 +623,7 @@ async def synthesize_contract_answer(
     *,
     model: str,
     settings: Settings,
+    use_answer_route: bool = False,
 ) -> ContractAnswer | None:
     """Ask a model to answer a question from facts in the v2 contract.
 
@@ -639,6 +640,11 @@ async def synthesize_contract_answer(
         The already-resolved model string of the calling trigger.
     settings
         Loaded configuration: the API key and the output ceiling.
+    use_answer_route
+        Send the route configured for ANSWER_V2_MODEL (ANSWER_V2_PROVIDERS,
+        ANSWER_V2_REASONING, ANSWER_V2_DENY_DATA_COLLECTION). Only `/aura-ask`,
+        whose model that is, passes True; by default the call carries no
+        route.
 
     Returns
     -------
@@ -652,6 +658,12 @@ async def synthesize_contract_answer(
     caller treats exactly as it treats a failed legacy synthesis. The log line
     on failure names the reason only, never the question or the reply. Every
     call that returns a response writes one usage line (see aura.llm_usage).
+
+    The route is opt-in because it describes one model: providers pinned with
+    no fallback for ANSWER_V2_MODEL may not serve proactive relief's
+    PROACTIVE_MODEL at all, and every such call would be refused -- proactive
+    relief silent with no visible error. Proactive relief's legacy path sends
+    no route either.
     """
     if settings.llm_api_key is None or not model:
         logger.error("synthesize_contract_answer called without an API key or a model")
@@ -661,13 +673,18 @@ async def synthesize_contract_answer(
         return None
 
     messages = build_contract_messages(facts, question, locale)
-    # The route the model was measured on, when the operator configured one;
-    # nothing extra otherwise (see aura.llm_request_options).
-    extra_body = openrouter_extra_body(
-        model,
-        providers=parse_provider_list(settings.answer_v2_providers),
-        deny_data_collection=settings.answer_v2_deny_data_collection,
-        reasoning=settings.answer_v2_reasoning,
+    # The route ANSWER_V2_MODEL was measured on, when the operator configured
+    # one and the caller is the trigger using that model; nothing extra
+    # otherwise (see aura.llm_request_options).
+    extra_body = (
+        openrouter_extra_body(
+            model,
+            providers=parse_provider_list(settings.answer_v2_providers),
+            deny_data_collection=settings.answer_v2_deny_data_collection,
+            reasoning=settings.answer_v2_reasoning,
+        )
+        if use_answer_route
+        else None
     )
     try:
         response = await litellm.acompletion(

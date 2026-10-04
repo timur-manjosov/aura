@@ -1094,7 +1094,10 @@ class Settings(BaseSettings):
     # level ("" = the model's default, "off", "low", "medium", "high"), and
     # whether to use only providers that neither retain nor train on the data.
     # All unset by default: then the calls carry no extra fields at all. Ignored
-    # for a model not routed through OpenRouter.
+    # for a model not routed through OpenRouter. The ANSWER_V2_* route describes
+    # ANSWER_V2_MODEL and goes only with /aura-ask's answer, never with proactive
+    # relief's PROACTIVE_MODEL (providers pinned for one model may not serve
+    # another); the check route and the data policy go with every v2 check.
     answer_v2_providers: str = ""
     answer_v2_reasoning: Literal["", "off", "low", "medium", "high"] = ""
     answer_v2_check_providers: str = ""

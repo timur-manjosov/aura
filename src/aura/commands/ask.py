@@ -462,7 +462,12 @@ async def _answer_in_v2(
     model_name = settings.resolve_model(ModelComponent.ANSWER_V2)
     assert model_name is not None  # guaranteed by is_llm_configured() in the caller
     answer = await synthesize_contract_answer(
-        synthesis_facts, question, locale, model=model_name, settings=settings
+        synthesis_facts,
+        question,
+        locale,
+        model=model_name,
+        settings=settings,
+        use_answer_route=True,
     )
     if answer is None:
         logger.info("/aura-ask v2 answer in guild %s: synthesis failed", guild_label)

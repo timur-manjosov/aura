@@ -141,7 +141,12 @@ class TestTheCalls:
         )
         with patch("aura.answer_contract.litellm.acompletion", completion):
             await synthesize_contract_answer(
-                [FACT], "q", "en-US", model="openrouter/a/synth", settings=settings
+                [FACT],
+                "q",
+                "en-US",
+                model="openrouter/a/synth",
+                settings=settings,
+                use_answer_route=True,
             )
 
         assert completion.await_args is not None
@@ -153,6 +158,21 @@ class TestTheCalls:
             },
             "reasoning": {"enabled": False},
         }
+
+    async def test_the_contract_call_sends_no_route_unless_the_caller_opts_in(self) -> None:
+        completion = AsyncMock(return_value=_response(CONTRACT))
+        settings = _settings(
+            answer_v2_providers="DeepInfra",
+            answer_v2_reasoning="off",
+            answer_v2_deny_data_collection=True,
+        )
+        with patch("aura.answer_contract.litellm.acompletion", completion):
+            await synthesize_contract_answer(
+                [FACT], "q", "en-US", model="openrouter/other/model", settings=settings
+            )
+
+        assert completion.await_args is not None
+        assert "extra_body" not in completion.await_args.kwargs
 
     async def test_the_check_call_sends_its_own_route_not_the_synthesis_route(self) -> None:
         completion = AsyncMock(return_value=_response(VERDICT))
