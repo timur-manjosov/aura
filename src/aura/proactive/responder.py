@@ -44,6 +44,15 @@ That independence is the defense against prompt injection: a message crafted to
 flip answers_question to true can, at most, affect that one field -- it can
 never make a message that failed the numeric gates reach this code at all,
 because this code only runs behind the gate's ELIGIBLE verdict.
+
+**The v2 answer format** (PROACTIVE_ANSWER_FORMAT, default legacy, not switched
+by P4). Selected, the same gate runs on the structured answer contract: it
+posts only when the answer answers the question, cites a fact, and involves
+neither a same-detail conflict nor an "unclear if same" pair
+(aura.answer_contract.ContractAnswer.answers_unprompted); the statement check of
+aura.answer_check replaces the legacy grounding check; and the post is a
+proactive answer card with at most two points. Everything upstream -- the gate,
+the thresholds, the budget, the facts retrieved -- is identical in both formats.
 """
 
 from __future__ import annotations
@@ -55,7 +64,15 @@ import discord
 from fastembed import TextEmbedding
 from pydantic import BaseModel
 
-from aura.config import ModelComponent, Settings
+from aura.answer_card import (
+    build_answer_card,
+    card_to_embed,
+    card_to_layout_view,
+    components_v2_available,
+)
+from aura.answer_check import build_statements, verify_answer_v2
+from aura.answer_contract import synthesize_contract_answer
+from aura.config import AnswerFormat, CardStyle, ModelComponent, Settings
 from aura.db.models import Fact
 from aura.db.proactive_channel_config import is_channel_enabled
 from aura.discord_context import channel_display_name, fact_channel_names
@@ -135,6 +152,102 @@ def _build_proactive_embed(
 
     embed.set_footer(text=t("proactive_reply_footer", locale))
     return embed
+
+
+async def _respond_in_v2(
+    message: discord.Message,
+    *,
+    db: aiosqlite.Connection,
+    settings: Settings,
+    synthesis_facts: list[Fact],
+    locale: str,
+    proactive_model: str,
+) -> ProactiveResponseOutcome:
+    """Trigger 2 in the v2 answer format: the same hard code-gate, an answer card.
+
+    Parameters
+    ----------
+    message
+        The message that cleared the gate.
+    db
+        Open database connection, for the channel re-check.
+    settings
+        Loaded configuration: the checker and the card style.
+    synthesis_facts
+        The retrieved facts plus their links.
+    locale
+        The guild's locale.
+    proactive_model
+        The resolved proactive model.
+
+    Returns
+    -------
+    ProactiveResponseOutcome
+        What happened; never raises for an expected failure.
+
+    Notes
+    -----
+    The order is the legacy one: synthesis, the model's own verdict, the check,
+    the channel re-check, the post. A refused or failed check is silence and a
+    WARNING, as in the legacy format. Every post disables mentions.
+    """
+    channel = message.channel
+    answer = await synthesize_contract_answer(
+        synthesis_facts, message.content, locale, model=proactive_model, settings=settings
+    )
+    if answer is None:
+        return ProactiveResponseOutcome(answers_question=None, posted=False)
+    if not answer.answers_unprompted:
+        return ProactiveResponseOutcome(answers_question=answer.answers_question, posted=False)
+
+    guild = message.guild
+    assert guild is not None  # only reached for a guild message
+    facts_by_id = {fact.id: fact for fact in synthesis_facts}
+    card = build_answer_card(
+        answer,
+        synthesis_facts,
+        question=None,
+        locale=locale,
+        channel_names=fact_channel_names(
+            guild, {facts_by_id[fact_id].channel_id for fact_id in answer.used_fact_ids}
+        ),
+        proactive=True,
+    )
+    assert card.checked_lead is not None  # always set on an answer card
+    grounding = await verify_answer_v2(
+        build_statements(
+            card.checked_lead,
+            [(point.text, point.fact_ids) for point in card.checked_points],
+            card.cited_fact_ids,
+        ),
+        [facts_by_id[fact_id] for fact_id in card.cited_fact_ids],
+        settings=settings,
+        timeout_seconds=PROACTIVE_GROUNDING_TIMEOUT_SECONDS,
+    )
+    if grounding is not GroundingOutcome.GROUNDED:
+        logger.warning(
+            "Proactive answer withheld in channel %s: v2 answer check returned %s",
+            getattr(channel, "id", "<unknown>"),
+            grounding.value,
+        )
+        return ProactiveResponseOutcome(answers_question=answer.answers_question, posted=False)
+
+    if not await is_channel_enabled(db, channel_id=channel.id):
+        return ProactiveResponseOutcome(answers_question=answer.answers_question, posted=False)
+
+    try:
+        if settings.answer_card_style is CardStyle.CONTAINER and components_v2_available():
+            await channel.send(
+                view=card_to_layout_view(card), allowed_mentions=discord.AllowedMentions.none()
+            )
+        else:
+            await channel.send(
+                embed=card_to_embed(card), allowed_mentions=discord.AllowedMentions.none()
+            )
+    except Exception:
+        logger.exception("Proactive post failed in channel %s", getattr(channel, "id", "<unknown>"))
+        return ProactiveResponseOutcome(answers_question=answer.answers_question, posted=False)
+    return ProactiveResponseOutcome(answers_question=answer.answers_question, posted=True)
 
 
 async def respond_with_synthesis(
@@ -275,6 +388,17 @@ async def respond_with_synthesis(
     # That was a fault in Aura, not in the model -- see _parse_json_response.
     proactive_model = settings.resolve_model(ModelComponent.PROACTIVE)
     assert proactive_model is not None  # guaranteed by is_llm_configured() above
+    if settings.proactive_answer_format is AnswerFormat.V2:
+        # Ships dark (PROACTIVE_ANSWER_FORMAT defaults to legacy); see
+        # _respond_in_v2 and this module's docstring.
+        return await _respond_in_v2(
+            message,
+            db=db,
+            settings=settings,
+            synthesis_facts=synthesis_facts,
+            locale=locale,
+            proactive_model=proactive_model,
+        )
     result = await synthesize_answer(
         synthesis_facts,
         message.content,

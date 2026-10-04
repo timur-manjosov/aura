@@ -1,4 +1,11 @@
-"""/aura-operator-budget: the operator's own view of Phase 4a-2's cross-guild brake.
+"""The operator's own commands: /aura-operator-budget and /aura-operator-preview.
+
+/aura-operator-budget is the operator's view of Phase 4a-2's cross-guild brake.
+/aura-operator-preview (P4) renders hand-written sample cards of the v2 answer
+format from invented facts, so the operator can judge the look in a real client
+before any real answer uses it. It calls no model, claims no ledger slot and
+writes nothing to the database; every reply is ephemeral. Both are gated the
+same way, described below for the budget view.
 
 Every other command in this package is moderator-facing and scoped to one
 guild -- manage_guild is the right gate for "can configure this server."
@@ -28,11 +35,13 @@ goes through the same t() seam every other command's permission error does.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import discord
 from discord import app_commands
 
+from aura.answer_card import card_to_embed, card_to_layout_view, components_v2_available
+from aura.commands.preview_samples import PreviewSample, preview_samples
 from aura.db.connection import utc_day, utc_now
 from aura.db.cross_guild_budget import get_cross_guild_status
 from aura.i18n import t
@@ -41,6 +50,16 @@ if TYPE_CHECKING:
     from aura.main import AuraClient
 
 logger = logging.getLogger(__name__)
+
+# The preview's style choices: both card styles one after the other, or one.
+_PREVIEW_STYLES: Final[tuple[str, ...]] = ("both", "embed", "container")
+
+_PREVIEW_INTRO: Final = (
+    "**Preview of the v2 answer cards** -- invented facts, no AI call, nothing "
+    "stored, visible only to you. The source links lead nowhere. Each sample is "
+    "shown as a classic embed and as a Components V2 container, so you can "
+    "compare the two styles on desktop and phone, in dark and light theme."
+)
 
 
 def _is_operator(interaction: discord.Interaction[AuraClient]) -> bool:
@@ -153,8 +172,120 @@ async def operator_budget_command(interaction: discord.Interaction[AuraClient]) 
 operator_budget_command.error(_handle_operator_budget_error)
 
 
+async def _send_preview_sample(
+    interaction: discord.Interaction[AuraClient], sample: PreviewSample, style: str
+) -> None:
+    """Send one sample in one card style, or a short note naming why Discord refused it.
+
+    Parameters
+    ----------
+    interaction
+        The deferred, ephemeral preview interaction.
+    sample
+        The sample to show.
+    style
+        "embed" or "container".
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    A refused sample is reported in the preview itself rather than ending it:
+    the point of the preview is to find exactly such a refusal before a real
+    answer meets it.
+    """
+    caption = f"**{sample.caption}** · {style}"
+    if style == "container" and not components_v2_available():
+        await interaction.followup.send(
+            f"{caption}: the installed discord.py has no Components V2 support (2.6 or later "
+            "needed), so this style cannot be shown.",
+            ephemeral=True,
+        )
+        return
+    try:
+        if style == "embed":
+            await interaction.followup.send(
+                content=caption,
+                embed=card_to_embed(sample.card),
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            await interaction.followup.send(
+                view=card_to_layout_view(sample.card, caption=caption),
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+    except discord.HTTPException as exc:
+        logger.warning("Preview sample %r (%s) was refused: %s", sample.caption, style, exc.status)
+        await interaction.followup.send(
+            f"{caption}: Discord refused this sample (HTTP {exc.status}).", ephemeral=True
+        )
+
+
+@app_commands.command(
+    name="aura-operator-preview",
+    description="Operator-only: sample answer cards of the new format (invented facts, no AI).",
+)
+@app_commands.describe(style="Which card style to show (default: both)")
+@app_commands.choices(
+    style=[app_commands.Choice(name=name, value=name) for name in _PREVIEW_STYLES]
+)
+@app_commands.guild_only()
+@app_commands.check(_is_operator)
+async def operator_preview_command(
+    interaction: discord.Interaction[AuraClient], style: app_commands.Choice[str] | None = None
+) -> None:
+    """Show the v2 answer card samples, visible only to the operator.
+
+    Parameters
+    ----------
+    interaction
+        The command invocation; its locale picks the labels and the content
+        language of the samples.
+    style
+        "both" (the default), "embed" or "container".
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Deferred and answered with followups, the same mechanism /aura-ask uses, so
+    a card that Discord would refuse after a defer is refused here first. No
+    model, no ledger, no database: the samples are a pure function of the
+    locale, the guild and the clock (aura.commands.preview_samples).
+    """
+    assert interaction.guild_id is not None  # guaranteed by guild_only()
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    chosen = style.value if style is not None else "both"
+    styles = ("embed", "container") if chosen == "both" else (chosen,)
+    await interaction.followup.send(_PREVIEW_INTRO, ephemeral=True)
+    for sample in preview_samples(
+        str(interaction.locale), guild_id=interaction.guild_id, now=utc_now()
+    ):
+        for one_style in styles:
+            await _send_preview_sample(interaction, sample, one_style)
+
+
+async def _handle_operator_preview_error(
+    interaction: discord.Interaction[AuraClient], error: app_commands.AppCommandError
+) -> None:
+    """Refuse everyone but the operator with the same localized reply as the budget view."""
+    if isinstance(error, app_commands.CheckFailure):
+        await _handle_operator_budget_error(interaction, error)
+        return
+    logger.error("Unhandled error in /aura-operator-preview", exc_info=error)
+
+
+operator_preview_command.error(_handle_operator_preview_error)
+
+
 def register_operator_commands(tree: app_commands.CommandTree) -> None:
-    """Register the operator-only cross-guild budget command onto tree.
+    """Register the operator-only commands (budget view and card preview) onto tree.
 
     Parameters
     ----------
@@ -166,3 +297,4 @@ def register_operator_commands(tree: app_commands.CommandTree) -> None:
     None
     """
     tree.add_command(operator_budget_command)
+    tree.add_command(operator_preview_command)
