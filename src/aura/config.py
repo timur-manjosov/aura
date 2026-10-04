@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
@@ -89,6 +90,8 @@ class ModelComponent(StrEnum):
     VARIANT = "variant"
     VARIANT_AUDIT = "variant_audit"
     GROUNDING_CHECK = "grounding_check"
+    ANSWER_V2 = "answer_v2"
+    ANSWER_V2_CHECK = "answer_v2_check"
 
 
 class CrossGuildBudgetMode(StrEnum):
@@ -133,6 +136,40 @@ class BillingMode(StrEnum):
 
     DISABLED = "disabled"
     ENFORCED = "enforced"
+
+
+class AnswerFormat(StrEnum):
+    """Which answer format one answering trigger uses (P4).
+
+    LEGACY (the default): the free-text synthesis of aura.synthesis, checked by
+    aura.grounding and sent as the plain answer embed. Every prompt and every
+    message is exactly what it was before this setting existed.
+
+    V2: the structured answer contract of aura.answer_contract, checked point by
+    point by aura.answer_check and rendered as an answer card by
+    aura.answer_card. It ships dark: a deployment selects it per trigger, with
+    ANSWER_FORMAT for /aura-ask and PROACTIVE_ANSWER_FORMAT for proactive relief,
+    and neither is switched until its checker has passed acceptance.
+    """
+
+    LEGACY = "legacy"
+    V2 = "v2"
+
+
+class CardStyle(StrEnum):
+    """How a v2 answer card is drawn in Discord (P4).
+
+    EMBED (the default): a classic embed -- accent colour, the question in the
+    author line, the answer in the description, the sources as a field. An
+    embed never notifies anyone it mentions and renders on every client.
+
+    CONTAINER: a Components V2 container with the same parts, set in subtext
+    and separated by a divider. It cannot carry an embed or plain content, and
+    is always sent with mentions disabled, since a text display can ping.
+    """
+
+    EMBED = "embed"
+    CONTAINER = "container"
 
 
 class ConfigurationError(Exception):
@@ -1011,6 +1048,59 @@ class Settings(BaseSettings):
     # misconfiguration from silencing every answer.
     ask_synthesis_max_output_tokens: int = Field(default=700, ge=256, le=8192)
 
+    # --- The answer format (P4) ----------------------------------------------
+    # Which format each answering trigger uses: ANSWER_FORMAT for /aura-ask,
+    # PROACTIVE_ANSWER_FORMAT for proactive relief. Two settings, not one,
+    # because the proactive pipeline is calibrated on the legacy format and
+    # switches only after a calibration of its own -- /aura-ask can move first.
+    # LEGACY is the default for both, and with it every prompt and every
+    # message is byte for byte what it was before these settings existed. V2
+    # ships dark (see AnswerFormat) and needs a checker model: see
+    # _the_new_format_needs_its_checker below.
+    answer_format: AnswerFormat = AnswerFormat.LEGACY
+    proactive_answer_format: AnswerFormat = AnswerFormat.LEGACY
+
+    # How a v2 answer card is drawn (see CardStyle). Read only on the v2 path.
+    answer_card_style: CardStyle = CardStyle.EMBED
+
+    # The model that writes v2 answers for /aura-ask, resolved through
+    # resolve_model (ModelComponent.ANSWER_V2). Its own value so the v2 answer
+    # can move to a different model than the legacy one without touching
+    # either trigger; unset, it falls back to SYNTHESIS_MODEL, so switching the
+    # format alone never switches the model. Proactive relief's v2 path keeps
+    # PROACTIVE_MODEL. Per-plan models (a stronger one for a higher tier) are
+    # not wired here; resolve_model is the seam they will hook into.
+    answer_v2_model: str | None = None
+
+    # The model that checks v2 answers point by point (aura.answer_check), for
+    # both triggers. Unset, it falls back to GROUNDING_CHECK_MODEL -- never to
+    # a synthesis model, for the independence reason grounding_check_model
+    # documents below.
+    answer_v2_check_model: str | None = None
+
+    # The output ceiling (max_tokens) of one v2 answer call, for both triggers.
+    # Larger than ASK_SYNTHESIS_MAX_OUTPUT_TOKENS because the contract writes a
+    # short analysis (a note per fact, the relations) before the answer. A
+    # reply cut off at it is unusable, exactly like a legacy one.
+    answer_v2_max_output_tokens: int = Field(default=1000, ge=256, le=8192)
+
+    # The output ceiling (max_tokens) of one v2 check. A verdict cut off at it
+    # fails closed, like any unparsable one.
+    answer_v2_check_max_output_tokens: int = Field(default=600, ge=128, le=4096)
+
+    # OpenRouter request options for the two v2 calls (aura.llm_request_options),
+    # so production can send a model the same route it was measured on: the
+    # providers to pin (comma-separated, in order, no fallback), the reasoning
+    # level ("" = the model's default, "off", "low", "medium", "high"), and
+    # whether to use only providers that neither retain nor train on the data.
+    # All unset by default: then the calls carry no extra fields at all. Ignored
+    # for a model not routed through OpenRouter.
+    answer_v2_providers: str = ""
+    answer_v2_reasoning: Literal["", "off", "low", "medium", "high"] = ""
+    answer_v2_check_providers: str = ""
+    answer_v2_check_reasoning: Literal["", "off", "low", "medium", "high"] = ""
+    answer_v2_deny_data_collection: bool = False
+
     # --- Cross-guild operator budget (Phase 4a-2) ---------------------------
     # CLAUDE.md's Open Items section named this gap before any code existed for
     # it, and every one of the five daily-cap comments above already points
@@ -1409,6 +1499,33 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _the_new_format_needs_its_checker(self) -> Settings:
+        """Refuse the v2 answer format on a trigger when no model can check it.
+
+        The legacy format sends an answer without a check when
+        GROUNDING_CHECK_MODEL is unset (logged at every send), so that a missing
+        setting can never silence a running bot. The v2 format is chosen
+        deliberately by an operator, and it must not go live unchecked: so
+        selecting it without ANSWER_V2_CHECK_MODEL or GROUNDING_CHECK_MODEL
+        fails at startup with the reason named, instead of sending unverified
+        answers.
+        """
+        selected = [
+            name
+            for name, value in (
+                ("ANSWER_FORMAT", self.answer_format),
+                ("PROACTIVE_ANSWER_FORMAT", self.proactive_answer_format),
+            )
+            if value is AnswerFormat.V2
+        ]
+        if selected and self.resolve_model(ModelComponent.ANSWER_V2_CHECK) is None:
+            raise ValueError(
+                f"{' and '.join(selected)}=v2 requires ANSWER_V2_CHECK_MODEL or "
+                "GROUNDING_CHECK_MODEL: a v2 answer is never sent unchecked."
+            )
+        return self
+
     @property
     def complimentary_guild_ids(self) -> frozenset[int]:
         """Return the operator's complimentary Pro guilds.
@@ -1460,6 +1577,11 @@ class Settings(BaseSettings):
         to be independent of -- for VARIANT_AUDIT the generator it audits, for
         GROUNDING_CHECK the synthesis model whose finished answer it checks. See each
         field's own comment for the full reasoning.
+
+        ANSWER_V2 falls back to the synthesis model, so selecting the v2 format
+        never changes the model by itself. ANSWER_V2_CHECK falls back to the
+        grounding check's model and never to a synthesis model, for the same
+        independence reason.
         """
         match component:
             case ModelComponent.SYNTHESIS:
@@ -1476,6 +1598,10 @@ class Settings(BaseSettings):
                 return self.variant_audit_model
             case ModelComponent.GROUNDING_CHECK:
                 return self.grounding_check_model
+            case ModelComponent.ANSWER_V2:
+                return self.answer_v2_model or self.synthesis_model
+            case ModelComponent.ANSWER_V2_CHECK:
+                return self.answer_v2_check_model or self.grounding_check_model
 
     def is_llm_configured(self, component: ModelComponent) -> bool:
         """Report whether enough is present to actually call the LLM for a component.

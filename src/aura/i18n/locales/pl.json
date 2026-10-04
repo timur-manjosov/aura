@@ -195,5 +195,11 @@
     "plan_state_payment_grace": "⚠️ Ostatnia płatność za subskrypcję Pro tego serwera nie powiodła się. Pro pozostaje włączone do {date}. Osoba, która wykupiła subskrypcję, może wcześniej zaktualizować metodę płatności w portalu rozliczeń; w przeciwnym razie ten serwer przejdzie na Free.",
     "plan_free_includes": "Plan Free obejmuje /aura-ask i ręczne zarządzanie faktami. Proaktywne odpowiedzi, automatyczne wyodrębnianie faktów, regularne podsumowania, wiadomości powitalne i przetwarzanie historii wymagają Pro.",
     "plan_multiple_subscriptions": "⚠️ Liczba aktywnych subskrypcji tego serwera: {count}, a wystarczy jedna. Osoba, która opłaciła dodatkową, może ją anulować w portalu rozliczeń.",
-    "plan_manage_link": "Zarządzaj planem: {url}"
+    "plan_manage_link": "Zarządzaj planem: {url}",
+    "answer_not_recorded": "Nie odnotowano: {topics}.",
+    "answer_list_separator": ", ",
+    "answer_footer": "Aura odpowiada wyłącznie na podstawie faktów zapisanych na tym serwerze.",
+    "answer_source_message": "Wiadomość",
+    "answer_note_conflict": "Te fakty są ze sobą sprzeczne i żaden nie mówi, który obowiązuje.",
+    "answer_note_unclear": "Z faktów nie wynika, czy oba nadal obowiązują."
 }

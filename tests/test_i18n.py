@@ -49,6 +49,14 @@ NEVER_TRANSLATED_KEYS = frozenset({"ping_response", "ping_command_name"})
 KNOWN_COGNATE_EXCEPTIONS = frozenset(
     {
         ("fr", "ask_sources_label"),
+        # The list separator of the answer card's "not recorded" line is
+        # punctuation, not a word: ", " is correct in every locale whose
+        # script separates list items with a comma. Japanese uses "、" and is
+        # therefore not listed here.
+        *(
+            (locale, "answer_list_separator")
+            for locale in ("de", "es-ES", "pt-BR", "fr", "tr", "pl", "ko")
+        ),
     }
 )
 

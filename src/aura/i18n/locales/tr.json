@@ -195,5 +195,11 @@
     "plan_state_payment_grace": "⚠️ Bu sunucunun Pro aboneliği için son ödeme başarısız oldu. Pro {date} tarihine kadar açık kalır. Aboneliği başlatan kişi o zamana kadar fatura portalından ödeme yöntemini güncelleyebilir; aksi halde bu sunucu Free planına geçer.",
     "plan_free_includes": "Free planı /aura-ask'i ve bilgileri elle yönetmeyi içerir. Proaktif yanıtlar, otomatik bilgi çıkarımı, düzenli özetler, karşılama mesajları ve geçmiş taraması için Pro gerekir.",
     "plan_multiple_subscriptions": "⚠️ Bu sunucunun {count} aktif aboneliği var ve biri yeterli. Fazladan ödeme yapan kişi fazla olanı fatura portalından iptal edebilir.",
-    "plan_manage_link": "Planı yönet: {url}"
+    "plan_manage_link": "Planı yönet: {url}",
+    "answer_not_recorded": "Kayıtlı değil: {topics}.",
+    "answer_list_separator": ", ",
+    "answer_footer": "Aura yalnızca bu sunucuda kaydedilmiş bilgilere dayanarak yanıt verir.",
+    "answer_source_message": "Mesaj",
+    "answer_note_conflict": "Bu bilgiler birbiriyle çelişiyor ve hangisinin geçerli olduğu belirtilmemiş.",
+    "answer_note_unclear": "Bilgiler, ikisinin de hâlâ geçerli olup olmadığını belirtmiyor."
 }

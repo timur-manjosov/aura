@@ -195,5 +195,11 @@
     "plan_state_payment_grace": "⚠️ Die letzte Zahlung für das Pro-Abo dieses Servers ist fehlgeschlagen. Pro bleibt bis {date} aktiv. Die Person, die das Abo abgeschlossen hat, kann die Zahlungsmethode vorher im Abrechnungsportal aktualisieren – sonst wechselt dieser Server zu Free.",
     "plan_free_includes": "Free umfasst /aura-ask und das Verwalten von Fakten von Hand. Proaktive Antworten, automatische Fakten-Erkennung, regelmäßige Zusammenfassungen, Onboarding-Nachrichten und der Historien-Nachlauf brauchen Pro.",
     "plan_multiple_subscriptions": "⚠️ Dieser Server hat {count} aktive Abos, und eins genügt. Wer ein zusätzliches bezahlt hat, kann es im Abrechnungsportal kündigen.",
-    "plan_manage_link": "Plan verwalten: {url}"
+    "plan_manage_link": "Plan verwalten: {url}",
+    "answer_not_recorded": "Nicht vermerkt: {topics}.",
+    "answer_list_separator": ", ",
+    "answer_footer": "Aura antwortet nur aus den Fakten, die auf diesem Server gespeichert sind.",
+    "answer_source_message": "Nachricht",
+    "answer_note_conflict": "Die Angaben widersprechen sich, und keine sagt, welche gilt.",
+    "answer_note_unclear": "Ob beide Angaben noch gelten, geht aus den Fakten nicht hervor."
 }
