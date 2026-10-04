@@ -532,6 +532,72 @@ least recently used dropped first); a question then costs well under a
 millisecond of matching. Measured: index build about 50 ms for 2,000 facts,
 about 0.4 MB of memory for 2,000 ordinary facts.
 
+## The v2 answer format (P4) -- ships dark
+
+`/aura-ask` can answer in a structured format instead of free text: the model
+fills fixed fields (a lead, up to four points that each cite their own facts,
+the relation between facts, what was asked but is not recorded), code renders
+the "Not recorded: ..." line and the conflict or "unclear" caveat from
+templates, a second model checks every displayed statement against exactly the
+facts it cites, and the answer is sent as a card (question on top, lead, cited
+points, sources with channel and recording date). Every other `/aura-ask`
+reply in this format -- no information, possibly related, the daily limit, the
+errors -- is a card of the same design.
+
+**It is off by default.** With `ANSWER_FORMAT=legacy` (the default) nothing
+changes: every prompt and every message is byte for byte what it was before.
+Proactive relief has its own switch, `PROACTIVE_ANSWER_FORMAT`, which stays
+`legacy` until the proactive path has had a calibration of its own.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ANSWER_FORMAT` | `legacy` | `/aura-ask`: `legacy` or `v2` |
+| `PROACTIVE_ANSWER_FORMAT` | `legacy` | proactive relief: `legacy` or `v2` (not switched by P4) |
+| `ANSWER_CARD_STYLE` | `embed` | `embed` (classic embed) or `container` (Components V2) |
+| `ANSWER_V2_MODEL` | `SYNTHESIS_MODEL` | the model writing v2 answers |
+| `ANSWER_V2_CHECK_MODEL` | `GROUNDING_CHECK_MODEL` | the model checking v2 answers -- never a synthesis model |
+| `ANSWER_V2_MAX_OUTPUT_TOKENS` | 1000 | output ceiling of one v2 answer |
+| `ANSWER_V2_CHECK_MAX_OUTPUT_TOKENS` | 600 | output ceiling of one v2 check |
+| `ANSWER_V2_PROVIDERS` / `ANSWER_V2_CHECK_PROVIDERS` | empty | OpenRouter providers to pin (comma-separated, no fallback) |
+| `ANSWER_V2_REASONING` / `ANSWER_V2_CHECK_REASONING` | empty | reasoning level: empty (model default), `off`, `low`, `medium`, `high` |
+| `ANSWER_V2_DENY_DATA_COLLECTION` | `false` | use only providers that neither retain nor train on the data |
+
+`v2` on either switch **requires a checker model** (`ANSWER_V2_CHECK_MODEL` or
+`GROUNDING_CHECK_MODEL`): without one the bot refuses to start, rather than send
+unchecked answers. The legacy format's "no checker configured, send anyway"
+behaviour does not carry over.
+
+**Looking at it before anyone else does.** `/aura-operator-preview` (only for
+`OPERATOR_DISCORD_USER_ID`, visible only to the operator) shows seven
+hand-written sample cards from invented facts -- a normal answer with three
+points, a conflict, an "unclear whether both apply" answer with the "not
+recorded" line, the possibly-related reply, the daily-limit reply, an error, a
+proactive answer -- once as a classic embed and once as a Components V2
+container (option `style`: `both`, `embed`, `container`). No model, no ledger,
+no database. It works whatever `ANSWER_FORMAT` says.
+
+**Switching it on** (only after the checker has passed its acceptance; see the
+P4 report for the measured model choices):
+
+1. Take a backup as in "Redeploying after a code change".
+2. Add the chosen lines to `~/projects/aura/.env`, for example
+   `ANSWER_FORMAT=v2`, `ANSWER_V2_CHECK_MODEL=<checker>` and, where the
+   report says so, the provider and reasoning lines. Key names only in any
+   note or log you keep.
+3. Restart the bot only: `docker compose up -d --force-recreate --no-deps aura`.
+4. Check the log: `Aura is ready`, no Traceback or CRITICAL; after the first
+   questions, one line per answer, counts only:
+
+       /aura-ask v2 answer in guild 1000…: grounded (2 point(s), 3 source(s), answers_question=True)
+
+   `ungrounded` or `check_failed` there means the asker got the honest
+   "couldn't verify" notice instead of the answer.
+
+**Switching it off in one step:** remove the added lines (or set
+`ANSWER_FORMAT=legacy`) and run step 3 again. No database change is involved
+either way; the v2 format writes the same single `ask_calls` row per paid answer
+as the legacy one.
+
 ## Plans and billing (Phase 4c)
 
 Billing ships switched off (`BILLING_MODE=disabled`): a redeploy with this code

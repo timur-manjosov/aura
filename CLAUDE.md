@@ -129,6 +129,52 @@ Qualifying facts are ranked by similarity + `ASK_LEXICAL_RANKING_WEIGHT` (0.5) �
 
 **Data files.** One stopword list per supported locale in `src/aura/retrieval/stopword_lists/<locale>.txt`, applied as their union to every guild (a guild's facts may be in any language). IDF is the main protection against common words; the lists only catch question words that appear in no fact. Each file's header names the words left out because they are content words in another language ("son", "car", "ten", ...) and the collisions kept on purpose.
 
+## The v2 Answer Format: Code Renders, Every Statement Is Checked
+
+P4 added a second answer format for the two answering triggers, selected per
+trigger and **dark by default** (`ANSWER_FORMAT`, `PROACTIVE_ANSWER_FORMAT`,
+both `legacy`; see DEPLOYMENT.md, "The v2 answer format"). With `legacy` every
+prompt and every message is byte for byte what it was before — the legacy
+modules (`aura.synthesis`, `aura.grounding`) are not changed by the new format
+and import nothing from it.
+
+**The contract** (`aura.answer_contract`). The model fills nine fields in a fixed
+order — `request_reading`, `fact_notes`, `relations` (`complementary`,
+`same_detail_conflict`, `unclear_if_same`), `not_covered_topics`, `tone`,
+`lead`, `points` (each citing its own facts), `used_fact_numbers` (every fact
+mentioned, both sides of a conflict included), `answers_question` — under a
+strict schema; anything outside it is the same safe path as an unparsable
+reply. A same-detail conflict, or citing nothing, overrules `answers_question`
+to false (one-directional). The model sees no channel names and no recording
+dates: the card shows both, so the model has nothing to write "since August"
+or a channel name from.
+
+**Code renders the gaps and the caveats.** "Not recorded: …" is a locale
+template filled with the contract's short noun phrases (held to the shape of a
+label: at most six words, no digits, no sentence punctuation), and the
+conflict / "unclear whether both apply" note is a template chosen by the
+relation kind. The model never writes a statement about the record — the
+sentence shape that made the legacy check refuse honest answers in P3. This is
+"structured fields over louder prompts" applied to the output itself.
+
+**Every displayed statement is checked against the facts it rests on**
+(`aura.answer_check`): the lead against every cited fact, each point against
+only its own. Issues come from a closed list; any issue or any "unsupported"
+refuses the whole answer, and every failure mode fails closed. The check never
+sees the templates, and `v2` refuses to start without a checker model — the
+legacy "no checker configured, send anyway" does not carry over. The checker
+must be a different vendor from the v2 synthesis model, as with the legacy check.
+
+**Proactive relief in v2 stays silent on caveats**: it posts only when the
+answer answers the question, cites a fact and has neither a conflict nor an
+"unclear if same" pair (`ContractAnswer.answers_unprompted`).
+
+**Measured model choices and the flip** are in the P4 report
+(`reports/p4-answer-quality-2026-10-04.md`, private). The flip of `/aura-ask`
+is an operator step after the checker's acceptance and after the operator has
+judged the look with `/aura-operator-preview`; `PROACTIVE_ANSWER_FORMAT` needs
+its own calibration task first.
+
 ## Core Principles
 
 ### Performance
@@ -222,10 +268,24 @@ Therefore, for every implementation, without exception:
   `EXTRACTION_DEDUP_SIMILARITY_THRESHOLD` 0.53), and word matching would loosen
   them without a recalibration. Bringing words to either is a project of its
   own. Also open from P2: two facts about one recurring event at different
-  times (the Mentoriat pair) now both reach synthesis, and the current prompt
-  may call them contradictory — that is the answer contract's job (P4); and a
-  question typed entirely in capitals scores barely above the 0.05 floor on
-  the embedding (0.054–0.059 measured), so the floor is close to rejecting it.
+  times (the Mentoriat pair) now both reach synthesis, and the LEGACY prompt
+  may call them contradictory — the v2 contract's `unclear_if_same` handles
+  them (P4), but only once `ANSWER_FORMAT=v2` is switched on; and a question
+  typed entirely in capitals scores barely above the 0.05 floor on the
+  embedding (0.054–0.059 measured), so the floor is close to rejecting it.
+
+- **Open from P4.** (1) Fact extraction, the supersession judge and both
+  variant calls still send no `max_tokens` (P1 bounded only synthesis and
+  grounding); bounding them is a change to the extraction path and needs its
+  own task. (2) The proactive path's v2 switch needs its own calibration: the
+  bake-off measured that the incumbent proactive model answers manipulation
+  attempts it should ignore (the numeric gates and the check remain the real
+  defence), and that other models make far fewer wrong posts. (3) The digest,
+  onboarding, `/aura-plan` and command replies keep their old look; proposals
+  are in the P4 report. (4) Per-plan models (P5) hook into `resolve_model`;
+  only the settings for one v2 model and one checker exist. (5) A pinned
+  OpenRouter provider can slow down sharply under parallel load (measured for
+  DeepSeek on DeepInfra); pin two providers if that model is chosen.
 
 - **Cross-guild shared budget — RESOLVED in Phase 4a-2.** The note that used to
   stand here said the five per-guild daily caps bound one guild's worst case
