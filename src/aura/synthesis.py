@@ -329,6 +329,7 @@ async def synthesize_answer(
     question_channel_name: str | None = None,
     question_asked_at: datetime | None = None,
     fact_channel_names: dict[int, str] | None = None,
+    extra_body: dict[str, object] | None = None,
 ) -> SynthesisResult | None:
     """Ask a model to answer a question from a set of facts.
 
@@ -350,6 +351,11 @@ async def synthesize_answer(
     fact_channel_names
         Optional per-CHANNEL name mapping for the facts. Omit all three and the
         prompt is unchanged from before they existed.
+    extra_body
+        OpenRouter request options of the calling trigger's route (see
+        aura.llm_request_options), or None to send none. Only proactive relief
+        passes one (PROACTIVE_PROVIDERS and its siblings); it never changes the
+        prompt.
 
     Returns
     -------
@@ -416,6 +422,7 @@ async def synthesize_answer(
             # A ceiling on what one call can cost, for both triggers -- see
             # ask_synthesis_max_output_tokens in aura.config for the sizing.
             max_tokens=settings.ask_synthesis_max_output_tokens,
+            **({"extra_body": extra_body} if extra_body else {}),
         )
 
         # acompletion's return type also covers a streaming response, which

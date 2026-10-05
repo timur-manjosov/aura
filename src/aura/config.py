@@ -92,6 +92,7 @@ class ModelComponent(StrEnum):
     GROUNDING_CHECK = "grounding_check"
     ANSWER_V2 = "answer_v2"
     ANSWER_V2_CHECK = "answer_v2_check"
+    EXTRACTION_VERIFY = "extraction_verify"
 
 
 class CrossGuildBudgetMode(StrEnum):
@@ -170,6 +171,21 @@ class CardStyle(StrEnum):
 
     EMBED = "embed"
     CONTAINER = "container"
+
+
+class MessageLook(StrEnum):
+    """Which look one message family has (P5).
+
+    CLASSIC (the default): the message exactly as before P5.
+
+    CARD: the family's card from aura.cards -- the design system of the v2
+    answer card, drawn in ANSWER_CARD_STYLE (a classic embed or a Components V2
+    container). One setting per family (DIGEST_LOOK, ONBOARDING_LOOK, PLAN_LOOK,
+    NOTICE_LOOK), so each can be switched, and switched back, on its own.
+    """
+
+    CLASSIC = "classic"
+    CARD = "card"
 
 
 class ConfigurationError(Exception):
@@ -1104,6 +1120,104 @@ class Settings(BaseSettings):
     answer_v2_check_reasoning: Literal["", "off", "low", "medium", "high"] = ""
     answer_v2_deny_data_collection: bool = False
 
+    # --- The background functions: output ceilings and routes (P5) -----------
+    # The output ceiling (max_tokens) of one fact-extraction call, live and
+    # backfill alike (aura.extraction.distiller). Until P5 the call carried
+    # none, so a misbehaving model or provider could run until the timeout.
+    # A full batch is EXTRACTION_BATCH_MAX_MESSAGES messages, each of which can
+    # yield a sentence of up to 500 characters plus its JSON fields -- about
+    # 190 tokens -- so a legitimate reply to a 20-message batch stays under
+    # 4,000; the P5 evaluation measured the replies actually written (see the
+    # private P5 report). A reply cut off at this ceiling is treated exactly
+    # like an unparsable one: nothing from it is staged and the batch takes the
+    # existing failure path.
+    extraction_max_output_tokens: int = Field(default=4096, ge=1024, le=16384)
+
+    # The output ceiling of one supersession judgement
+    # (aura.extraction.supersession): four short fields and one sentence of at
+    # most 600 characters. A cut-off judgement is "not judged", the existing
+    # failure path; the candidate keeps its plain similarity hint.
+    supersession_max_output_tokens: int = Field(default=1024, ge=256, le=8192)
+
+    # The output ceilings of the two variant calls (aura.variants_service),
+    # which ship inactive (VARIANT_AUDIT_MODEL unset): a list of at most
+    # VARIANT_COUNT short sentences, and one verdict per variant. A cut-off
+    # reply stores no variants, the existing failure path.
+    variant_max_output_tokens: int = Field(default=1024, ge=256, le=8192)
+    variant_audit_max_output_tokens: int = Field(default=1024, ge=256, le=8192)
+
+    # OpenRouter request options for fact extraction, the supersession judge
+    # and proactive relief (aura.llm_request_options), in the same shape as the
+    # ANSWER_V2_* ones above: the providers to pin (comma-separated, in order,
+    # no fallback), the reasoning level ("" = the model's default, "off",
+    # "low", "medium", "high"), and whether to use only providers that neither
+    # retain nor train on the data. Each line describes its own function's
+    # model and goes with that function's calls only. All unset by default:
+    # then the calls carry no extra fields at all, exactly as before P5.
+    # EXTRACTION_* goes with live extraction, backfill and the extraction
+    # verification below; PROACTIVE_* with proactive relief's answer in either
+    # format (its v2 check keeps the ANSWER_V2_CHECK_* route).
+    extraction_providers: str = ""
+    extraction_reasoning: Literal["", "off", "low", "medium", "high"] = ""
+    extraction_deny_data_collection: bool = False
+    supersession_providers: str = ""
+    supersession_reasoning: Literal["", "off", "low", "medium", "high"] = ""
+    supersession_deny_data_collection: bool = False
+    proactive_providers: str = ""
+    proactive_reasoning: Literal["", "off", "low", "medium", "high"] = ""
+    proactive_deny_data_collection: bool = False
+
+    # The output ceiling of proactive relief's answer in the v2 format. Unset
+    # (the default), it is ANSWER_V2_MAX_OUTPUT_TOKENS, exactly as before P5.
+    # Its own value because a model that reasons before it answers spends its
+    # reasoning tokens against this ceiling: the P5 evaluation measured
+    # DeepSeek V4.1 Flash with reasoning on at up to about 2,700 tokens for one
+    # proactive answer, so it needs a higher ceiling than /aura-ask's
+    # non-reasoning answer, which stays bounded at its own value. A reply cut
+    # off at it is unusable, and proactive relief stays silent.
+    proactive_max_output_tokens: int | None = Field(default=None, ge=256, le=16384)
+
+    # The model of the extraction verification (aura.extraction.verifier): a
+    # second call that reads every distilled candidate against the batch it
+    # came from and drops any the messages do not support -- a joke stored as
+    # a rule, a dropped "nur", an unresolved "morgen", a value a later message
+    # corrects. UNSET (the default) means no verification: extraction runs
+    # exactly as before P5. Deliberately no fallback, for the reason
+    # grounding_check_model gives: a check that silently fell back to the
+    # extraction model would check a model's output with the same model.
+    # Its route is EXTRACTION_VERIFY_PROVIDERS / EXTRACTION_VERIFY_REASONING,
+    # and EXTRACTION_DENY_DATA_COLLECTION applies to it too.
+    extraction_verify_model: str | None = None
+    extraction_verify_providers: str = ""
+    extraction_verify_reasoning: Literal["", "off", "low", "medium", "high"] = ""
+    extraction_verify_max_output_tokens: int = Field(default=2048, ge=512, le=8192)
+
+    # A batch whose VERIFICATION CALL failed (a timeout, a provider or network
+    # error, a refused key -- never the model judging the batch, and never an
+    # unusable reply, which is not retried) is held and tried again
+    # instead of cleared (aura.extraction.verify_retry): up to
+    # EXTRACTION_VERIFY_MAX_ATTEMPTS attempts in total, the first pause
+    # EXTRACTION_VERIFY_RETRY_DELAY_SECONDS, doubling after each failure. The
+    # defaults give 4 attempts over about 70 minutes (10, 20, 40 minutes),
+    # which outlasts a typical provider outage while bounding both the time a
+    # batch's raw text is held and the slots one batch can spend (one per
+    # attempt, 4 of EXTRACTION_DAILY_CAP's 50). After the last attempt the
+    # batch is given up with an ERROR log line. Only read when
+    # EXTRACTION_VERIFY_MODEL is set.
+    extraction_verify_max_attempts: int = Field(default=4, ge=1, le=10)
+    extraction_verify_retry_delay_seconds: float = Field(default=600.0, ge=1.0, le=86400.0)
+
+    # --- Message looks (P5) ---------------------------------------------------
+    # The card look of each message family (aura.cards), switched separately;
+    # see MessageLook. CLASSIC, the default, sends every message byte for byte
+    # as before P5. NOTICE_LOOK covers the command replies that have a card
+    # (setting confirmations, the fact confirmations, the Pro-only refusal);
+    # PLAN_LOOK covers /aura-plan itself. A card is drawn in ANSWER_CARD_STYLE.
+    digest_look: MessageLook = MessageLook.CLASSIC
+    onboarding_look: MessageLook = MessageLook.CLASSIC
+    plan_look: MessageLook = MessageLook.CLASSIC
+    notice_look: MessageLook = MessageLook.CLASSIC
+
     # --- Cross-guild operator budget (Phase 4a-2) ---------------------------
     # CLAUDE.md's Open Items section named this gap before any code existed for
     # it, and every one of the five daily-cap comments above already points
@@ -1585,6 +1699,9 @@ class Settings(BaseSettings):
         never changes the model by itself. ANSWER_V2_CHECK falls back to the
         grounding check's model and never to a synthesis model, for the same
         independence reason.
+
+        EXTRACTION_VERIFY has no fallback at all: unset, extraction is not
+        verified, exactly as before it existed.
         """
         match component:
             case ModelComponent.SYNTHESIS:
@@ -1605,6 +1722,8 @@ class Settings(BaseSettings):
                 return self.answer_v2_model or self.synthesis_model
             case ModelComponent.ANSWER_V2_CHECK:
                 return self.answer_v2_check_model or self.grounding_check_model
+            case ModelComponent.EXTRACTION_VERIFY:
+                return self.extraction_verify_model
 
     def is_llm_configured(self, component: ModelComponent) -> bool:
         """Report whether enough is present to actually call the LLM for a component.
