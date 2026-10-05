@@ -32,6 +32,9 @@ import discord
 from discord import app_commands
 
 from aura.billing import GuildPlan, PlanBasis, Standing
+from aura.card_delivery import reply_with_card
+from aura.cards import build_plan_card, build_pro_refusal_card
+from aura.config import MessageLook
 from aura.i18n import t
 
 if TYPE_CHECKING:
@@ -114,8 +117,8 @@ def _shown_date(plan: GuildPlan) -> datetime | None:
     return standing.access_until
 
 
-def describe_plan(plan: GuildPlan, *, locale: str, dashboard_url: str | None) -> str:
-    """Build the /aura-plan reply text.
+def standing_lines(plan: GuildPlan, *, locale: str) -> list[str]:
+    """Return the sentences that say which plan the server is on, and why.
 
     Parameters
     ----------
@@ -123,13 +126,14 @@ def describe_plan(plan: GuildPlan, *, locale: str, dashboard_url: str | None) ->
         The guild's decided plan and standing.
     locale
         Language to write in.
-    dashboard_url
-        The operator's billing dashboard, or None when none is configured.
 
     Returns
     -------
-    str
-        The reply body. Pure, so every standing is testable without Discord.
+    list[str]
+        The basis sentence (billing not enforced, complimentary) when it
+        applies, then the subscription's standing whenever it decides the plan
+        or grants access anyway. Shared by the classic reply and the card
+        (aura.cards.build_plan_card), so both say the same thing.
     """
     standing = plan.standing
     lines: list[str] = []
@@ -149,6 +153,28 @@ def describe_plan(plan: GuildPlan, *, locale: str, dashboard_url: str | None) ->
             lines.append(t(key, locale))
         else:
             lines.append(t(key, locale, date=discord_timestamp(shown_date)))
+    return lines
+
+
+def describe_plan(plan: GuildPlan, *, locale: str, dashboard_url: str | None) -> str:
+    """Build the /aura-plan reply text.
+
+    Parameters
+    ----------
+    plan
+        The guild's decided plan and standing.
+    locale
+        Language to write in.
+    dashboard_url
+        The operator's billing dashboard, or None when none is configured.
+
+    Returns
+    -------
+    str
+        The reply body. Pure, so every standing is testable without Discord.
+    """
+    standing = plan.standing
+    lines = standing_lines(plan, locale=locale)
 
     if not plan.is_pro:
         lines.append(t("plan_free_includes", locale))
@@ -205,12 +231,57 @@ async def plan_command(interaction: discord.Interaction[AuraClient]) -> None:
     assert interaction.guild_id is not None  # guaranteed by guild_only()
     gate = interaction.client.plan_gate
     assert gate is not None  # setup_hook always finishes before commands go live
-    message = describe_plan(
-        gate.plan_for(interaction.guild_id),
-        locale=str(interaction.locale),
-        dashboard_url=interaction.client.settings.billing_dashboard_url,
-    )
+    settings = interaction.client.settings
+    plan = gate.plan_for(interaction.guild_id)
+    locale = str(interaction.locale)
+    if settings.plan_look is MessageLook.CARD:
+        # P5's card look (aura.cards), switched by PLAN_LOOK: the same standing
+        # sentences, with what the plan includes and the management link.
+        card = build_plan_card(
+            plan,
+            locale=locale,
+            standing_lines=standing_lines(plan, locale=locale),
+            dashboard_url=settings.billing_dashboard_url,
+            ask_caps=(
+                settings.ask_daily_cap_free,
+                settings.ask_user_daily_cap_free,
+                settings.ask_daily_cap_pro,
+            ),
+        )
+        await reply_with_card(interaction, card, style=settings.answer_card_style)
+        return
+    message = describe_plan(plan, locale=locale, dashboard_url=settings.billing_dashboard_url)
     await interaction.response.send_message(message, ephemeral=True)
+
+
+async def send_pro_refusal(interaction: discord.Interaction[AuraClient], refusal: str) -> None:
+    """Send the refusal `pro_feature_refusal` returned, in the configured look.
+
+    Parameters
+    ----------
+    interaction
+        The refused command invocation; not yet responded to.
+    refusal
+        The classic refusal text from `pro_feature_refusal`.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    With NOTICE_LOOK=classic (the default) this is exactly the call every
+    caller made before P5. With the card look it is the plan notice of
+    aura.cards: the same sentence, and the upgrade link as a masked link.
+    """
+    settings = interaction.client.settings
+    if settings.notice_look is MessageLook.CARD:
+        card = build_pro_refusal_card(
+            str(interaction.locale), dashboard_url=settings.billing_dashboard_url
+        )
+        await reply_with_card(interaction, card, style=settings.answer_card_style)
+        return
+    await interaction.response.send_message(refusal, ephemeral=True)
 
 
 plan_command.error(_handle_plan_command_error)

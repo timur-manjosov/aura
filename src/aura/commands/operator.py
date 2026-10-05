@@ -41,7 +41,7 @@ import discord
 from discord import app_commands
 
 from aura.answer_card import card_to_embed, card_to_layout_view, components_v2_available
-from aura.commands.preview_samples import PreviewSample, preview_samples
+from aura.commands.preview_samples import PreviewSample, card_look_samples, preview_samples
 from aura.db.connection import utc_day, utc_now
 from aura.db.cross_guild_budget import get_cross_guild_status
 from aura.i18n import t
@@ -264,9 +264,23 @@ async def operator_preview_command(
     chosen = style.value if style is not None else "both"
     styles = ("embed", "container") if chosen == "both" else (chosen,)
     await interaction.followup.send(_PREVIEW_INTRO, ephemeral=True)
-    for sample in preview_samples(
-        str(interaction.locale), guild_id=interaction.guild_id, now=utc_now()
-    ):
+    settings = interaction.client.settings
+    now = utc_now()
+    samples = [
+        *preview_samples(str(interaction.locale), guild_id=interaction.guild_id, now=now),
+        *card_look_samples(
+            str(interaction.locale),
+            guild_id=interaction.guild_id,
+            now=now,
+            ask_caps=(
+                settings.ask_daily_cap_free,
+                settings.ask_user_daily_cap_free,
+                settings.ask_daily_cap_pro,
+            ),
+            dashboard_url=settings.billing_dashboard_url,
+        ),
+    ]
+    for sample in samples:
         for one_style in styles:
             await _send_preview_sample(interaction, sample, one_style)
 

@@ -288,3 +288,197 @@ def preview_samples(locale: str, *, guild_id: int, now: datetime) -> list[Previe
             answer_card(film_keys, film_reply, text.film_question, proactive=True),
         ),
     ]
+
+
+# --- P5: the card looks of the other message families ---------------------------
+
+_P5_FACTS: Final[dict[str, dict[str, tuple[int, str]]]] = {
+    "de": {
+        "rule_ads": (3, "Werbung für andere Server ist in allen Kanälen verboten."),
+        "rule_voice": (3, "Im Voice-Kanal Lounge ist Push-to-Talk Pflicht."),
+        "status_memes": (1, "Der Kanal #memes ist geschlossen, Memes gehören nach #offtopic."),
+        "event_quiz": (2, "Das Weihnachts-Quiz ist am 5. Dezember um 19 Uhr im Voice-Kanal Bühne."),
+        "event_old": (2, "Das Bingo am Samstag beginnt um 19 Uhr."),
+        "event_new": (2, "Das Bingo am Samstag wurde auf 20 Uhr verschoben."),
+        "milestone": (5, "Der Server hat 2.000 Mitglieder erreicht."),
+        "clips": (1, "Für Spiel-Highlights gibt es den neuen Kanal #clips."),
+    },
+    "en": {
+        "rule_ads": (3, "Advertising other servers is not allowed in any channel."),
+        "rule_voice": (3, "Push-to-talk is required in the Lounge voice channel."),
+        "status_memes": (1, "The #memes channel is closed; memes go to #off-topic."),
+        "event_quiz": (2, "The holiday quiz is on December 5 at 19:00 in the Stage voice channel."),
+        "event_old": (2, "Saturday's bingo starts at 19:00."),
+        "event_new": (2, "Saturday's bingo was moved to 20:00."),
+        "milestone": (5, "The server reached 2,000 members."),
+        "clips": (1, "There is a new #clips channel for gameplay highlights."),
+    },
+}
+
+
+def _p5_fact(language: str, guild_id: int, key: str, number: int, day: int) -> Fact:
+    channel_id, content = _P5_FACTS[language][key]
+    return Fact(
+        id=100 + number,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        message_id=100 + number,
+        content=content,
+        embedding=b"",
+        status=FactStatus.ACTIVE,
+        created_at=datetime(2026, 9, day, 17, 0, tzinfo=UTC),
+    )
+
+
+def card_look_samples(
+    locale: str,
+    *,
+    guild_id: int,
+    now: datetime,
+    ask_caps: tuple[int, int, int],
+    dashboard_url: str | None,
+) -> list[PreviewSample]:
+    """Build the samples of every family that has a card look since P5.
+
+    Parameters
+    ----------
+    locale
+        The operator's locale: picks the labels, and German or English content.
+    guild_id
+        The guild the preview runs in; the sample source links point into it.
+    now
+        The current time, for the digest period and the plan's dates.
+    ask_caps
+        (Free per-guild, Free per-member, Pro per-guild) /aura-ask caps, from
+        the settings, so the plan samples show the real numbers.
+    dashboard_url
+        BILLING_DASHBOARD_URL, or None: the plan samples link to it exactly as
+        a real /aura-plan would.
+
+    Returns
+    -------
+    list[PreviewSample]
+        The digest, the onboarding message, /aura-plan on Free and on Pro, the
+        Pro-only refusal, and a confirmation -- in that order, each built by the
+        real builders of aura.cards from invented content.
+    """
+    from aura.billing import (
+        GuildPlan,
+        PlanBasis,
+        PlanTier,
+        Standing,
+        SubscriptionStanding,
+    )
+    from aura.cards import (
+        build_digest_card,
+        build_notice,
+        build_onboarding_card,
+        build_plan_card,
+        build_pro_refusal_card,
+    )
+    from aura.commands.plan import standing_lines
+    from aura.digest.builder import DigestChange, DigestContent
+    from aura.digest.intervals import describe_interval
+    from aura.onboarding.builder import OnboardingContent
+
+    language = content_language(locale)
+    channels = {**_CHANNELS[language], 5: "allgemein" if language == "de" else "general"}
+
+    def fact(key: str, number: int, day: int) -> Fact:
+        return _p5_fact(language, guild_id, key, number, day)
+
+    digest = DigestContent(
+        guild_id=guild_id,
+        covered_from=now - timedelta(days=7),
+        covered_until=now,
+        new_facts=[fact("event_quiz", 1, 28), fact("clips", 2, 29)],
+        milestones=[fact("milestone", 3, 30)],
+        changes=[
+            DigestChange(
+                previous=fact("event_old", 4, 20),
+                current=fact("event_new", 5, 30),
+                changed_at=now - timedelta(days=2),
+                collapsed_steps=0,
+            )
+        ],
+    )
+    onboarding = OnboardingContent(
+        guild_id=guild_id,
+        rules=[fact("rule_ads", 6, 2), fact("rule_voice", 7, 3)],
+        status_changes=[fact("status_memes", 8, 12)],
+        other=[fact("event_quiz", 9, 28), fact("clips", 10, 29)],
+        total_eligible=5,
+    )
+    free_plan = GuildPlan(
+        guild_id=guild_id,
+        tier=PlanTier.FREE,
+        basis=PlanBasis.SUBSCRIPTION,
+        standing=SubscriptionStanding(
+            standing=Standing.NO_SUBSCRIPTION,
+            access_until=None,
+            paid_through=None,
+            shown_subscription_id=None,
+            granting_subscription_ids=frozenset(),
+        ),
+    )
+    paid_until = now + timedelta(days=21)
+    pro_plan = GuildPlan(
+        guild_id=guild_id,
+        tier=PlanTier.PRO,
+        basis=PlanBasis.SUBSCRIPTION,
+        standing=SubscriptionStanding(
+            standing=Standing.ACTIVE,
+            access_until=paid_until,
+            paid_through=paid_until,
+            shown_subscription_id="sample",
+            granting_subscription_ids=frozenset({"sample"}),
+        ),
+    )
+    server_name = "Beispiel-Server" if language == "de" else "Example Server"
+    return [
+        PreviewSample(
+            "P5 1/6 · digest (DIGEST_LOOK=card)",
+            build_digest_card(
+                digest,
+                locale=locale,
+                interval_label=describe_interval(7 * 24 * 3600, locale),
+                channel_names=channels,
+            ),
+        ),
+        PreviewSample(
+            "P5 2/6 · onboarding (ONBOARDING_LOOK=card)",
+            build_onboarding_card(
+                onboarding, locale=locale, server_name=server_name, channel_names=channels
+            ),
+        ),
+        PreviewSample(
+            "P5 3/6 · /aura-plan on Free (PLAN_LOOK=card; only the admin sees it)",
+            build_plan_card(
+                free_plan,
+                locale=locale,
+                standing_lines=standing_lines(free_plan, locale=locale),
+                dashboard_url=dashboard_url,
+                ask_caps=ask_caps,
+            ),
+        ),
+        PreviewSample(
+            "P5 4/6 · /aura-plan on Pro (PLAN_LOOK=card)",
+            build_plan_card(
+                pro_plan,
+                locale=locale,
+                standing_lines=standing_lines(pro_plan, locale=locale),
+                dashboard_url=dashboard_url,
+                ask_caps=ask_caps,
+            ),
+        ),
+        PreviewSample(
+            "P5 5/6 · a Pro-only command on a Free server (NOTICE_LOOK=card)",
+            build_pro_refusal_card(locale, dashboard_url=dashboard_url),
+        ),
+        PreviewSample(
+            "P5 6/6 · a confirmation (NOTICE_LOOK=card)",
+            build_notice(
+                MessageKind.CONFIRM, t("pending_confirmed", locale, pending_id=7, fact_id=12)
+            ),
+        ),
+    ]

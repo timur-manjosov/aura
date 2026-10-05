@@ -44,6 +44,7 @@ import discord
 from discord import app_commands
 from fastembed import TextEmbedding
 
+from aura.commands.notices import edit_into_confirmation
 from aura.db.pending_facts import (
     PendingFact,
     PendingFactAlreadyResolvedError,
@@ -328,15 +329,9 @@ class PendingReviewView(discord.ui.View):
             self.stop()
             return
 
-        await interaction.response.edit_message(
-            content=t(
-                "pending_confirmed",
-                self._locale,
-                pending_id=self._candidate.id,
-                fact_id=fact.id,
-            ),
-            embed=None,
-            view=None,
+        await edit_into_confirmation(
+            interaction,
+            t("pending_confirmed", self._locale, pending_id=self._candidate.id, fact_id=fact.id),
         )
         self.stop()
 
@@ -378,10 +373,8 @@ class PendingReviewView(discord.ui.View):
             self.stop()
             return
 
-        await interaction.response.edit_message(
-            content=t("pending_discarded", self._locale, pending_id=self._candidate.id),
-            embed=None,
-            view=None,
+        await edit_into_confirmation(
+            interaction, t("pending_discarded", self._locale, pending_id=self._candidate.id)
         )
         self.stop()
 

@@ -44,7 +44,7 @@ database or LLM module.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final
 
 import discord
@@ -69,8 +69,11 @@ from aura.theme import (
     COMPONENTS_V2_TEXT_LIMIT,
     DESCRIPTION_MAX_CHARS,
     EMBED_AUTHOR_NAME_LIMIT,
+    EMBED_FIELD_COUNT_LIMIT,
+    EMBED_FIELD_NAME_LIMIT,
     EMBED_FIELD_VALUE_LIMIT,
     EMBED_FOOTER_LIMIT,
+    EMBED_TOTAL_LIMIT,
     KIND_SYMBOLS,
     MAX_POINTS,
     PROACTIVE_MAX_POINTS,
@@ -89,6 +92,49 @@ _RELATION_NOTE_KEYS: Final[dict[RelationKind, str]] = {
     RelationKind.SAME_DETAIL_CONFLICT: "answer_note_conflict",
     RelationKind.UNCLEAR_IF_SAME: "answer_note_unclear",
 }
+
+
+@dataclass(frozen=True)
+class CardItem:
+    """One line of a card section: the main text and an optional quiet line under it.
+
+    Attributes
+    ----------
+    text
+        Markdown, already collapsed, bounded and escaped by the builder.
+    meta
+        Markdown for the quiet line (a source link and a date), or None.
+    """
+
+    text: str
+    meta: str | None = None
+
+
+@dataclass(frozen=True)
+class CardSection:
+    """A titled group of lines in a card (P5: the digest, onboarding and /aura-plan).
+
+    Attributes
+    ----------
+    heading
+        Plain text, collapsed and bounded; shown in bold (or as an embed
+        field's name, where no markdown renders).
+    items
+        The lines shown, in order.
+    hidden
+        How many further lines exist but are not shown.
+    more_template
+        A trusted, localized template with a `{count}` placeholder, shown as a
+        last line when `hidden` is above zero; None shows nothing.
+    numbered
+        Number the lines (1., 2., ...) instead of bulleting them.
+    """
+
+    heading: str
+    items: tuple[CardItem, ...]
+    hidden: int = 0
+    more_template: str | None = None
+    numbered: bool = False
 
 
 @dataclass(frozen=True)
@@ -124,6 +170,9 @@ class AnswerCard:
         the facts it cites.
     cited_fact_ids
         The cited facts' real IDs in display order: citation 1 is the first.
+    sections
+        Titled groups of lines after the body (P5); empty for every answer card,
+        which then renders exactly as before sections existed.
     """
 
     kind: MessageKind
@@ -137,6 +186,7 @@ class AnswerCard:
     checked_lead: str | None = None
     checked_points: tuple[AnswerPoint, ...] = ()
     cited_fact_ids: tuple[int, ...] = ()
+    sections: tuple[CardSection, ...] = ()
 
 
 def question_line(question: str | None) -> str | None:
@@ -447,6 +497,73 @@ def _sources_fields(lines: Sequence[str]) -> list[str]:
     return [shorten(value, EMBED_FIELD_VALUE_LIMIT) for value in values]
 
 
+def section_lines(section: CardSection, *, subtext: bool) -> list[str]:
+    """Return the markdown lines of one section.
+
+    Parameters
+    ----------
+    section
+        The section.
+    subtext
+        Put each item's quiet line on its own line as Discord subtext
+        (Components V2); otherwise append it after a separator (embeds, where
+        subtext is not documented).
+
+    Returns
+    -------
+    list[str]
+        One entry per item, then the "and N more" line when lines are hidden.
+    """
+    lines: list[str] = []
+    for number, item in enumerate(section.items, start=1):
+        marker = f"{number}." if section.numbered else BULLET
+        if item.meta is None:
+            lines.append(f"{marker} {item.text}")
+        elif subtext:
+            lines.append(f"{marker} {item.text}\n-# {item.meta}")
+        else:
+            lines.append(f"{marker} {item.text}{SOURCE_SEPARATOR}{item.meta}")
+    if section.hidden > 0 and section.more_template:
+        lines.append(section.more_template.format(count=section.hidden))
+    return lines
+
+
+def _without_last_item(card: AnswerCard) -> AnswerCard | None:
+    """Return `card` with one line fewer in its longest section, or None when none is left."""
+    if not card.sections:
+        return None
+    longest = max(range(len(card.sections)), key=lambda index: len(card.sections[index].items))
+    section = card.sections[longest]
+    if not section.items:
+        return None
+    shorter = CardSection(
+        heading=section.heading,
+        items=section.items[:-1],
+        hidden=section.hidden + 1,
+        more_template=section.more_template,
+        numbered=section.numbered,
+    )
+    sections = (*card.sections[:longest], shorter, *card.sections[longest + 1 :])
+    return replace(card, sections=sections)
+
+
+def _section_fields(section: CardSection) -> list[tuple[str, str]]:
+    """Return one section as embed fields (name, value), split at the value limit."""
+    name = shorten(collapse_display_text(section.heading) or "·", EMBED_FIELD_NAME_LIMIT)
+    values: list[str] = []
+    current: list[str] = []
+    for line in section_lines(section, subtext=False):
+        candidate = "\n".join([*current, line])
+        if current and len(candidate) > EMBED_FIELD_VALUE_LIMIT:
+            values.append("\n".join(current))
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        values.append("\n".join(current))
+    return [(name, shorten(value, EMBED_FIELD_VALUE_LIMIT)) for value in values]
+
+
 def card_to_embed(card: AnswerCard) -> discord.Embed:
     """Render a card as a classic embed (CardStyle.EMBED).
 
@@ -474,9 +591,46 @@ def card_to_embed(card: AnswerCard) -> discord.Embed:
     )
     if card.top_line:
         embed.set_author(name=shorten(card.top_line, EMBED_AUTHOR_NAME_LIMIT))
+    if card.sections:
+        return _embed_with_sections(embed, card)
     if card.sources and card.sources_label:
         for value in _sources_fields(card.sources):
             embed.add_field(name=card.sources_label, value=value, inline=False)
+    if card.footer:
+        embed.set_footer(text=shorten(card.footer, EMBED_FOOTER_LIMIT))
+    return embed
+
+
+def _embed_with_sections(base: discord.Embed, card: AnswerCard) -> discord.Embed:
+    """Finish an embed for a card with sections, dropping lines until it fits.
+
+    Notes
+    -----
+    Each section becomes one or more fields under its heading. Lines are taken
+    from the end of the longest section, one at a time, until the embed is
+    within Discord's 6,000-character total and 25-field limits; the section
+    then says how many lines it no longer shows.
+    """
+    current: AnswerCard | None = card
+    while current is not None:
+        embed = base.copy()
+        fields = [field for section in current.sections for field in _section_fields(section)]
+        source_fields = (
+            [(current.sources_label, value) for value in _sources_fields(current.sources)]
+            if current.sources and current.sources_label
+            else []
+        )
+        for name, value in [*fields, *source_fields][:EMBED_FIELD_COUNT_LIMIT]:
+            embed.add_field(name=name, value=value, inline=False)
+        if current.footer:
+            embed.set_footer(text=shorten(current.footer, EMBED_FOOTER_LIMIT))
+        if len(embed) <= EMBED_TOTAL_LIMIT and len(fields) + len(source_fields) <= (
+            EMBED_FIELD_COUNT_LIMIT
+        ):
+            return embed
+        current = _without_last_item(current)
+    # Every line is gone and the frame alone is still too large: show the frame.
+    embed = base.copy()
     if card.footer:
         embed.set_footer(text=shorten(card.footer, EMBED_FOOTER_LIMIT))
     return embed
@@ -517,9 +671,24 @@ def components_v2_available() -> bool:
     )
 
 
+def _section_texts(card: AnswerCard) -> list[str]:
+    """Return one text block per section: the bold heading, then its lines."""
+    return [
+        "\n".join(
+            [
+                f"**{escape_display_markdown(section.heading)}**",
+                *section_lines(section, subtext=True),
+            ]
+        )
+        for section in card.sections
+    ]
+
+
 def layout_text_length(card: AnswerCard) -> int:
     """Return how many text characters `card_to_layout_view` would send for `card`."""
-    return sum(len(text) for text in _layout_texts(card) if text)
+    return sum(len(text) for text in _layout_texts(card) if text) + sum(
+        len(text) for text in _section_texts(card)
+    )
 
 
 def card_to_layout_view(card: AnswerCard, *, caption: str | None = None) -> discord.ui.LayoutView:
@@ -550,6 +719,8 @@ def card_to_layout_view(card: AnswerCard, *, caption: str | None = None) -> disc
     escaped, so no mention token can form in the first place; the
     allowed-mentions setting is the second lock.
     """
+    if card.sections:
+        return _layout_view_with_sections(card, caption=caption)
     top, body, sources, footer = _layout_texts(card)
     blocks: list[str | None] = [top, body, sources, footer]
     budget = COMPONENTS_V2_TEXT_LIMIT - (len(caption) if caption else 0)
@@ -581,6 +752,47 @@ def card_to_layout_view(card: AnswerCard, *, caption: str | None = None) -> disc
     return view
 
 
+def _layout_view_with_sections(card: AnswerCard, *, caption: str | None) -> discord.ui.LayoutView:
+    """Render a card with sections as one container, dropping lines until it fits.
+
+    Notes
+    -----
+    Top line, body, one text display per section, a divider and the sources,
+    the footer -- at most six plus the number of sections components. Lines go
+    from the end of the longest section, one at a time, until the text is under
+    4,000 characters; the section then says how many it no longer shows.
+    """
+    budget = COMPONENTS_V2_TEXT_LIMIT - (len(caption) if caption else 0)
+    current: AnswerCard = card
+    while layout_text_length(current) > budget:
+        shorter = _without_last_item(current)
+        if shorter is None:
+            break
+        current = shorter
+    top, body, sources, footer = _layout_texts(current)
+    container: discord.ui.Container[discord.ui.LayoutView] = discord.ui.Container(
+        accent_colour=ACCENT_COLORS[current.kind]
+    )
+    if top:
+        container.add_item(discord.ui.TextDisplay(top))
+    if body:
+        container.add_item(discord.ui.TextDisplay(body))
+    for text in _section_texts(current):
+        container.add_item(discord.ui.TextDisplay(shorten(text, max(budget, 1))))
+    if sources:
+        container.add_item(
+            discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small)
+        )
+        container.add_item(discord.ui.TextDisplay(sources))
+    if footer:
+        container.add_item(discord.ui.TextDisplay(footer))
+    view = discord.ui.LayoutView(timeout=None)
+    if caption:
+        view.add_item(discord.ui.TextDisplay(caption))
+    view.add_item(container)
+    return view
+
+
 def card_to_plain_text(card: AnswerCard) -> str:
     """Render a card as one plain message, the fallback when Discord refuses a card.
 
@@ -604,6 +816,15 @@ def card_to_plain_text(card: AnswerCard) -> str:
     """
     parts = [f"**{escape_display_markdown(card.top_line)}**"] if card.top_line else []
     parts.append(compose_description(card, notes_as_subtext=False))
+    parts.extend(
+        "\n".join(
+            [
+                f"**{escape_display_markdown(section.heading)}**",
+                *section_lines(section, subtext=False),
+            ]
+        )
+        for section in card.sections
+    )
     with_sources = list(parts)
     if card.sources and card.sources_label:
         with_sources.append("\n".join([card.sources_label, *card.sources]))

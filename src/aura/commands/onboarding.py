@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
-from aura.commands.plan import pro_feature_refusal
+from aura.commands.notices import send_confirmation
+from aura.commands.plan import pro_feature_refusal, send_pro_refusal
 from aura.db.onboarding_config import get_onboarding_config, set_onboarding_config
 from aura.i18n import t
 
@@ -147,7 +148,7 @@ async def onboarding_command(
     if target_enabled:
         refusal = pro_feature_refusal(interaction)
         if refusal is not None:
-            await interaction.response.send_message(refusal, ephemeral=True)
+            await send_pro_refusal(interaction, refusal)
             return
 
     await set_onboarding_config(
@@ -159,7 +160,7 @@ async def onboarding_command(
     )
 
     if not target_enabled:
-        await interaction.response.send_message(t("onboarding_disabled", locale), ephemeral=True)
+        await send_confirmation(interaction, t("onboarding_disabled", locale))
         return
 
     channel_mention = channel.mention if channel is not None else f"<#{target_channel_id}>"
@@ -175,7 +176,7 @@ async def onboarding_command(
 
     # Ephemeral: a configuration confirmation is for the moderator who ran it,
     # not an announcement to the channel.
-    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+    await send_confirmation(interaction, "\n".join(lines))
 
 
 onboarding_command.error(_handle_onboarding_command_error)
