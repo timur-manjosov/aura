@@ -605,6 +605,72 @@ P4 report for the measured model choices):
 either way; the v2 format writes the same single `ask_calls` row per paid answer
 as the legacy one.
 
+## Background functions and message looks (P5) -- ship dark
+
+P5 measured fact extraction, the supersession judge and proactive relief on
+new models (private report `reports/p5-background-functions-<date>.md`) and gave
+the digest, onboarding, `/aura-plan` and the command confirmations a card look.
+**With every new setting at its default the bot sends byte for byte what it
+sent before**, with one deliberate exception: the background calls now carry an
+output ceiling.
+
+**Output ceilings (active by default).** Fact extraction (live and backfill),
+the supersession judge and the two variant calls send `max_tokens` from
+`EXTRACTION_MAX_OUTPUT_TOKENS` (4096), `SUPERSESSION_MAX_OUTPUT_TOKENS` (1024),
+`VARIANT_MAX_OUTPUT_TOKENS` and `VARIANT_AUDIT_MAX_OUTPUT_TOKENS` (1024 each).
+The largest reply measured was a fifth of these; a reply cut off at a ceiling
+takes the existing failure path (the batch is skipped, the candidate keeps its
+plain hint, no variants), never a half-stored result. Each call also writes one
+`LLM usage:` line (purpose `extraction`, `supersession`, `extraction-verify`).
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `EXTRACTION_PROVIDERS` / `_REASONING` / `_DENY_DATA_COLLECTION` | empty / empty / false | route of `EXTRACTION_MODEL` (live, backfill; the data policy also covers the verification) |
+| `SUPERSESSION_PROVIDERS` / `_REASONING` / `_DENY_DATA_COLLECTION` | empty | route of `SUPERSESSION_MODEL` |
+| `PROACTIVE_PROVIDERS` / `_REASONING` / `_DENY_DATA_COLLECTION` | empty | route of `PROACTIVE_MODEL`, both answer formats |
+| `PROACTIVE_MAX_OUTPUT_TOKENS` | unset (= `ANSWER_V2_MAX_OUTPUT_TOKENS`) | ceiling of proactive relief's v2 answer; a reasoning model needs ~4000 |
+| `EXTRACTION_VERIFY_MODEL` | unset (= no verification) | second call that drops candidates the batch does not support; no fallback |
+| `EXTRACTION_VERIFY_PROVIDERS` / `_REASONING` / `_MAX_OUTPUT_TOKENS` | empty / empty / 2048 | its route and ceiling |
+| `EXTRACTION_VERIFY_MAX_ATTEMPTS` / `_RETRY_DELAY_SECONDS` | 4 / 600 | how often a batch whose verification CALL failed is tried, and the first pause (doubling) |
+| `DIGEST_LOOK`, `ONBOARDING_LOOK`, `PLAN_LOOK`, `NOTICE_LOOK` | `classic` | `card` switches that family to its card look, drawn in `ANSWER_CARD_STYLE` |
+
+**Proactive relief in v2** (`PROACTIVE_ANSWER_FORMAT=v2`) now uses the proactive
+variant of the answer contract: the model first says what the message is
+(`message_kind`), and only a sincere request may be answered; it is told the
+posting date. The v2 check (`ANSWER_V2_CHECK_MODEL`) stays in the loop, and the
+checker must be a different vendor from `PROACTIVE_MODEL`.
+
+**A verification call that fails is retried; an unusable reply is not.** When
+the call itself does not complete (a timeout, a provider or network error, a
+refused key), the batch stays queued -- for backfill, the cursor stays -- and
+is tried again after 10, 20 and 40 minutes (defaults), each attempt one
+extraction slot. After the last attempt it is given up with an ERROR line
+`Giving up a N-message ... batch ...: its verification failed on all 4
+attempt(s)`. A reply that arrives but cannot be used (malformed, cut off, a
+check missing) skips the batch at once, exactly like a failed extraction: at
+temperature 0 a retry would most likely repeat it, and a batch crafted to break
+the reply must not cost more than one slot. The counts live in memory; a
+restart simply tries a held batch again. A failed EXTRACTION call still skips
+its batch at once, as before P5. Watch the `Extraction verification kept N of
+M candidate(s)` and `Verification failed ... (attempt N of 4)` lines after
+switching it on.
+
+**Looking first.** `/aura-operator-preview` now also shows the six card looks
+(digest, onboarding, `/aura-plan` on Free and on Pro, the Pro-only refusal, a
+confirmation), whatever the `*_LOOK` settings say.
+
+**Switching one function** (each is its own step, with its own backup):
+
+1. Backup as in "Redeploying after a code change" (online backup API, integrity
+   check, `.env` copy mode 600, a rollback tag of the running image).
+2. Append only that function's lines to `~/projects/aura/.env` (key names only
+   in any note).
+3. `docker compose up -d --force-recreate --no-deps aura`; check `Aura is
+   ready`, no Traceback/CRITICAL, and the running settings.
+
+**Switching it off in one step:** remove the appended lines and run step 3
+again. No database change is involved for any of these settings.
+
 ## Plans and billing (Phase 4c)
 
 Billing ships switched off (`BILLING_MODE=disabled`): a redeploy with this code

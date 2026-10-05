@@ -175,6 +175,36 @@ is an operator step after the checker's acceptance and after the operator has
 judged the look with `/aura-operator-preview`; `PROACTIVE_ANSWER_FORMAT` needs
 its own calibration task first.
 
+## The Background Functions and the Card Looks (P5)
+
+P5 gave fact extraction, the supersession judge and proactive relief their own
+route settings (`EXTRACTION_*`, `SUPERSESSION_*`, `PROACTIVE_*`), bounded every
+background call (`*_MAX_OUTPUT_TOKENS`; a cut-off reply takes the existing
+failure path), and added two dark mechanisms, both measured in the private P5
+report (`reports/p5-background-functions-2026-10-04.md`):
+
+- **The extraction verification** (`aura.extraction.verifier`,
+  `EXTRACTION_VERIFY_MODEL`, unset = off): a second call classifies every
+  candidate against its own batch from a closed list (source kind, issues,
+  verdict); code keeps only an assertion with no issue. It only removes, never
+  rewrites, and an unusable reply is a failed distillation. A verification
+  CALL that fails (timeout, outage, refused key) holds the batch -- queued, or
+  the backfill cursor unmoved -- and retries it with a doubling pause, a
+  bounded number of times (`aura.extraction.verify_retry`,
+  `EXTRACTION_VERIFY_MAX_ATTEMPTS`), then gives it up with an ERROR line. The
+  verifier must not be the extraction model (no fallback).
+- **The proactive variant of the answer contract**: the model first names what
+  the message is (`message_kind`) and only a sincere request may be posted;
+  `/aura-ask`'s contract is byte for byte unchanged (fingerprint pinned by a
+  test).
+
+**The digest, onboarding, `/aura-plan` and the command confirmations have card
+looks** (`aura.cards`, `aura.card_delivery`), each behind its own switch
+(`DIGEST_LOOK`, `ONBOARDING_LOOK`, `PLAN_LOOK`, `NOTICE_LOOK`, default
+`classic` = the old message byte for byte). They render existing structured
+data only: **digest and onboarding make no LLM call and import no model-calling
+module** (asserted by `tests/test_answer_format_boundaries.py`).
+
 ## Core Principles
 
 ### Performance
@@ -274,15 +304,12 @@ Therefore, for every implementation, without exception:
   typed entirely in capitals scores barely above the 0.05 floor on the
   embedding (0.054–0.059 measured), so the floor is close to rejecting it.
 
-- **Open from P4.** (1) Fact extraction, the supersession judge and both
-  variant calls still send no `max_tokens` (P1 bounded only synthesis and
-  grounding); bounding them is a change to the extraction path and needs its
-  own task. (2) The proactive path's v2 switch needs its own calibration: the
-  bake-off measured that the incumbent proactive model answers manipulation
+- **Open from P4.** (1) Resolved in P5: every background call is bounded.
+  (2) The proactive path's v2 switch needed its own calibration (done in P5,
+  see the private P5 report): the bake-off measured that the incumbent proactive model answers manipulation
   attempts it should ignore (the numeric gates and the check remain the real
-  defence), and that other models make far fewer wrong posts. (3) The digest,
-  onboarding, `/aura-plan` and command replies keep their old look; proposals
-  are in the P4 report. (4) Per-plan models (P5) hook into `resolve_model`;
+  defence), and that other models make far fewer wrong posts. (3) Resolved in P5 (dark): the
+  digest, onboarding, `/aura-plan` and command confirmations have card looks. (4) Per-plan models (P5) hook into `resolve_model`;
   only the settings for one v2 model and one checker exist. (5) A pinned
   OpenRouter provider can slow down sharply under parallel load (measured for
   DeepSeek on DeepInfra); pin two providers if that model is chosen. (6) Only
@@ -291,7 +318,18 @@ Therefore, for every implementation, without exception:
   other call — proactive relief in either format, extraction, supersession —
   goes through OpenRouter's default routing, so switching one of them to an
   open-weights model needs route settings of its own first, or it may land on
-  any of that model's providers.
+  any of that model's providers. P5 added those route settings
+  (`EXTRACTION_*`, `SUPERSESSION_*`, `PROACTIVE_*`).
+
+- **Open from P5.** (1) The supersession prompt's status-flip rule reads a
+  temporary closure ("closed tonight") as a permanent replacement; every model
+  measured, the incumbent included, makes this proposal, so no model switch can
+  fix it -- a prompt change of its own. (2) A same-detail conflict on an
+  unasked detail still sets `answers_question` false for the whole answer (P4
+  contract rule), which costs some proactive hits. (3) No native-speaker review
+  of the eight non-German card texts. (4) An LLM-written digest summary is a
+  proposal only (P5 report). (5) Only a failed verification CALL is retried; a
+  failed extraction call still drops its batch at once, as before P5.
 
 - **Cross-guild shared budget — RESOLVED in Phase 4a-2.** The note that used to
   stand here said the five per-guild daily caps bound one guild's worst case
