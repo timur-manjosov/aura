@@ -631,7 +631,7 @@ plain hint, no variants), never a half-stored result. Each call also writes one
 | `PROACTIVE_MAX_OUTPUT_TOKENS` | unset (= `ANSWER_V2_MAX_OUTPUT_TOKENS`) | ceiling of proactive relief's v2 answer; a reasoning model needs ~4000 |
 | `EXTRACTION_VERIFY_MODEL` | unset (= no verification) | second call that drops candidates the batch does not support; no fallback |
 | `EXTRACTION_VERIFY_PROVIDERS` / `_REASONING` / `_MAX_OUTPUT_TOKENS` | empty / empty / 2048 | its route and ceiling |
-| `EXTRACTION_VERIFY_MAX_ATTEMPTS` / `_RETRY_DELAY_SECONDS` | 4 / 600 | how often a batch whose verification CALL failed is tried, and the first pause (doubling) |
+| `EXTRACTION_VERIFY_MAX_ATTEMPTS` / `_RETRY_DELAY_SECONDS` | 4 / 600 | how often a batch whose extraction or verification CALL failed is tried, and the first pause (doubling); since P5c both calls share the attempts |
 | `DIGEST_LOOK`, `ONBOARDING_LOOK`, `PLAN_LOOK`, `NOTICE_LOOK` | `classic` | `card` switches that family to its card look, drawn in `ANSWER_CARD_STYLE` |
 
 **Proactive relief in v2** (`PROACTIVE_ANSWER_FORMAT=v2`) now uses the proactive
@@ -650,10 +650,10 @@ attempt(s)`. A reply that arrives but cannot be used (malformed, cut off, a
 check missing) skips the batch at once, exactly like a failed extraction: at
 temperature 0 a retry would most likely repeat it, and a batch crafted to break
 the reply must not cost more than one slot. The counts live in memory; a
-restart simply tries a held batch again. A failed EXTRACTION call still skips
-its batch at once, as before P5. Watch the `Extraction verification kept N of
-M candidate(s)` and `Verification failed ... (attempt N of 4)` lines after
-switching it on.
+restart simply tries a held batch again. Since P5c a failed EXTRACTION call is
+held the same way (see the P5c section below). Watch the `Extraction
+verification kept N of M candidate(s)` and `The verification call failed ...
+(attempt N of 4)` lines after switching it on.
 
 **Looking first.** `/aura-operator-preview` now also shows the six card looks
 (digest, onboarding, `/aura-plan` on Free and on Pro, the Pro-only refusal, a
@@ -670,6 +670,81 @@ confirmation), whatever the `*_LOOK` settings say.
 
 **Switching it off in one step:** remove the appended lines and run step 3
 again. No database change is involved for any of these settings.
+
+## P5 open items closed (P5c)
+
+P5c changed four things; the private report is `reports/p5c-cleanup-<date>.md`.
+
+**1. The supersession judge's exception for changes limited in time (active
+on deploy).** The judge's prompt gains one paragraph between Rule 2 and Rule
+3: a change that Fact B's own wording limits to a time that ends ("tonight",
+"only this weekend", "until Friday", "temporarily", "during the maintenance")
+does not replace the standing fact -- the answer is `complementary` -- unless
+the wording makes it lasting, a time word only says when a lasting change
+starts, or Fact A is itself about that one occurrence; a hinted limit with no
+end ("for now", "until further notice") keeps both facts. Nothing else in that
+prompt and no other prompt changed (`scripts/p5c_byte_identity.py`). It takes
+effect for whatever `SUPERSESSION_MODEL` is configured the moment the new image
+starts. Measured with Haiku it removes every wrong replacement of a temporary
+change but escalates a few genuine status changes as `contradiction` (a
+moderator then decides); with Gemini 3.8 Flash it made no wrong replacement in
+615 judgements. Switching the judge to Gemini, if chosen:
+
+| Key | Value |
+|---|---|
+| `SUPERSESSION_MODEL` | `openrouter/google/gemini-3.8-flash` |
+| `SUPERSESSION_PROVIDERS` | `Google` |
+| `SUPERSESSION_REASONING` | `low` |
+| `SUPERSESSION_DENY_DATA_COLLECTION` | `true` |
+| `SUPERSESSION_MAX_OUTPUT_TOKENS` | `2000` |
+
+Watch the `LLM usage: purpose=supersession` lines (the model named) and the
+judgements in `/aura-pending`.
+
+**2. A failed extraction call is held, not dropped (active on deploy).** A
+distillation call that does not complete for a reason outside the batch -- a
+timeout, a provider or network error, a refused or exhausted key -- now holds
+the batch exactly like a failed verification call: the live batch stays
+queued, the backfill cursor stays, and it is tried again after 10, 20 and 40
+minutes (`EXTRACTION_VERIFY_RETRY_DELAY_SECONDS`, doubling), at most
+`EXTRACTION_VERIFY_MAX_ATTEMPTS` attempts for both calls together, each one
+extraction slot, then given up with one ERROR line `... its distillation call
+failed and the batch failed on all 4 attempt(s) ...`. An unusable reply, and a
+request the provider refuses because of its content (HTTP 400, a moderation
+refusal, an unknown model), are never retried. The same narrowing now applies
+to the verification call (an HTTP 400 there used to be retried).
+
+**3. Proactive relief: a deadline, and no post into a conversation that moved
+on.** Measured in P5c: the 30 seconds the answer calls pass to the HTTP client
+are a limit per read, and OpenRouter keeps a slow request alive, so the
+timeout never bounded a slow DeepSeek answer (one with an 8-second timeout
+returned after 22 s). Two guards are active on deploy, in both answer formats:
+an answer is not posted when, after the grace period ended, a different member
+wrote in the channel or the question was edited or deleted; and it is not
+posted later than the answer call's limit + 30 s (the check's deadline) + 15 s
+after the grace period (75 s by default). Each withheld answer writes one INFO
+line `Proactive answer withheld in channel <id>: the conversation moved on` /
+`too late`. One setting, unset by default (= exactly the call of before):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `PROACTIVE_REQUEST_TIMEOUT_SECONDS` | unset | when set (5-300), the proactive answer call's client timeout AND a hard deadline; an answer not ready in time is silence with a WARNING. `/aura-ask` never reads it. P5c measured DeepSeek with reasoning at p99 36.5 s, max 43.4 s: `60` covers them; the posting limit becomes 105 s. |
+
+**4. An alarm when the LLM key is refused (active on deploy).** When a model
+call is refused because the key's spending limit or the account's credits are
+exhausted (HTTP 402, or 403 "Key limit exceeded") or the key is invalid (401),
+the bot logs one ERROR line `LLM key refused: ...` -- at most once an hour, with
+the refused call's purpose and model, never the key or the provider's text --
+and `/aura-operator-budget` shows an `LLM key` field: the latest refusal as a
+Discord timestamp ("vor 12 Minuten" in your client's language), how many calls
+were refused since the bot started, and whether a model call has succeeded
+since. That field is English and untranslated, like the rest of the operator
+view. State lives in memory; a restart clears it.
+
+**Rolling P5c back:** retag the previous image as described in "Redeploying
+after a code change" and recreate the bot; to undo only the supersession model
+switch, remove its five lines from `.env` and recreate. No database change is
+involved.
 
 ## Plans and billing (Phase 4c)
 

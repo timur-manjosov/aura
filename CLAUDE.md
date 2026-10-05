@@ -192,7 +192,9 @@ report (`reports/p5-background-functions-2026-10-04.md`):
   the backfill cursor unmoved -- and retries it with a doubling pause, a
   bounded number of times (`aura.extraction.verify_retry`,
   `EXTRACTION_VERIFY_MAX_ATTEMPTS`), then gives it up with an ERROR line. The
-  verifier must not be the extraction model (no fallback).
+  verifier must not be the extraction model (no fallback). Since P5c a failed
+  EXTRACTION call is held the same way, within the same attempts, and only a
+  failure outside the request (`aura.llm_failures`) is ever retried.
 - **The proactive variant of the answer contract**: the model first names what
   the message is (`message_kind`) and only a sincere request may be posted;
   `/aura-ask`'s contract is byte for byte unchanged (fingerprint pinned by a
@@ -321,15 +323,33 @@ Therefore, for every implementation, without exception:
   any of that model's providers. P5 added those route settings
   (`EXTRACTION_*`, `SUPERSESSION_*`, `PROACTIVE_*`).
 
-- **Open from P5.** (1) The supersession prompt's status-flip rule reads a
-  temporary closure ("closed tonight") as a permanent replacement; every model
-  measured, the incumbent included, makes this proposal, so no model switch can
-  fix it -- a prompt change of its own. (2) A same-detail conflict on an
-  unasked detail still sets `answers_question` false for the whole answer (P4
-  contract rule), which costs some proactive hits. (3) No native-speaker review
-  of the eight non-German card texts. (4) An LLM-written digest summary is a
-  proposal only (P5 report). (5) Only a failed verification CALL is retried; a
-  failed extraction call still drops its batch at once, as before P5.
+- **Open from P5.** (1) Resolved in P5c: the supersession prompt has an
+  exception for changes limited in time (see below). (2) A same-detail conflict
+  on an unasked detail still sets `answers_question` false for the whole answer
+  (P4 contract rule), which costs some proactive hits. (3) No native-speaker
+  review of the eight non-German card texts. (4) An LLM-written digest summary
+  is a proposal only (P5 report). (5) Resolved in P5c: a failed extraction CALL
+  is held and retried like a failed verification call.
+
+- **What P5c established (private report `reports/p5c-cleanup-<date>.md`).**
+  (a) The supersession prompt's one change is the paragraph "THE EXCEPTION TO
+  RULES 1 AND 2" between Rule 2 and Rule 3; a test pins that removing it gives
+  P5's prompt byte for byte. With it, Haiku stops proposing temporary changes as
+  replacements but escalates a few genuine status changes as contradictions;
+  Gemini 3.8 Flash made no wrong replacement at all; both DeepSeek variants
+  repeatedly read a different event ("the raid" / "the dungeon run") as the same
+  -- the error this judge exists to prevent. (b) **litellm's `timeout` is a
+  limit per read, not on the call**: OpenRouter keeps a slow non-streaming
+  request alive, so a 30-second timeout never bounded a slow answer. A deadline
+  that must hold needs `asyncio.wait_for` (as both answer checks and, when
+  `PROACTIVE_REQUEST_TIMEOUT_SECONDS` is set, proactive relief's answer call
+  have). `/aura-ask`'s answer call has no such deadline yet -- open. (c) Call
+  failures are classified in one place, `aura.llm_failures` (status code plus
+  OpenRouter's anchored key-limit phrase, never the exception class): only a
+  failure outside the request is retried; a refused key raises a rate-limited
+  operator alarm. (d) Proactive relief keeps the grace period's watch until the
+  post: a different member writing, or the question edited or deleted, after
+  the grace period means no post.
 
 - **Cross-guild shared budget — RESOLVED in Phase 4a-2.** The note that used to
   stand here said the five per-guild daily caps bound one guild's worst case
