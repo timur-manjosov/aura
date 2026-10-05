@@ -17,7 +17,11 @@ incomplete by definition, even in the rare case where what arrived happens to
 parse, so both callers reject it on the same path they reject malformed JSON
 on: synthesis returns None, the grounding check fails closed.
 
-Imports only litellm's response type.
+**A response is also proof the key works.** Every call that returns a response
+writes this line, so this is where aura.llm_failures learns that model calls
+succeed again after a refusal of the key (`/aura-operator-budget` shows it).
+
+Imports only litellm's response type and aura.llm_failures.
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ import logging
 from typing import Final
 
 from litellm.types.utils import ModelResponse
+
+from aura.llm_failures import record_call_success
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +103,11 @@ def log_llm_usage(response: ModelResponse, *, purpose: str, model: str) -> None:
     nothing else. When the provider sent no usage, or a usage without integer
     counts, the line says so instead -- a missing measurement is itself worth
     seeing.
+
+    Also records that a model call succeeded (aura.llm_failures), whatever the
+    response contains: the key was accepted.
     """
+    record_call_success()
     finish_reason = _finish_reason(response)
     shown_reason = (
         "none" if finish_reason is None else finish_reason[:_MAX_LOGGED_FINISH_REASON_CHARS]

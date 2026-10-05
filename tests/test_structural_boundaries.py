@@ -40,6 +40,7 @@ by accident later, and the check does not need either service to be runnable.
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -111,7 +112,9 @@ class TestBackfillReachesTheModelOnlyThroughExtraction:
         # Asserted positively so the rule above cannot be satisfied by a worker
         # that has stopped distilling altogether.
         source = (_REPO_ROOT / "src/aura/backfill/worker.py").read_text(encoding="utf-8")
-        assert "from aura.extraction.distiller import distill_facts" in source
+        assert re.search(
+            r"^from aura\.extraction\.distiller import .*\bdistill_facts\b", source, re.M
+        )
         assert "stage_distilled_candidates" in source
 
 

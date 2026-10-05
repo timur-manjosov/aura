@@ -329,6 +329,10 @@ async def _wait_then_respond(
     exactly once more when it ends, mirroring the split-write pattern
     update_synthesis_outcome already uses one stage later -- see
     aura.db.proactive_signals.GracePeriodOutcome.
+
+    P5c: the same registration keeps watching the channel from the end of the
+    wait until the post, and an answer whose conversation moved on in the
+    meantime is not posted (aura.proactive.grace.AnswerWatch).
     """
     assert message.guild is not None  # guaranteed by should_classify, upstream
     channel_id = message.channel.id
@@ -379,7 +383,15 @@ async def _wait_then_respond(
         message_id=message.id,
         outcome=GracePeriodOutcome.EXPIRED_AND_PROCEEDED,
     )
-    return await respond_with_synthesis(message, db=db, model=model, settings=settings)
+    # P5c: the grace period's watch continues while the answer is written and
+    # checked, so a member answering, or the question vanishing, after the
+    # grace period still stops the post (aura.proactive.grace.AnswerWatch).
+    with grace_registry.watch_answer(
+        channel_id=channel_id, asker_id=message.author.id, message_id=message.id
+    ) as watch:
+        return await respond_with_synthesis(
+            message, db=db, model=model, settings=settings, freshness=watch
+        )
 
 
 async def _still_fresh_enough_for_synthesis(

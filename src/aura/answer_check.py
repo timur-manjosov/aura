@@ -52,6 +52,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from aura.config import ModelComponent, Settings
 from aura.db.models import Fact
 from aura.grounding import GroundingOutcome
+from aura.llm_failures import record_call_failure
 from aura.llm_request_options import openrouter_extra_body, parse_provider_list
 from aura.llm_usage import log_llm_usage, was_cut_off
 from aura.synthesis import _parse_json_response
@@ -386,7 +387,9 @@ async def verify_answer_v2(
     except TimeoutError:
         logger.error("v2 answer check timed out after %.1fs", timeout_seconds)
         return GroundingOutcome.CHECK_FAILED
-    except Exception:
+    except Exception as exc:
+        # P5c: a refused key raises the operator's alarm (aura.llm_failures).
+        record_call_failure(exc, purpose=USAGE_PURPOSE, model=model)
         logger.exception("v2 answer check call failed")
         return GroundingOutcome.CHECK_FAILED
 

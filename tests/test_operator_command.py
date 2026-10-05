@@ -217,3 +217,60 @@ class TestErrorHandler:
             await _handle_operator_budget_error(interaction, error)
 
         interaction.response.send_message.assert_not_awaited()
+
+
+class TestTheKeyAlarmLine:
+    """P5c: the latest refusal of the shared LLM key, shown to the operator."""
+
+    async def test_no_refusal_since_start_is_said_plainly(self, conn: aiosqlite.Connection) -> None:
+        interaction = _make_interaction(db=conn)
+        await _invoke(interaction)
+
+        field = next(f for f in _embed(interaction).fields if f.name == "LLM key")
+        assert field.value is not None
+        assert field.value.startswith("No refusal of the LLM key since the bot started <t:")
+
+    async def test_a_refused_key_is_named_with_its_call_and_whether_calls_work_again(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from aura.llm_failures import KEY_ALARM, CallFailureKind
+
+        refused_at = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+        KEY_ALARM.note_refusal(
+            CallFailureKind.KEY_LIMIT, purpose="extraction", model="m", now=refused_at
+        )
+        interaction = _make_interaction(db=conn)
+        await _invoke(interaction)
+        line = next(f for f in _embed(interaction).fields if f.name == "LLM key").value
+
+        assert line is not None
+        assert "spending limit or credits exhausted" in line
+        assert f"<t:{int(refused_at.timestamp())}:R>" in line
+        assert "(call: extraction)" in line
+        assert "no model call has succeeded since" in line
+
+        KEY_ALARM.note_success(datetime(2026, 10, 5, 12, 30, tzinfo=UTC))
+        interaction = _make_interaction(db=conn)
+        await _invoke(interaction)
+        line = next(f for f in _embed(interaction).fields if f.name == "LLM key").value
+
+        assert line is not None
+        assert "succeeded again since" in line
+
+    def test_an_invalid_key_is_named_as_such(self) -> None:
+        from datetime import UTC, datetime
+
+        from aura.commands.operator import key_alarm_line
+        from aura.llm_failures import CallFailureKind, KeyAlarm
+
+        alarm = KeyAlarm(started_at=datetime(2026, 10, 5, tzinfo=UTC))
+        alarm.note_refusal(
+            CallFailureKind.KEY_INVALID,
+            purpose="synthesis",
+            model="m",
+            now=datetime(2026, 10, 5, 1, tzinfo=UTC),
+        )
+
+        assert "key invalid or revoked" in key_alarm_line(alarm.status())

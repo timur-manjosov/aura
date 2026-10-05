@@ -27,12 +27,26 @@ aura.proactive.listener's caller must let propagate untouched rather than
 treat as "a human answered". Racing a sleep against an Event, and cancelling
 whichever loses, keeps "someone else answered" a plain return value instead of
 hijacking asyncio's own shutdown-cancellation channel.
+
+**The watch goes on while the answer is written (P5c).** The grace period ends
+before the paid call, and the call itself takes seconds -- DeepSeek with
+reasoning, proactive relief's model since P5, took 10 s at the median and up to
+43 s in P5. Until P5c nothing watched the channel during that time, so a member
+who answered at second 20, or an asker who deleted the question, did not stop a
+post at second 40. `GraceRegistry.watch_answer` keeps the same registration --
+the same "a genuinely different human posted", "the question was edited or
+deleted" signals -- from the end of the grace period until the post, and
+reports the answer stale (`AnswerWatch.stale_reason`) when one fired or when
+the answer took longer than a stated deadline.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
@@ -60,6 +74,52 @@ class _PendingGrace:
     asker_id: int
     message_id: int
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+class AnswerWatch:
+    """Whether an answer being written is still fresh enough to post.
+
+    Created by `GraceRegistry.watch_answer` when the grace period ends; the
+    registration it holds is cancelled by the same events that cancel a grace
+    period.
+
+    Notes
+    -----
+    Uses a monotonic clock, not the message's Discord timestamp: a wrong
+    system clock must neither silence every answer nor let a late one through.
+    """
+
+    def __init__(self, pending: _PendingGrace, *, clock: Callable[[], float]) -> None:
+        self._pending = pending
+        self._clock = clock
+        self._started_at = clock()
+
+    def elapsed_seconds(self) -> float:
+        """Return the seconds since the grace period ended."""
+        return self._clock() - self._started_at
+
+    def stale_reason(self, *, deadline_seconds: float) -> str | None:
+        """Report why the answer must not be posted any more, or None when it may.
+
+        Parameters
+        ----------
+        deadline_seconds
+            How long after the end of the grace period an answer may still be
+            posted.
+
+        Returns
+        -------
+        str or None
+            "the conversation moved on" when a different member wrote in the
+            channel, or the question was edited or deleted, since the grace
+            period ended; "too late" when the deadline has passed; None when
+            the answer may be posted. A log label, never shown to members.
+        """
+        if self._pending.cancel_event.is_set():
+            return "the conversation moved on"
+        if self.elapsed_seconds() > deadline_seconds:
+            return "too late"
+        return None
 
 
 class GraceRegistry:
@@ -224,6 +284,58 @@ class GraceRegistry:
             # this wait must not delete out from under.
             current = self._pending.get(channel_id)
             if current is pending:
+                del self._pending[channel_id]
+
+    @contextmanager
+    def watch_answer(
+        self,
+        *,
+        channel_id: int,
+        asker_id: int,
+        message_id: int,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> Iterator[AnswerWatch]:
+        """Watch the channel while the answer to `message_id` is written and checked.
+
+        Parameters
+        ----------
+        channel_id
+            The question's channel.
+        asker_id
+            Who asked; their own later messages do not make the answer stale.
+        message_id
+            The question.
+        clock
+            Monotonic seconds; injectable for tests.
+
+        Yields
+        ------
+        AnswerWatch
+            Stale as soon as a different human posts in the channel or the
+            question is edited or deleted, exactly the events that end a grace
+            period early.
+
+        Notes
+        -----
+        Registers in the same slot a grace period uses and removes itself on
+        every exit path, never deleting a newer registration. When another
+        message already holds the channel's slot -- reachable only when
+        PROACTIVE_COOLDOWN_SECONDS is shorter than the grace period plus the
+        answer -- this answer starts stale and the newer registration is left
+        alone: a newer question in the channel means the conversation moved
+        on. A new grace period started while this watch is registered
+        supersedes it the same way (see `wait`).
+        """
+        pending = _PendingGrace(asker_id=asker_id, message_id=message_id)
+        occupied = channel_id in self._pending
+        if occupied:
+            pending.cancel_event.set()
+        else:
+            self._pending[channel_id] = pending
+        try:
+            yield AnswerWatch(pending, clock=clock)
+        finally:
+            if self._pending.get(channel_id) is pending:
                 del self._pending[channel_id]
 
     @staticmethod

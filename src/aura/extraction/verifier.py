@@ -25,13 +25,14 @@ the call -- no model, a timeout, malformed or cut-off JSON, a check for a
 candidate that does not exist, a missing check -- returns None, and the caller
 takes the existing failure path of a failed distillation (the batch is skipped,
 nothing from it is staged). That is fail-closed in the direction precision
-asks for. The one exception is a call that did not complete at all (a
-timeout, a provider or network error, a refused key): that says nothing about
-the batch, so it returns VERIFICATION_UNAVAILABLE and the caller holds the
-batch for a later attempt (aura.extraction.verify_retry). An unusable REPLY
-is deliberately not retried: at temperature 0 the same batch would most
-likely produce it again, and a batch crafted to break the reply must not cost
-more than one attempt.
+asks for. The one exception is a call that did not complete for a reason
+outside the batch (a timeout, a provider or network error, a refused key --
+aura.llm_failures decides): that says nothing about the batch, so it returns
+VERIFICATION_UNAVAILABLE and the caller holds the batch for a later attempt
+(aura.extraction.verify_retry). An unusable REPLY, and a call refused because
+of the request itself (HTTP 400, a moderation refusal), are deliberately not
+retried: the same batch would most likely be refused again, and a batch
+crafted to be refused must not cost more than one attempt.
 
 **Judgment, never knowledge.** The context is the batch and the candidates,
 nothing else: no stored facts, no guild, no member names. The messages and the
@@ -64,6 +65,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from aura.config import ModelComponent, Settings
 from aura.db.extraction_queue import QueuedMessage
 from aura.extraction.distiller import DistilledFact
+from aura.llm_failures import is_retryable, record_call_failure
 from aura.llm_request_options import openrouter_extra_body, parse_provider_list
 from aura.llm_usage import log_llm_usage, was_cut_off
 from aura.synthesis import _parse_json_response
@@ -310,10 +312,12 @@ async def verify_distilled_facts(
     -------
     list[DistilledFact], VerificationUnavailable or None
         The kept candidates, a subset of `distilled` in the same order and
-        unchanged; VERIFICATION_UNAVAILABLE when the call did not complete (a
-        timeout, a provider or network error), which the caller may retry
-        later; None when the reply or the input could not be trusted, which
-        the caller must treat as a failed distillation.
+        unchanged; VERIFICATION_UNAVAILABLE when the call did not complete for
+        a reason outside the batch (a timeout, a provider or network error, a
+        refused key; see aura.llm_failures), which the caller may retry later;
+        None when the reply or the input could not be trusted, or the call was
+        refused because of the request itself, which the caller must treat as
+        a failed distillation.
 
     Notes
     -----
@@ -380,9 +384,11 @@ async def verify_distilled_facts(
     except ValueError as exc:
         logger.error("Extraction verification reply was unusable: %s", str(exc)[:200])
         return None
-    except Exception:
-        logger.exception("Extraction verification call failed")
-        return VERIFICATION_UNAVAILABLE
+    except Exception as exc:
+        kind = record_call_failure(exc, purpose=USAGE_PURPOSE, model=model)
+        logger.exception("Extraction verification call failed (%s)", kind.value)
+        # P5c: only a failure outside the batch is worth another attempt.
+        return VERIFICATION_UNAVAILABLE if is_retryable(kind) else None
 
     kept = [distilled[index] for index in kept_indices]
     logger.info(

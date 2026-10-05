@@ -50,11 +50,22 @@ must both read chat in any of nine locales and write a distilled sentence back
 in the same one. EXTRACTION_MODEL carries Phase 2's bake-off winner on the
 argument that this is the same trait in the same shape; see aura.config for
 what that transferred assumption is and where it is weakest.
+
+**A call that never completed is not a failed distillation (P5c).** A timeout,
+a provider or network error or a refused key says nothing about the batch, so
+`distill_facts` returns DISTILLATION_UNAVAILABLE for it (aura.llm_failures
+decides) and the caller holds the batch for a later attempt
+(aura.extraction.verify_retry), as it already did for a failed verification.
+An unusable reply, and a call refused because of the request itself, still
+return None and take the failure path: the same batch would most likely be
+refused again.
 """
 
 from __future__ import annotations
 
 import logging
+from enum import Enum
+from typing import Final
 
 import litellm
 from litellm.types.utils import ModelResponse
@@ -63,6 +74,7 @@ from pydantic import BaseModel, ValidationError
 from aura.config import load_settings
 from aura.db.extraction_queue import QueuedMessage
 from aura.db.pending_facts import FactCategory
+from aura.llm_failures import is_retryable, record_call_failure
 from aura.llm_request_options import openrouter_extra_body, parse_provider_list
 from aura.llm_usage import log_llm_usage, was_cut_off
 
@@ -100,6 +112,17 @@ _CATEGORY_VALUES = ", ".join(f'"{category.value}"' for category in FactCategory)
 
 # The usage-log label of this call (see aura.llm_usage).
 USAGE_PURPOSE = "extraction"
+
+
+class DistillationUnavailable(Enum):
+    """The distillation call did not complete; the batch was not judged."""
+
+    CALL_FAILED = "call_failed"
+
+
+# What distill_facts returns when the call itself failed for a reason outside
+# the batch (aura.llm_failures.is_retryable).
+DISTILLATION_UNAVAILABLE: Final = DistillationUnavailable.CALL_FAILED
 
 
 class DistilledFact(BaseModel):
@@ -278,7 +301,7 @@ def _build_messages(candidates: list[QueuedMessage], channel_name: str) -> list[
 
 async def distill_facts(
     candidates: list[QueuedMessage], *, channel_name: str, model: str
-) -> list[DistilledFact] | None:
+) -> list[DistilledFact] | DistillationUnavailable | None:
     """Distill a batch of candidate messages into fact candidates.
 
     Parameters
@@ -295,10 +318,13 @@ async def distill_facts(
 
     Returns
     -------
-    list[DistilledFact] or None
+    list[DistilledFact], DistillationUnavailable or None
         A list -- possibly EMPTY, which is the expected outcome for most batches
-        and is NOT a failure -- or None if the call could not be completed or
-        its result could not be trusted. The distinction matters: an empty list
+        and is NOT a failure; DISTILLATION_UNAVAILABLE when the call did not
+        complete for a reason outside the batch (a timeout, a provider or
+        network error, a refused key), which the caller may retry later; or
+        None when the reply could not be trusted or the call was refused
+        because of the request itself. The distinction matters: an empty list
         means "asked, answered, nothing here" and clears the batch; None means
         "no usable answer", which the caller must not mistake for the model
         having judged the batch empty.
@@ -307,9 +333,9 @@ async def distill_facts(
     -----
     Never raises. Malformed JSON, a hallucinated message number, an
     out-of-vocabulary category, an empty or oversized sentence, a reply cut off
-    at EXTRACTION_MAX_OUTPUT_TOKENS, a network error, an auth failure, and a
-    timeout are all real, expected failure modes at this call site, and every
-    one becomes a clean None.
+    at EXTRACTION_MAX_OUTPUT_TOKENS and a request the provider refuses become a
+    clean None; a network error, a provider outage, a refused key and a timeout
+    become DISTILLATION_UNAVAILABLE (aura.llm_failures classifies them).
 
     Sends EXTRACTION_PROVIDERS / EXTRACTION_REASONING /
     EXTRACTION_DENY_DATA_COLLECTION as OpenRouter request options when set, and
@@ -387,13 +413,16 @@ async def distill_facts(
             exc,
         )
         return None
-    except Exception:
+    except Exception as exc:
+        kind = record_call_failure(exc, purpose=USAGE_PURPOSE, model=model)
         logger.exception(
-            "Distillation call failed for a %d-message batch in #%s",
+            "Distillation call failed (%s) for a %d-message batch in #%s",
+            kind.value,
             len(candidates),
             channel_name,
         )
-        return None
+        # P5c: only a failure outside the batch is worth another attempt.
+        return DISTILLATION_UNAVAILABLE if is_retryable(kind) else None
 
 
 def _validate_distilled(

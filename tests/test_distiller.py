@@ -24,6 +24,7 @@ from aura.db.pending_facts import FactCategory
 from aura.extraction.distiller import (
     _MAX_DISTILLED_CHARS,
     _MAX_MESSAGE_CHARS,
+    DISTILLATION_UNAVAILABLE,
     _build_messages,
     distill_facts,
 )
@@ -386,13 +387,20 @@ class TestMalformedOutputIsRejected:
             result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is None
 
-    async def test_a_network_failure_becomes_none(self) -> None:
+    # P5c: a call that never completed says nothing about the batch, so it is
+    # reported as unavailable (held and retried by the caller), never as None.
+    async def test_a_network_failure_reports_the_distillation_unavailable(self) -> None:
         with patch("litellm.acompletion", AsyncMock(side_effect=OSError("connection reset"))):
             result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
-        assert result is None
+        assert result is DISTILLATION_UNAVAILABLE
 
-    async def test_a_timeout_becomes_none(self) -> None:
+    async def test_a_timeout_reports_the_distillation_unavailable(self) -> None:
         with patch("litellm.acompletion", AsyncMock(side_effect=TimeoutError())):
+            result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
+        assert result is DISTILLATION_UNAVAILABLE
+
+    async def test_an_unknown_exception_becomes_none_not_unavailable(self) -> None:
+        with patch("litellm.acompletion", AsyncMock(side_effect=RuntimeError("bug"))):
             result = await distill_facts([_queued(1, "x")], channel_name="general", model=MODEL)
         assert result is None
 

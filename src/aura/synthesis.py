@@ -47,6 +47,7 @@ from pydantic import BaseModel, ValidationError
 
 from aura.config import load_settings
 from aura.db.models import Fact
+from aura.llm_failures import record_call_failure
 from aura.llm_usage import log_llm_usage, was_cut_off
 
 logger = logging.getLogger(__name__)
@@ -330,6 +331,7 @@ async def synthesize_answer(
     question_asked_at: datetime | None = None,
     fact_channel_names: dict[int, str] | None = None,
     extra_body: dict[str, object] | None = None,
+    timeout_seconds: float | None = None,
 ) -> SynthesisResult | None:
     """Ask a model to answer a question from a set of facts.
 
@@ -356,6 +358,10 @@ async def synthesize_answer(
         aura.llm_request_options), or None to send none. Only proactive relief
         passes one (PROACTIVE_PROVIDERS and its siblings); it never changes the
         prompt.
+    timeout_seconds
+        How long the call may take; None (the default) is the 30 seconds
+        `/aura-ask` has always had. Only proactive relief passes its own
+        (PROACTIVE_REQUEST_TIMEOUT_SECONDS).
 
     Returns
     -------
@@ -408,7 +414,7 @@ async def synthesize_answer(
             api_key=settings.llm_api_key.get_secret_value(),
             messages=messages,
             response_format={"type": "json_object"},
-            timeout=_REQUEST_TIMEOUT_SECONDS,
+            timeout=(timeout_seconds if timeout_seconds is not None else _REQUEST_TIMEOUT_SECONDS),
             # Phase 2b-3: pinned low rather than left at the provider default
             # (effectively 1.0). answers_question is a judgment call this
             # project bake-off-selected a model for specifically because it
@@ -469,6 +475,8 @@ async def synthesize_answer(
     except (json.JSONDecodeError, ValidationError, ValueError) as exc:
         logger.error("Synthesis response was malformed for question %r: %s", question, exc)
         return None
-    except Exception:
+    except Exception as exc:
+        # P5c: a refused key raises the operator's alarm (aura.llm_failures).
+        record_call_failure(exc, purpose="synthesis", model=model)
         logger.exception("Synthesis call failed for question %r", question)
         return None

@@ -1177,6 +1177,24 @@ class Settings(BaseSettings):
     # off at it is unusable, and proactive relief stays silent.
     proactive_max_output_tokens: int | None = Field(default=None, ge=256, le=16384)
 
+    # The deadline of proactive relief's answer call, in either format (P5c).
+    # UNSET (the default), the call runs exactly as before: it passes the 30
+    # seconds every answer call has always passed to the HTTP client -- which,
+    # measured in P5c, is a limit per read, not on the whole call: OpenRouter
+    # keeps a slow non-streaming request alive, so a DeepSeek call with that
+    # timeout still answered after 43 seconds in P5. SET, the value is passed
+    # to the client and also enforced as a hard deadline around the call
+    # (asyncio.wait_for, as the answer checks already do): an answer not ready
+    # in time is silence, never a late post. Measured for DeepSeek V4.1 Flash
+    # with reasoning on (P5, 1,026 proactive calls at a harness concurrency of
+    # six): p50 9.9 s, p95 25.1 s, p99 36.5 s, max 43.4 s -- 60 covers all of
+    # them. /aura-ask never reads this; its user is waiting, and it keeps its own
+    # 30 seconds. Whatever this says, a proactive answer is posted only while the
+    # conversation has not moved on (aura.proactive.grace.AnswerWatch).
+    proactive_request_timeout_seconds: float | None = Field(
+        default=None, ge=5.0, le=300.0, allow_inf_nan=False
+    )
+
     # The model of the extraction verification (aura.extraction.verifier): a
     # second call that reads every distilled candidate against the batch it
     # came from and drops any the messages do not support -- a joke stored as
@@ -1192,17 +1210,20 @@ class Settings(BaseSettings):
     extraction_verify_reasoning: Literal["", "off", "low", "medium", "high"] = ""
     extraction_verify_max_output_tokens: int = Field(default=2048, ge=512, le=8192)
 
-    # A batch whose VERIFICATION CALL failed (a timeout, a provider or network
-    # error, a refused key -- never the model judging the batch, and never an
-    # unusable reply, which is not retried) is held and tried again
-    # instead of cleared (aura.extraction.verify_retry): up to
-    # EXTRACTION_VERIFY_MAX_ATTEMPTS attempts in total, the first pause
-    # EXTRACTION_VERIFY_RETRY_DELAY_SECONDS, doubling after each failure. The
-    # defaults give 4 attempts over about 70 minutes (10, 20, 40 minutes),
-    # which outlasts a typical provider outage while bounding both the time a
-    # batch's raw text is held and the slots one batch can spend (one per
-    # attempt, 4 of EXTRACTION_DAILY_CAP's 50). After the last attempt the
-    # batch is given up with an ERROR log line. Only read when
+    # A batch whose DISTILLATION CALL (P5c) or VERIFICATION CALL (P5) failed
+    # for a reason outside the batch (a timeout, a provider or network error,
+    # a refused key; aura.llm_failures decides -- never the model judging the
+    # batch, never an unusable reply and never a request the provider refuses,
+    # none of which is retried) is held and tried again instead of cleared
+    # (aura.extraction.verify_retry): up to EXTRACTION_VERIFY_MAX_ATTEMPTS
+    # attempts in total, both calls counting against the same attempts, the
+    # first pause EXTRACTION_VERIFY_RETRY_DELAY_SECONDS, doubling after each
+    # failure. The defaults give 4 attempts over about 70 minutes (10, 20, 40
+    # minutes), which outlasts a typical provider outage while bounding both
+    # the time a batch's raw text is held and the slots one batch can spend
+    # (one per attempt, 4 of EXTRACTION_DAILY_CAP's 50). After the last attempt
+    # the batch is given up with an ERROR log line. The names predate P5c and
+    # are kept so no deployed .env breaks; they apply whether or not
     # EXTRACTION_VERIFY_MODEL is set.
     extraction_verify_max_attempts: int = Field(default=4, ge=1, le=10)
     extraction_verify_retry_delay_seconds: float = Field(default=600.0, ge=1.0, le=86400.0)

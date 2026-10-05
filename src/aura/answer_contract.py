@@ -75,6 +75,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from aura.config import Settings
 from aura.db.models import Fact
+from aura.llm_failures import record_call_failure
 from aura.llm_request_options import openrouter_extra_body, parse_provider_list
 from aura.llm_usage import log_llm_usage, was_cut_off
 from aura.rendering import collapse_display_text
@@ -863,6 +864,7 @@ async def synthesize_contract_answer(
     extra_body: dict[str, object] | None = None,
     proactive_posted_at: datetime | None = None,
     max_output_tokens: int | None = None,
+    timeout_seconds: float | None = None,
 ) -> ContractAnswer | None:
     """Ask a model to answer a question from facts in the v2 contract.
 
@@ -897,6 +899,11 @@ async def synthesize_contract_answer(
         The call's output ceiling; None (the default) is
         ANSWER_V2_MAX_OUTPUT_TOKENS. Proactive relief passes its own
         (PROACTIVE_MAX_OUTPUT_TOKENS) when one is configured.
+    timeout_seconds
+        How long the call may take; None (the default) is the 30 seconds
+        `/aura-ask` has always had. Proactive relief passes its own
+        (PROACTIVE_REQUEST_TIMEOUT_SECONDS): a model that reasons before it
+        answers can need longer, and nobody waits on an unprompted answer.
 
     Returns
     -------
@@ -947,7 +954,7 @@ async def synthesize_contract_answer(
             api_key=settings.llm_api_key.get_secret_value(),
             messages=messages,
             response_format={"type": "json_object"},
-            timeout=_REQUEST_TIMEOUT_SECONDS,
+            timeout=(timeout_seconds if timeout_seconds is not None else _REQUEST_TIMEOUT_SECONDS),
             # Pinned, as in the legacy synthesis: the relation kinds and
             # answers_question are judgments, and a judgment that flips with
             # the sampling seed is a flaky bot.
@@ -980,6 +987,10 @@ async def synthesize_contract_answer(
         # json.JSONDecodeError and ContractViolationError are ValueErrors.
         logger.error("Answer contract reply was unusable: %s", _failure_reason(exc))
         return None
-    except Exception:
+    except Exception as exc:
+        # P5c: a refused key raises the operator's alarm (aura.llm_failures).
+        record_call_failure(
+            exc, purpose=PROACTIVE_USAGE_PURPOSE if proactive else USAGE_PURPOSE, model=model
+        )
         logger.exception("Answer contract call failed")
         return None

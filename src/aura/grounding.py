@@ -76,6 +76,7 @@ from pydantic import BaseModel, StrictBool, ValidationError
 
 from aura.config import ModelComponent, Settings
 from aura.db.models import Fact
+from aura.llm_failures import record_call_failure
 from aura.llm_usage import log_llm_usage, was_cut_off
 
 # The same fence-tolerant parser every other call site in this project goes
@@ -541,7 +542,9 @@ async def _request_verdict(
             timeout_seconds,
         )
         return None
-    except Exception:
+    except Exception as exc:
+        # P5c: a refused key raises the operator's alarm (aura.llm_failures).
+        record_call_failure(exc, purpose="grounding", model=model)
         logger.exception("Grounding check call failed")
         return None
 
