@@ -143,3 +143,18 @@ def embedding_model() -> TextEmbedding:
     make the suite slow for no verification benefit.
     """
     return TextEmbedding(EMBEDDING_MODEL_NAME)
+
+
+@pytest.fixture(autouse=True)
+def fresh_verification_retries() -> Iterator[None]:
+    """Give every test an empty extraction-verification retry state.
+
+    aura.extraction.verify_retry keeps one process-wide instance; without this,
+    a test whose verification fails would make a later test's batch in the
+    same channel wait for a retry it never asked for.
+    """
+    from aura.extraction.verify_retry import VERIFICATION_RETRIES
+
+    VERIFICATION_RETRIES.reset()
+    yield
+    VERIFICATION_RETRIES.reset()
