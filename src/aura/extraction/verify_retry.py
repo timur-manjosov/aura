@@ -1,20 +1,26 @@
-"""When a batch whose verification failed may be tried again.
+"""When a batch whose distillation or verification call failed may be tried again.
 
-A verification call that did not complete (aura.extraction.verifier returning
-VERIFICATION_UNAVAILABLE: a timeout, a provider outage, a refused key) is not
-the model judging a batch. Clearing the batch at that point -- the path a
-failed distillation takes -- would lose every fact in it to an outage that
-says nothing about the messages. (An unusable REPLY still takes that path,
-for the reason aura.extraction.verifier gives.) So both extraction paths hold such a batch and try
-it again later, with a growing pause, a bounded number of times:
+A model call that did not complete for a reason outside the batch -- a
+timeout, a provider outage, a refused key; aura.llm_failures decides -- is not
+the model judging a batch. That holds for the verification call (P5,
+aura.extraction.verifier returning VERIFICATION_UNAVAILABLE) and for the
+distillation call itself (P5c, aura.extraction.distiller returning
+DISTILLATION_UNAVAILABLE). Clearing the batch at that point -- the path an
+unusable reply takes -- would lose every fact in it to an outage that says
+nothing about the messages. (An unusable REPLY, and a call refused because of
+the request itself, still take that path, for the reason
+aura.extraction.verifier gives.) So both extraction paths hold such a batch and
+try it again later, with a growing pause, a bounded number of times:
 
 * the live path leaves the batch queued (aura.extraction.pipeline);
 * backfill leaves its cursor where it is (aura.backfill.worker).
 
 Each attempt re-runs the distillation as well -- a live batch may have grown in
-the meantime -- and claims its own daily slot, so a verifier that keeps failing
+the meantime -- and claims its own daily slot, so a provider that keeps failing
 costs at most EXTRACTION_VERIFY_MAX_ATTEMPTS slots per batch, never a slot per
-sweep. After the last attempt the batch takes the old path (cleared, or the
+sweep. A failed distillation and a failed verification of the same batch count
+against the same attempts. (The setting names predate P5c and are kept so no
+deployed `.env` breaks; they bound both calls.) After the last attempt the batch takes the old path (cleared, or the
 cursor moves past it) with an ERROR log line naming how many attempts failed,
 so an operator sees it.
 
@@ -86,7 +92,7 @@ class VerificationRetries:
         max_attempts: int,
         base_delay_seconds: float,
     ) -> int | None:
-        """Count one failed verification of `key` and schedule the next attempt.
+        """Count one failed distillation or verification call of `key` and schedule the next attempt.
 
         Parameters
         ----------

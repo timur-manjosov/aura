@@ -108,6 +108,14 @@ def _response(payload: object, *, finish_reason: str = "stop", raw: str | None =
     return response
 
 
+class _StatusError(Exception):
+    """A provider error carrying an HTTP status, as litellm's exceptions do."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"provider error {status_code}")
+        self.status_code = status_code
+
+
 async def _verify(
     reply: MagicMock | Exception, **settings: object
 ) -> tuple[list[DistilledFact] | None, AsyncMock]:
@@ -250,13 +258,28 @@ class TestUnusableReplies:
 
         assert kept == DISTILLED
 
-    @pytest.mark.parametrize("error", [TimeoutError("slow"), RuntimeError("provider down")])
+    @pytest.mark.parametrize(
+        "error",
+        [TimeoutError("slow"), OSError("connection reset"), _StatusError(503), _StatusError(429)],
+    )
     async def test_a_failed_call_reports_the_verification_unavailable_and_never_raises(
         self, error: Exception
     ) -> None:
         kept, _ = await _verify(error)
 
         assert kept is VERIFICATION_UNAVAILABLE
+
+    # P5c: a refusal caused by the request itself, or an unknown exception, would
+    # most likely recur; it fails closed like an unusable reply and is not retried.
+    @pytest.mark.parametrize(
+        "error", [_StatusError(400), _StatusError(403), RuntimeError("provider down")]
+    )
+    async def test_a_refused_request_or_unknown_failure_is_not_retried(
+        self, error: Exception
+    ) -> None:
+        kept, _ = await _verify(error)
+
+        assert kept is None
 
     async def test_a_candidate_from_outside_the_batch_fails_closed_without_a_call(self) -> None:
         stray = [DistilledFact(message_id=99, content="x", category=FactCategory.RULE)]

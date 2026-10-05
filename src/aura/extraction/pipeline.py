@@ -48,6 +48,7 @@ import asyncio
 import logging
 import unicodedata
 from datetime import datetime
+from typing import Literal
 
 import aiosqlite
 import discord
@@ -79,7 +80,7 @@ from aura.db.pending_facts import (
 from aura.db.repository import get_active_facts
 from aura.db.supersession_state import try_acquire_supersession_call_slot
 from aura.embeddings import EMBEDDING_DTYPE, best_similarity, embed_texts, group_variants_by_fact
-from aura.extraction.distiller import DistilledFact, distill_facts
+from aura.extraction.distiller import DistillationUnavailable, DistilledFact, distill_facts
 from aura.extraction.supersession import judge_relationship
 from aura.extraction.verifier import VerificationUnavailable, verify_if_configured
 from aura.extraction.verify_retry import VERIFICATION_RETRIES, live_key
@@ -463,11 +464,12 @@ async def _flush_channel(
     would quietly become "an unbounded wait". Extraction is best-effort by
     design, and the manual "Add as Aura Fact" context menu is unaffected.
 
-    A batch whose VERIFICATION failed (P5) is the one exception: it stays
-    queued and is tried again after a growing pause, a bounded number of
-    times (aura.extraction.verify_retry), because that failure says nothing
-    about the messages. While it waits, this returns False without reading
-    the ledger.
+    A batch whose VERIFICATION call failed (P5), or whose DISTILLATION call
+    failed (P5c), for a reason outside the batch -- a timeout, a provider or
+    network error, a refused key -- is the one exception: it stays queued and
+    is tried again after a growing pause, a bounded number of times
+    (aura.extraction.verify_retry), because that failure says nothing about the
+    messages. While it waits, this returns False without reading the ledger.
     """
     batch = await read_batch(
         db, channel_id=channel_id, limit=settings.extraction_batch_max_messages
@@ -482,9 +484,9 @@ async def _flush_channel(
     message_ids = [message.message_id for message in batch]
     retry_key = live_key(channel_id)
     if VERIFICATION_RETRIES.is_waiting(retry_key, now):
-        # P5: this channel's batch failed its verification and waits for its
-        # next attempt (aura.extraction.verify_retry). Nothing read, nothing
-        # spent, the batch stays queued.
+        # P5/P5c: this channel's batch failed its distillation or verification
+        # call and waits for its next attempt (aura.extraction.verify_retry).
+        # Nothing read, nothing spent, the batch stays queued.
         return False
 
     # Phase 4c: a batch queued while this guild was on Pro, whose plan ended
@@ -561,6 +563,17 @@ async def _flush_channel(
     distilled = await distill_facts(
         batch, channel_name=batch[0].channel_name, model=extraction_model
     )
+    if isinstance(distilled, DistillationUnavailable):
+        # P5c: the call did not complete (a provider outage, a refused key);
+        # held exactly like a failed verification below.
+        return await _hold_or_give_up_after_failed_call(
+            db,
+            channel_id=channel_id,
+            message_ids=message_ids,
+            settings=settings,
+            now=now,
+            call="distillation",
+        )
     if distilled:
         # P5: every candidate read again against its batch when
         # EXTRACTION_VERIFY_MODEL is set (aura.extraction.verifier).
@@ -568,12 +581,13 @@ async def _flush_channel(
             batch, distilled, channel_name=batch[0].channel_name, settings=settings
         )
         if isinstance(verified, VerificationUnavailable):
-            return await _hold_or_give_up_after_failed_verification(
+            return await _hold_or_give_up_after_failed_call(
                 db,
                 channel_id=channel_id,
                 message_ids=message_ids,
                 settings=settings,
                 now=now,
+                call="verification",
             )
         # An unusable reply (None) takes the failed-distillation path below.
         distilled = verified
@@ -622,15 +636,16 @@ async def _end_batch(db: aiosqlite.Connection, *, channel_id: int, message_ids: 
     await clear_batch(db, channel_id=channel_id, message_ids=message_ids)
 
 
-async def _hold_or_give_up_after_failed_verification(
+async def _hold_or_give_up_after_failed_call(
     db: aiosqlite.Connection,
     *,
     channel_id: int,
     message_ids: list[int],
     settings: Settings,
     now: datetime,
+    call: Literal["distillation", "verification"],
 ) -> bool:
-    """Keep a batch whose verification call failed queued for a later attempt, or give it up.
+    """Keep a batch whose model call failed queued for a later attempt, or give it up.
 
     Parameters
     ----------
@@ -644,6 +659,8 @@ async def _hold_or_give_up_after_failed_verification(
         Loaded configuration: the attempt bound and the first pause.
     now
         Timezone-aware moment of the failure.
+    call
+        Which call failed, for the log lines.
 
     Returns
     -------
@@ -652,9 +669,10 @@ async def _hold_or_give_up_after_failed_verification(
 
     Notes
     -----
-    The distillation's slot stays spent either way. A failed verification says
-    nothing about the messages, so clearing the batch at once would lose every
-    fact in it to an outage; see aura.extraction.verify_retry for the bound.
+    The distillation's slot stays spent either way. A call that did not
+    complete says nothing about the messages, so clearing the batch at once
+    would lose every fact in it to an outage; see aura.extraction.verify_retry
+    for the bound. Both calls count against the same attempts of one batch.
     """
     failures = VERIFICATION_RETRIES.record_failure(
         live_key(channel_id),
@@ -664,17 +682,19 @@ async def _hold_or_give_up_after_failed_verification(
     )
     if failures is None:
         logger.error(
-            "Giving up a %d-message extraction batch in channel %s: its verification "
-            "failed on all %d attempt(s); clearing it",
+            "Giving up a %d-message extraction batch in channel %s: its %s call "
+            "failed and the batch failed on all %d attempt(s); clearing it",
             len(message_ids),
             channel_id,
+            call,
             settings.extraction_verify_max_attempts,
         )
         await clear_batch(db, channel_id=channel_id, message_ids=message_ids)
         return True
     logger.warning(
-        "Verification failed for a %d-message extraction batch in channel %s "
+        "The %s call failed for a %d-message extraction batch in channel %s "
         "(attempt %d of %d); keeping it queued for a later attempt",
+        call,
         len(message_ids),
         channel_id,
         failures,

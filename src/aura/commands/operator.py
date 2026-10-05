@@ -1,6 +1,7 @@
 """The operator's own commands: /aura-operator-budget and /aura-operator-preview.
 
-/aura-operator-budget is the operator's view of Phase 4a-2's cross-guild brake.
+/aura-operator-budget is the operator's view of Phase 4a-2's cross-guild brake,
+and, since P5c, of the latest refusal of the shared LLM key (aura.llm_failures).
 /aura-operator-preview (P4) renders hand-written sample cards of the v2 answer
 format from invented facts, so the operator can judge the look in a real client
 before any real answer uses it. It calls no model, claims no ledger slot and
@@ -35,6 +36,7 @@ goes through the same t() seam every other command's permission error does.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING, Final
 
 import discord
@@ -45,6 +47,7 @@ from aura.commands.preview_samples import PreviewSample, card_look_samples, prev
 from aura.db.connection import utc_day, utc_now
 from aura.db.cross_guild_budget import get_cross_guild_status
 from aura.i18n import t
+from aura.llm_failures import KEY_ALARM, CallFailureKind, KeyAlarmStatus
 
 if TYPE_CHECKING:
     from aura.main import AuraClient
@@ -60,6 +63,53 @@ _PREVIEW_INTRO: Final = (
     "shown as a classic embed and as a Components V2 container, so you can "
     "compare the two styles on desktop and phone, in dark and light theme."
 )
+
+
+def _discord_time(moment: datetime) -> str:
+    """Render a moment as Discord's relative timestamp ("vor 12 Minuten" in the reader's language)."""
+    return f"<t:{int(moment.timestamp())}:R>"
+
+
+def key_alarm_line(status: KeyAlarmStatus) -> str:
+    """Return the operator view's line about refusals of the LLM key (P5c).
+
+    Parameters
+    ----------
+    status
+        What aura.llm_failures recorded since this process started.
+
+    Returns
+    -------
+    str
+        One line: no refusal since start; or the latest refusal, its reason and
+        the call it hit, how many there were, and whether a model call has
+        succeeded since. English and untranslated, like the rest of this view.
+
+    Notes
+    -----
+    Times are Discord timestamps, which every client renders in its own
+    language and time zone. Nothing here is a secret or provider text: the
+    purpose is a fixed label, the counts are counts.
+    """
+    if status.last_refusal_at is None:
+        return f"No refusal of the LLM key since the bot started {_discord_time(status.watching_since)}."
+    reason = (
+        "spending limit or credits exhausted"
+        if status.last_refusal_kind is CallFailureKind.KEY_LIMIT
+        else "key invalid or revoked"
+    )
+    if status.succeeded_since_refusal:
+        assert status.last_success_at is not None  # implied by succeeded_since_refusal
+        since = f"model calls have succeeded again since {_discord_time(status.last_success_at)}"
+        marker = "⚠️"
+    else:
+        since = "**no model call has succeeded since**"
+        marker = "🚨"
+    return (
+        f"{marker} Last refusal of the LLM key: **{reason}** {_discord_time(status.last_refusal_at)} "
+        f"(call: {status.last_refusal_purpose}); {status.refusals} refused call(s) since the bot "
+        f"started; {since}."
+    )
 
 
 def _is_operator(interaction: discord.Interaction[AuraClient]) -> bool:
@@ -158,6 +208,8 @@ async def operator_budget_command(interaction: discord.Interaction[AuraClient]) 
         value=f"~${status.total_estimated_usd:.4f} of ${status.budget_usd:.2f}{over_budget_note}",
         inline=False,
     )
+    # P5c: a refused key fails every model call; this is where the operator sees it.
+    embed.add_field(name="LLM key", value=key_alarm_line(KEY_ALARM.status()), inline=False)
     embed.set_footer(
         text=(
             "Visible only to you. In WARN mode an over-budget total is logged, "

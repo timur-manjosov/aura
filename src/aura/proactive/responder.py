@@ -55,11 +55,23 @@ aura.answer_check replaces the legacy grounding check; and the post is a
 proactive answer card with at most two points. PROACTIVE_PROVIDERS and its
 siblings route the answer, PROACTIVE_MAX_OUTPUT_TOKENS bounds it. Everything upstream -- the gate,
 the thresholds, the budget, the facts retrieved -- is identical in both formats.
+
+**Late answers (P5c), both formats.** PROACTIVE_REQUEST_TIMEOUT_SECONDS, when
+set, is a hard deadline on the answer call (the client's own timeout is per
+read on OpenRouter, measured in P5c, so it bounds nothing on its own). And the
+caller (aura.proactive.listener) hands in a freshness watch: right before the
+post, after the channel re-check, an answer whose conversation moved on -- a
+different member wrote in the channel, or the question was edited or deleted,
+since the grace period ended -- or that took longer than
+`answer_deadline_seconds` after the grace period is silence and an INFO line.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable
+from typing import Final, Protocol
 
 import aiosqlite
 import discord
@@ -93,6 +105,82 @@ logger = logging.getLogger(__name__)
 
 # Discord's own embed-description hard cap, same limit /aura-ask truncates to.
 _ANSWER_DISPLAY_LIMIT = 4096
+
+# The client timeout both answer calls pass when PROACTIVE_REQUEST_TIMEOUT_SECONDS
+# is unset (aura.synthesis and aura.answer_contract, both 30; a test keeps the
+# three equal). Used here only to state the posting deadline.
+DEFAULT_ANSWER_TIMEOUT_SECONDS: Final = 30.0
+
+# Added to the two calls' own limits for the posting deadline: the retrieval,
+# the channel re-check and the scheduling around them. Small next to the two
+# calls, large enough never to cut an answer that met both of them.
+_ANSWER_DEADLINE_SLACK_SECONDS: Final = 15.0
+
+
+class AnswerFreshness(Protocol):
+    """Whether an answer may still be posted (aura.proactive.grace.AnswerWatch)."""
+
+    def stale_reason(self, *, deadline_seconds: float) -> str | None:
+        """Return why the answer is stale, or None when it may be posted."""
+        ...
+
+
+def answer_deadline_seconds(settings: Settings) -> float:
+    """Return how long after the grace period an unprompted answer may still be posted.
+
+    Parameters
+    ----------
+    settings
+        Loaded configuration: PROACTIVE_REQUEST_TIMEOUT_SECONDS.
+
+    Returns
+    -------
+    float
+        The answer call's limit (PROACTIVE_REQUEST_TIMEOUT_SECONDS, or the 30
+        seconds of before when it is unset) plus the check's deadline
+        (PROACTIVE_GROUNDING_TIMEOUT_SECONDS) plus a 15-second allowance: 75 s
+        by default, 105 s at a 60-second timeout.
+
+    Notes
+    -----
+    An answer that met both calls' limits is never cut by this; it exists for
+    the one that did not -- a client timeout the provider kept alive, a stalled
+    event loop or database -- so that no setting and no library can make a
+    proactive post arrive later than this.
+    """
+    timeout = settings.proactive_request_timeout_seconds
+    call_limit = timeout if timeout is not None else DEFAULT_ANSWER_TIMEOUT_SECONDS
+    return call_limit + PROACTIVE_GROUNDING_TIMEOUT_SECONDS + _ANSWER_DEADLINE_SLACK_SECONDS
+
+
+async def _within_deadline[T](call: Awaitable[T], settings: Settings) -> T:
+    """Await the proactive answer call, under its hard deadline when one is configured.
+
+    Raises
+    ------
+    TimeoutError
+        When PROACTIVE_REQUEST_TIMEOUT_SECONDS is set and the call ran past it.
+    """
+    timeout = settings.proactive_request_timeout_seconds
+    if timeout is None:
+        return await call
+    return await asyncio.wait_for(call, timeout=timeout)
+
+
+def _stale(freshness: AnswerFreshness | None, settings: Settings, channel: object) -> bool:
+    """Report (and log) whether the answer must not be posted any more."""
+    if freshness is None:
+        return False
+    reason = freshness.stale_reason(deadline_seconds=answer_deadline_seconds(settings))
+    if reason is None:
+        return False
+    logger.info(
+        "Proactive answer withheld in channel %s: %s",
+        getattr(channel, "id", "<unknown>"),
+        reason,
+    )
+    return True
+
 
 # A deliberately distinct colour so an unsolicited proactive answer never looks
 # like a plain /aura-ask reply (which carries no colour). This is a transparency
@@ -152,6 +240,16 @@ def _proactive_route(settings: Settings, model: str) -> dict[str, object] | None
     )
 
 
+def _log_deadline_passed(channel: object, settings: Settings) -> None:
+    """Log that the answer call ran past PROACTIVE_REQUEST_TIMEOUT_SECONDS."""
+    logger.warning(
+        "Proactive answer withheld in channel %s: the answer call ran past its "
+        "%.0f-second deadline (PROACTIVE_REQUEST_TIMEOUT_SECONDS)",
+        getattr(channel, "id", "<unknown>"),
+        settings.proactive_request_timeout_seconds,
+    )
+
+
 def _build_proactive_embed(
     result: SynthesisResult, facts: list[Fact], locale: str
 ) -> discord.Embed:
@@ -190,6 +288,7 @@ async def _respond_in_v2(
     synthesis_facts: list[Fact],
     locale: str,
     proactive_model: str,
+    freshness: AnswerFreshness | None,
 ) -> ProactiveResponseOutcome:
     """Trigger 2 in the v2 answer format: the same hard code-gate, an answer card.
 
@@ -210,6 +309,9 @@ async def _respond_in_v2(
         route, never the ANSWER_V2_* one, which describes ANSWER_V2_MODEL;
         the check is sent with its own route, since both triggers use the
         same checker.
+    freshness
+        The caller's watch over the conversation; None skips the freshness
+        check (direct callers, tests).
 
     Returns
     -------
@@ -219,24 +321,34 @@ async def _respond_in_v2(
     Notes
     -----
     The order is the legacy one: synthesis, the model's own verdict, the check,
-    the channel re-check, the post. A refused or failed check is silence and a
-    WARNING, as in the legacy format. Every post disables mentions.
+    the channel re-check, the freshness check, the post. A refused or failed
+    check is silence and a WARNING, as in the legacy format; an answer call
+    past its deadline is silence and a WARNING. Every post disables mentions.
     """
     channel = message.channel
-    answer = await synthesize_contract_answer(
-        synthesis_facts,
-        message.content,
-        locale,
-        model=proactive_model,
-        settings=settings,
-        extra_body=_proactive_route(settings, proactive_model),
-        # P5: the proactive variant of the contract -- the model first says
-        # what the message is, and only a sincere request may be answered
-        # (ContractAnswer.answers_unprompted); it is told the posting date so a
-        # fact about a date already past is not offered as current.
-        proactive_posted_at=message.created_at,
-        max_output_tokens=settings.proactive_max_output_tokens,
-    )
+    try:
+        answer = await _within_deadline(
+            synthesize_contract_answer(
+                synthesis_facts,
+                message.content,
+                locale,
+                model=proactive_model,
+                settings=settings,
+                extra_body=_proactive_route(settings, proactive_model),
+                # P5: the proactive variant of the contract -- the model first
+                # says what the message is, and only a sincere request may be
+                # answered (ContractAnswer.answers_unprompted); it is told the
+                # posting date so a fact about a date already past is not
+                # offered as current.
+                proactive_posted_at=message.created_at,
+                max_output_tokens=settings.proactive_max_output_tokens,
+                timeout_seconds=settings.proactive_request_timeout_seconds,
+            ),
+            settings,
+        )
+    except TimeoutError:
+        _log_deadline_passed(channel, settings)
+        return ProactiveResponseOutcome(answers_question=None, posted=False)
     if answer is None:
         return ProactiveResponseOutcome(answers_question=None, posted=False)
     if not answer.answers_unprompted:
@@ -276,6 +388,8 @@ async def _respond_in_v2(
 
     if not await is_channel_enabled(db, channel_id=channel.id):
         return ProactiveResponseOutcome(answers_question=answer.answers_question, posted=False)
+    if _stale(freshness, settings, channel):
+        return ProactiveResponseOutcome(answers_question=answer.answers_question, posted=False)
 
     try:
         if settings.answer_card_style is CardStyle.CONTAINER and components_v2_available():
@@ -298,6 +412,7 @@ async def respond_with_synthesis(
     db: aiosqlite.Connection,
     model: TextEmbedding,
     settings: Settings,
+    freshness: AnswerFreshness | None = None,
 ) -> ProactiveResponseOutcome:
     """Synthesize an answer for an already-eligible message and post it, if confident.
 
@@ -312,6 +427,10 @@ async def respond_with_synthesis(
     settings
         Loaded configuration: which model to use, and whether one is configured
         at all.
+    freshness
+        The listener's watch over the conversation since the grace period
+        ended (aura.proactive.grace.AnswerWatch); None skips the freshness
+        check.
 
     Returns
     -------
@@ -327,8 +446,9 @@ async def respond_with_synthesis(
     has already been spent for this message, whatever happens next.
 
     The order of checks is the hard code-gate documented at module level:
-    configured -> facts still present -> synthesis succeeded -> model confident
-    and cited -> channel still enabled -> post.
+    configured -> facts still present -> synthesis succeeded (within its
+    deadline) -> model confident and cited -> channel still enabled ->
+    conversation still fresh -> post.
     """
     guild = message.guild
     assert guild is not None  # only reached for a guild message (see should_classify)
@@ -440,17 +560,28 @@ async def respond_with_synthesis(
             synthesis_facts=synthesis_facts,
             locale=locale,
             proactive_model=proactive_model,
+            freshness=freshness,
         )
-    result = await synthesize_answer(
-        synthesis_facts,
-        message.content,
-        locale,
-        model=proactive_model,
-        question_channel_name=channel_display_name(channel, channel.id),
-        question_asked_at=message.created_at,
-        fact_channel_names=fact_channel_names(guild, {fact.channel_id for fact in synthesis_facts}),
-        extra_body=_proactive_route(settings, proactive_model),
-    )
+    try:
+        result = await _within_deadline(
+            synthesize_answer(
+                synthesis_facts,
+                message.content,
+                locale,
+                model=proactive_model,
+                question_channel_name=channel_display_name(channel, channel.id),
+                question_asked_at=message.created_at,
+                fact_channel_names=fact_channel_names(
+                    guild, {fact.channel_id for fact in synthesis_facts}
+                ),
+                extra_body=_proactive_route(settings, proactive_model),
+                timeout_seconds=settings.proactive_request_timeout_seconds,
+            ),
+            settings,
+        )
+    except TimeoutError:
+        _log_deadline_passed(channel, settings)
+        return ProactiveResponseOutcome(answers_question=None, posted=False)
 
     if result is None:
         return ProactiveResponseOutcome(answers_question=None, posted=False)
@@ -498,6 +629,12 @@ async def respond_with_synthesis(
     # channel off mid-synthesis is obeyed. The slot stays spent -- that is the
     # documented direction for a budget whose job is bounding cost.
     if not await is_channel_enabled(db, channel_id=channel.id):
+        return ProactiveResponseOutcome(answers_question=result.answers_question, posted=False)
+
+    # P5c: the conversation must not have moved on while the answer was being
+    # written and checked -- the last word before the send, after the channel
+    # re-check (see the module docstring).
+    if _stale(freshness, settings, channel):
         return ProactiveResponseOutcome(answers_question=result.answers_question, posted=False)
 
     # Still the full candidate list, not the cited_facts computed above:

@@ -70,7 +70,18 @@ hand-written pairs):
      make the model name the shared subject in its own output first, and then
      apply the rule to what it named.
 
-All three rules are enforced STRUCTURALLY as well as stated, because
+  4. A CHANGE LIMITED IN TIME REPLACES NOTHING (P5c). Every model measured in
+     P5, the incumbent included, judged "closed tonight for maintenance"
+     against "open until midnight" as a supersession: Rule 2 had no exception
+     for a status flip the message itself limits in time, and the model quoted
+     the limit ("closed tonight") as the change signal. The exception paragraph
+     after Rule 2 makes such a pair complementary unless the wording makes the
+     change lasting, a time word only dates a lasting change, or Fact A is
+     itself about that one occurrence; a hinted limit with no end ("for now")
+     keeps both. It is the only part of this prompt P5c changed (a test pins
+     the rest byte for byte); its measurement is in the private P5c report.
+
+Rules 1 to 3 are enforced STRUCTURALLY as well as stated, because
 reports/phase-3a-2.txt Section 9 is the second time this project learned that
 restating an instruction more forcefully is unreliable while making the model
 commit to the decision in its own structured output actually moves it. The model
@@ -103,6 +114,7 @@ from pydantic import BaseModel, ValidationError
 
 from aura.config import load_settings
 from aura.db.pending_facts import SupersessionRelationship
+from aura.llm_failures import record_call_failure
 from aura.llm_request_options import openrouter_extra_body, parse_provider_list
 from aura.llm_usage import log_llm_usage, was_cut_off
 
@@ -274,6 +286,24 @@ def _build_messages(*, predecessor: str, candidate: str) -> list[dict[str, str]]
         'longer accepted". Quote them in change_signal. Rule 1 does not apply '
         "to these, because a state flip is not a bare disagreement about a "
         "value.\n\n"
+        "THE EXCEPTION TO RULES 1 AND 2 -- A CHANGE LIMITED IN TIME REPLACES "
+        "NOTHING.\n"
+        "If Fact B's own wording limits its change to a time that ends -- one "
+        "evening, one day or date, one occurrence of something Fact A says "
+        'recurs, or a period with an end ("tonight", "only this weekend", '
+        '"until Friday", "temporarily", "during the maintenance") -- Fact A '
+        "holds again once that time is over, so the answer is "
+        '"complementary", even when Fact B flips a status or says what '
+        "changed. The exception does not apply when Fact B makes the change "
+        'lasting ("from now on", "permanently"), when a time word only says '
+        "when a lasting change starts or was decided, or when Fact A is itself "
+        "only about that same evening, date or occurrence. Doubt keeps both "
+        "facts: if Fact B hints at a limit without saying whether the change "
+        'will end ("for now", "until further notice"), the answer is '
+        '"complementary", never "supersession". Example: "The library is open '
+        'on Sundays." and "The library is closed this Sunday for inventory." '
+        'are complementary; "From now on, the library is closed on Sundays." is '
+        "a supersession.\n\n"
         "RULE 3 -- DECIDE WHETHER THEY SHARE A SUBJECT BEFORE YOU CALL "
         "ANYTHING INDEPENDENT.\n"
         "A SHARED SUBJECT is the same specific thing: the same channel, the "
@@ -527,6 +557,8 @@ async def judge_relationship(
         # json.JSONDecodeError is a ValueError subclass, so it is covered here.
         logger.error("Supersession judgement response was malformed: %s", exc)
         return None
-    except Exception:
+    except Exception as exc:
+        # P5c: a refused key raises the operator's alarm (aura.llm_failures).
+        record_call_failure(exc, purpose=USAGE_PURPOSE, model=model)
         logger.exception("Supersession judgement call failed")
         return None

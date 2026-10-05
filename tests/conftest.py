@@ -158,3 +158,13 @@ def fresh_verification_retries() -> Iterator[None]:
     VERIFICATION_RETRIES.reset()
     yield
     VERIFICATION_RETRIES.reset()
+
+
+@pytest.fixture(autouse=True)
+def fresh_key_alarm() -> Iterator[None]:
+    """Give every test an empty LLM-key alarm (aura.llm_failures keeps one per process)."""
+    from aura.llm_failures import KEY_ALARM
+
+    KEY_ALARM.reset()
+    yield
+    KEY_ALARM.reset()
