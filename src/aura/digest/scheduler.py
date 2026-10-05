@@ -41,7 +41,9 @@ import aiosqlite
 import discord
 
 from aura.billing import PlanGate
-from aura.config import Settings
+from aura.card_delivery import send_card_to_channel
+from aura.cards import build_digest_card
+from aura.config import CardStyle, MessageLook, Settings
 from aura.db.connection import utc_iso, utc_now
 from aura.db.digest_config import DigestConfig, get_enabled_digest_configs
 from aura.db.digest_state import (
@@ -54,6 +56,8 @@ from aura.db.digest_state import (
 from aura.digest.builder import DigestContent, build_digest
 from aura.digest.formatter import build_digest_embed, digest_locale
 from aura.digest.gateway import DigestGateway
+from aura.digest.intervals import describe_interval
+from aura.discord_context import fact_channel_names
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +107,13 @@ def window_start(config: DigestConfig, last_finished: str | None) -> str:
 
 
 async def send_due_digests(
-    db: aiosqlite.Connection, gateway: DigestGateway, *, now: datetime, plan_gate: PlanGate
+    db: aiosqlite.Connection,
+    gateway: DigestGateway,
+    *,
+    now: datetime,
+    plan_gate: PlanGate,
+    look: MessageLook = MessageLook.CLASSIC,
+    card_style: CardStyle = CardStyle.EMBED,
 ) -> int:
     """Post a digest for every guild whose interval has elapsed.
 
@@ -117,6 +127,10 @@ async def send_due_digests(
         The moment to evaluate dueness at.
     plan_gate
         Decides whether each guild may use this Pro trigger.
+    look
+        DIGEST_LOOK: the classic embed (the default) or the card (P5).
+    card_style
+        ANSWER_CARD_STYLE, which draws the card; unused for the classic look.
 
     Returns
     -------
@@ -161,7 +175,9 @@ async def send_due_digests(
             # The configuration is kept untouched.
             continue
         try:
-            if await _post_guild_digest(db, gateway, config=config, now=now):
+            if await _post_guild_digest(
+                db, gateway, config=config, now=now, look=look, card_style=card_style
+            ):
                 posted += 1
         except Exception:
             logger.exception("Digest failed for guild %s", config.guild_id)
@@ -174,6 +190,8 @@ async def _post_guild_digest(
     *,
     config: DigestConfig,
     now: datetime,
+    look: MessageLook = MessageLook.CLASSIC,
+    card_style: CardStyle = CardStyle.EMBED,
 ) -> bool:
     """Evaluate and, if it is due and has content, post one guild's digest.
 
@@ -285,7 +303,15 @@ async def _post_guild_digest(
         )
         return False
 
-    if not await _send(db, channel, config=config, content=content, run_id=run_id):
+    if not await _send(
+        db,
+        channel,
+        config=config,
+        content=content,
+        run_id=run_id,
+        look=look,
+        card_style=card_style,
+    ):
         return False
 
     logger.info(
@@ -356,6 +382,8 @@ async def _send(
     config: DigestConfig,
     content: DigestContent,
     run_id: int,
+    look: MessageLook = MessageLook.CLASSIC,
+    card_style: CardStyle = CardStyle.EMBED,
 ) -> bool:
     """Render and post one claimed digest, releasing its window if the send fails.
 
@@ -364,14 +392,32 @@ async def _send(
     message actually reached Discord.
     """
     locale = digest_locale(channel.guild)
-    embed = build_digest_embed(content, locale=locale, interval_seconds=config.interval_seconds)
     try:
-        # Mentions are suppressed explicitly even though Discord does not
-        # resolve them inside an embed: a fact's text is written by a server
-        # member, and "@everyone" reaching a weekly automated post is the kind
-        # of thing that must be impossible by construction rather than by a
-        # property of where the text happens to be rendered today.
-        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        if look is MessageLook.CARD:
+            # P5's card look (aura.cards), switched by DIGEST_LOOK. The same
+            # content and the same window; only the rendering differs, and
+            # send_card_to_channel disables mentions in either style.
+            shown = [*content.milestones, *content.new_facts]
+            shown += [change.current for change in content.changes]
+            card = build_digest_card(
+                content,
+                locale=locale,
+                interval_label=describe_interval(config.interval_seconds, locale),
+                channel_names=fact_channel_names(
+                    channel.guild, {fact.channel_id for fact in shown}
+                ),
+            )
+            await send_card_to_channel(channel, card, style=card_style)
+        else:
+            embed = build_digest_embed(
+                content, locale=locale, interval_seconds=config.interval_seconds
+            )
+            # Mentions are suppressed explicitly even though Discord does not
+            # resolve them inside an embed: a fact's text is written by a server
+            # member, and "@everyone" reaching a weekly automated post is the kind
+            # of thing that must be impossible by construction rather than by a
+            # property of where the text happens to be rendered today.
+            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     except Exception:
         # A post can fail for reasons entirely outside Aura's control: the
         # channel was deleted between resolving and sending, send permissions
@@ -430,7 +476,14 @@ async def run_digest_scheduler(
     )
     while True:
         try:
-            await send_due_digests(db, gateway, now=utc_now(), plan_gate=plan_gate)
+            await send_due_digests(
+                db,
+                gateway,
+                now=utc_now(),
+                plan_gate=plan_gate,
+                look=settings.digest_look,
+                card_style=settings.answer_card_style,
+            )
         except Exception:
             logger.exception("Digest sweep failed; continuing")
         await asyncio.sleep(interval)

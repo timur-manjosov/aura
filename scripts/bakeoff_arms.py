@@ -186,6 +186,43 @@ ARMS: Final[dict[str, Arm]] = {
             ArmRouting(reasoning={"effort": "low"}, max_tokens=REASONING_MAX_TOKENS),
             provider_note="Google AI Studio / Vertex (US); reasoning effort low",
         ),
+        # --- P5 (2026-10-04): the background functions ---------------------
+        Arm(
+            "deepseek-2p-think",
+            "openrouter/deepseek/deepseek-v4.1-flash",
+            ModelPrice(0.30, 1.20),
+            ArmRouting(
+                provider_order=("DeepInfra", "Together"),
+                data_collection_deny=True,
+                max_tokens=REASONING_MAX_TOKENS,
+            ),
+            provider_note=(
+                "DeepInfra then Together (US), data_collection=deny; the model's default "
+                "reasoning (on)"
+            ),
+        ),
+        Arm(
+            "mimo",
+            "openrouter/xiaomi/mimo-v2.6-flash",
+            ModelPrice(0.14, 0.28),
+            ArmRouting(
+                provider_order=("DeepInfra",),
+                data_collection_deny=True,
+                reasoning={"enabled": False},
+            ),
+            provider_note=(
+                "Xiaomi MiMo v2.6 Flash (released 2026-09-21), DeepInfra (US) pinned, fp8, "
+                "data_collection=deny; reasoning off"
+            ),
+        ),
+        Arm(
+            "gpt6lunapro",
+            "openrouter/openai/gpt-6-luna-pro",
+            ModelPrice(0.20, 1.00),
+            ArmRouting(reasoning={"effort": "low"}, max_tokens=REASONING_MAX_TOKENS),
+            provider_note="OpenAI / Azure (US), released 2026-09-22; reasoning effort low",
+            temperature_supported=False,
+        ),
     )
 }
 

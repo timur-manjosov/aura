@@ -39,7 +39,7 @@ from aura.commands.operator import (
     _is_operator,
     operator_preview_command,
 )
-from aura.commands.preview_samples import preview_samples
+from aura.commands.preview_samples import card_look_samples, preview_samples
 from aura.config import (
     AnswerFormat,
     CardStyle,
@@ -532,6 +532,7 @@ async def _proactive_setup(conn: aiosqlite.Connection) -> tuple[Fact, MagicMock]
     message.channel = MagicMock()
     message.channel.id = 555
     message.channel.send = AsyncMock()
+    message.created_at = datetime(2026, 10, 4, 18, 0, tzinfo=UTC)
     return fact, message
 
 
@@ -740,29 +741,34 @@ def _model_reply(payload: object) -> MagicMock:
     return response
 
 
-def _contract_reply(lead: str) -> MagicMock:
-    return _model_reply(
-        {
-            "request_reading": "r",
-            "fact_notes": [{"n": 1, "covers": "c"}],
-            "relations": [],
-            "not_covered_topics": [],
-            "tone": "neutral",
-            "lead": lead,
-            "points": [],
-            "used_fact_numbers": [1],
-            "answers_question": True,
-        }
-    )
+def _contract_reply(lead: str, *, proactive: bool = False) -> MagicMock:
+    reply: dict[str, object] = {
+        "request_reading": "r",
+        "fact_notes": [{"n": 1, "covers": "c"}],
+        "relations": [],
+        "not_covered_topics": [],
+        "tone": "neutral",
+        "lead": lead,
+        "points": [],
+        "used_fact_numbers": [1],
+        "answers_question": True,
+    }
+    if proactive:
+        reply["message_kind"] = "sincere_request"
+    return _model_reply(reply)
 
 
 _GROUNDED_REPLY: dict[str, object] = {"statements": [{"id": "L", "issues": [], "supported": True}]}
 
 
-def _two_calls(lead: str) -> AsyncMock:
+def _two_calls(lead: str, *, proactive: bool = False) -> AsyncMock:
     # aura.answer_contract and aura.answer_check share one litellm module, so
     # one mock serves both calls; the synthesis comes first, the check second.
-    return AsyncMock(side_effect=[_contract_reply(lead), _model_reply(_GROUNDED_REPLY)])
+    # Proactive relief answers in the proactive variant (P5), whose reply also
+    # carries message_kind.
+    return AsyncMock(
+        side_effect=[_contract_reply(lead, proactive=proactive), _model_reply(_GROUNDED_REPLY)]
+    )
 
 
 def _calls_by_model(completion: AsyncMock) -> dict[str, dict[str, Any]]:
@@ -789,7 +795,7 @@ class TestRoutePerTrigger:
         self, conn: aiosqlite.Connection
     ) -> None:
         _, message = await _proactive_setup(conn)
-        completion = _two_calls("The rules are in #welcome.")
+        completion = _two_calls("The rules are in #welcome.", proactive=True)
         settings = _settings(
             proactive_answer_format="v2", proactive_model="openrouter/fake/proactive", **_ROUTED
         )
@@ -867,10 +873,11 @@ class TestOperatorPreview:
 
         interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
         calls = interaction.followup.send.await_args_list
-        assert len(calls) == 1 + 7 * 2
+        # P5: the seven answer-card samples and the six card-look samples.
+        assert len(calls) == 1 + 13 * 2
         assert all(call.kwargs["ephemeral"] is True for call in calls)
-        assert sum("embed" in call.kwargs for call in calls) == 7
-        assert sum("view" in call.kwargs for call in calls) == 7
+        assert sum("embed" in call.kwargs for call in calls) == 13
+        assert sum("view" in call.kwargs for call in calls) == 13
         assert all(call.kwargs["allowed_mentions"].everyone is False for call in calls[1:])
 
     @pytest.mark.parametrize(("style", "key"), [("embed", "embed"), ("container", "view")])
@@ -879,7 +886,7 @@ class TestOperatorPreview:
         await _preview(interaction, style)
 
         calls = interaction.followup.send.await_args_list[1:]
-        assert len(calls) == 7
+        assert len(calls) == 13
         assert all(key in call.kwargs for call in calls)
 
     async def test_a_sample_discord_refuses_is_reported_and_the_rest_still_shown(self) -> None:
@@ -892,13 +899,21 @@ class TestOperatorPreview:
 
         texts = [c.args[0] for c in interaction.followup.send.await_args_list if c.args]
         assert any("refused this sample (HTTP 400)" in text for text in texts)
-        assert interaction.followup.send.await_count == 1 + 1 + 1 + 6
+        assert interaction.followup.send.await_count == 1 + 1 + 1 + 12
 
     def test_the_samples_cover_every_kind_through_the_real_validator(self) -> None:
         samples = preview_samples("de", guild_id=GUILD, now=datetime(2026, 10, 4, tzinfo=UTC))
+        card_looks = card_look_samples(
+            "de",
+            guild_id=GUILD,
+            now=datetime(2026, 10, 4, tzinfo=UTC),
+            ask_caps=(10, 5, 25),
+            dashboard_url="https://example.com/dashboard",
+        )
 
         assert len(samples) == 7
-        assert {sample.card.kind for sample in samples} == set(MessageKind)
+        assert len(card_looks) == 6
+        assert {sample.card.kind for sample in (*samples, *card_looks)} == set(MessageKind)
         assert samples[2].card.notes[-1].startswith("Nicht vermerkt:")
         assert samples[1].card.notes == (t("answer_note_conflict", "de"),)
         english = preview_samples("en-US", guild_id=GUILD, now=datetime(2026, 10, 4, tzinfo=UTC))
@@ -934,7 +949,7 @@ class TestComponentsV2Unavailable:
             await _preview(interaction, "container")
 
         texts = [c.args[0] for c in interaction.followup.send.await_args_list[1:]]
-        assert len(texts) == 7
+        assert len(texts) == 13
         assert all("no Components V2 support" in text for text in texts)
 
     def test_the_installed_discord_py_supports_it(self) -> None:

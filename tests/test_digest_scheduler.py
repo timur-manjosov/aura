@@ -809,7 +809,9 @@ class TestTheLoop:
         # while its digests simply never arrive again.
         sweeps: list[datetime] = []
 
-        async def sweep(_db, _gateway, *, now: datetime, plan_gate: PlanGate) -> int:
+        async def sweep(
+            _db, _gateway, *, now: datetime, plan_gate: PlanGate, **_look: object
+        ) -> int:
             sweeps.append(now)
             if len(sweeps) == 1:
                 raise RuntimeError("the database was briefly locked")

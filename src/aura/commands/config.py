@@ -31,7 +31,8 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
-from aura.commands.plan import pro_feature_refusal
+from aura.commands.notices import send_confirmation
+from aura.commands.plan import pro_feature_refusal, send_pro_refusal
 from aura.db.extraction_channel_config import set_extraction_enabled
 from aura.db.proactive_channel_config import set_channel_enabled
 from aura.i18n import t
@@ -126,7 +127,7 @@ async def config_command(
     if proactive is True or extraction is True:
         refusal = pro_feature_refusal(interaction)
         if refusal is not None:
-            await interaction.response.send_message(refusal, ephemeral=True)
+            await send_pro_refusal(interaction, refusal)
             return
 
     db = interaction.client.db
@@ -161,7 +162,7 @@ async def config_command(
     message = "\n".join(t(key, locale, channel=channel.mention) for key in confirmation_keys)
     # Ephemeral: a configuration confirmation is for the moderator who ran it,
     # not an announcement to the channel.
-    await interaction.response.send_message(message, ephemeral=True)
+    await send_confirmation(interaction, message)
 
 
 config_command.error(_handle_config_command_error)

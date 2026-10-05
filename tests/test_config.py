@@ -428,17 +428,19 @@ class TestResolveModel:
         # resolve_model's match statement has no default arm, so a member added
         # to ModelComponent without one silently returns None instead of
         # failing -- and a component whose model resolves to None never runs.
-        # VARIANT_AUDIT, GROUNDING_CHECK and ANSWER_V2_CHECK are excluded on
-        # purpose: they are the deliberate exceptions to "falls back to
-        # synthesis_model", each covered on its own (TestVariantModelResolution,
-        # TestGroundingCheckModelResolution, tests/test_answer_settings.py). All
-        # three exist to check another model's output, so a fallback would
+        # VARIANT_AUDIT, GROUNDING_CHECK, ANSWER_V2_CHECK and EXTRACTION_VERIFY
+        # are excluded on purpose: they are the deliberate exceptions to "falls
+        # back to synthesis_model", each covered on its own
+        # (TestVariantModelResolution, TestGroundingCheckModelResolution,
+        # tests/test_answer_settings.py, tests/test_background_settings.py). All
+        # four exist to check another model's output, so a fallback would
         # silently collapse the check onto the model it is supposed to be
         # independent of.
         no_fallback = {
             ModelComponent.VARIANT_AUDIT,
             ModelComponent.GROUNDING_CHECK,
             ModelComponent.ANSWER_V2_CHECK,
+            ModelComponent.EXTRACTION_VERIFY,
         }
         settings = _settings(discord_token="valid-token", synthesis_model="a/b")
         for component in ModelComponent:

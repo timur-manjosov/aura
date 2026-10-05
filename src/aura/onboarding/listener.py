@@ -35,10 +35,13 @@ import aiosqlite
 import discord
 
 from aura.billing import PlanGate
-from aura.config import Settings
+from aura.card_delivery import send_card_to_channel
+from aura.cards import build_onboarding_card
+from aura.config import MessageLook, Settings
 from aura.db.connection import utc_iso, utc_now
 from aura.db.onboarding_config import get_onboarding_config
 from aura.db.onboarding_state import OnboardingSendOutcome, try_claim_onboarding_send
+from aura.discord_context import fact_channel_names
 from aura.onboarding.builder import build_onboarding_content
 from aura.onboarding.formatter import build_onboarding_embed, onboarding_locale
 from aura.onboarding.gateway import OnboardingGateway
@@ -163,12 +166,25 @@ async def handle_member_join(
         return
 
     locale = onboarding_locale(guild)
-    embed = build_onboarding_embed(content, locale=locale)
     try:
-        # Mentions are suppressed for the same reason the digest suppresses
-        # them: a fact's text is written by a server member, and "@everyone"
-        # reaching an automated post must be impossible by construction.
-        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        if settings.onboarding_look is MessageLook.CARD:
+            # P5's card look (aura.cards), switched by ONBOARDING_LOOK: the
+            # same content, rendered as a greeting card; mentions disabled in
+            # either style by send_card_to_channel.
+            shown = [*content.rules, *content.status_changes, *content.other]
+            card = build_onboarding_card(
+                content,
+                locale=locale,
+                server_name=str(getattr(guild, "name", "") or ""),
+                channel_names=fact_channel_names(guild, {fact.channel_id for fact in shown}),
+            )
+            await send_card_to_channel(channel, card, style=settings.answer_card_style)
+        else:
+            embed = build_onboarding_embed(content, locale=locale)
+            # Mentions are suppressed for the same reason the digest suppresses
+            # them: a fact's text is written by a server member, and "@everyone"
+            # reaching an automated post must be impossible by construction.
+            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     except Exception:
         logger.exception(
             "Onboarding post failed in channel %s (guild %s) for member %s",

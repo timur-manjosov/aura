@@ -36,7 +36,8 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
-from aura.commands.plan import pro_feature_refusal
+from aura.commands.notices import send_confirmation
+from aura.commands.plan import pro_feature_refusal, send_pro_refusal
 from aura.db.digest_config import get_digest_config, set_digest_config
 from aura.digest.intervals import DigestInterval, describe_interval
 from aura.i18n import t
@@ -214,7 +215,7 @@ async def digest_command(
     if target_enabled:
         refusal = pro_feature_refusal(interaction)
         if refusal is not None:
-            await interaction.response.send_message(refusal, ephemeral=True)
+            await send_pro_refusal(interaction, refusal)
             return
 
     await set_digest_config(
@@ -227,7 +228,7 @@ async def digest_command(
     )
 
     if not target_enabled:
-        await interaction.response.send_message(t("digest_disabled", locale), ephemeral=True)
+        await send_confirmation(interaction, t("digest_disabled", locale))
         return
 
     interval_label = describe_interval(target_interval, locale)
@@ -250,7 +251,7 @@ async def digest_command(
 
     # Ephemeral: a configuration confirmation is for the moderator who ran it,
     # not an announcement to the channel.
-    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+    await send_confirmation(interaction, "\n".join(lines))
 
 
 digest_command.error(_handle_digest_command_error)

@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
-from aura.commands.plan import pro_feature_refusal
+from aura.commands.plan import pro_feature_refusal, send_pro_refusal
 from aura.db.backfill_runs import (
     BackfillAlreadyActiveError,
     BackfillRun,
@@ -289,7 +289,7 @@ async def backfill_start(
     # see and stop a run started while the server was on Pro.
     refusal = pro_feature_refusal(interaction)
     if refusal is not None:
-        await interaction.response.send_message(refusal, ephemeral=True)
+        await send_pro_refusal(interaction, refusal)
         return
 
     if not await is_extraction_enabled(db, channel_id=channel.id):

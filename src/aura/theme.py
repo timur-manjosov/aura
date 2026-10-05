@@ -5,8 +5,11 @@ Constants only. Nothing here formats, sends or decides anything; the answer
 card renderer (`aura.answer_card`) and the answer contract (`aura.answer_contract`)
 read these values, so a colour, a symbol or a bound changes in exactly one place.
 
-The answer card, top to bottom (P4; the v2 answer format only -- the digest,
-onboarding, /aura-plan and command replies keep their own look):
+The answer card, top to bottom (P4; the v2 answer format). The digest,
+onboarding, /aura-plan and command replies have card looks of their own since
+P5 (aura.cards), built from the same parts -- a symbol and a small top line, a
+lead, sections of lines each with a quiet source line, a quiet footer -- and
+each behind its own setting, so the classic look stays until it is switched:
 
 1. the question, small (the embed's author line, or subtext in a container),
    cut to `QUESTION_DISPLAY_CHARS`, after the kind's symbol;
@@ -59,7 +62,15 @@ class MessageKind(StrEnum):
     PROACTIVE
         An unprompted answer posted by proactive relief.
     ERROR
-        Aura could not produce or verify an answer.
+        Aura could not produce or verify an answer, or a command was refused.
+    DIGEST
+        The periodic digest: what changed in the knowledge model (P5).
+    ONBOARDING
+        The summary a new member receives (P5).
+    PLAN
+        /aura-plan and the one refusal every Pro-only command gives (P5).
+    CONFIRM
+        A command did what was asked: a fact created, a setting saved (P5).
     """
 
     ANSWER = "answer"
@@ -67,6 +78,10 @@ class MessageKind(StrEnum):
     LIMIT = "limit"
     PROACTIVE = "proactive"
     ERROR = "error"
+    DIGEST = "digest"
+    ONBOARDING = "onboarding"
+    PLAN = "plan"
+    CONFIRM = "confirm"
 
 
 # One accent per kind, each tuned to the same luminance band (WCAG relative
@@ -80,10 +95,14 @@ ACCENT_COLORS: Final[dict[MessageKind, int]] = {
     MessageKind.LIMIT: 0xB37914,  # amber
     MessageKind.PROACTIVE: 0x6C77EF,  # light blurple, the colour proactive relief already used
     MessageKind.ERROR: 0xD85A5A,  # red
+    MessageKind.DIGEST: 0x2F8ACA,  # sky blue
+    MessageKind.ONBOARDING: 0xC46494,  # rose
+    MessageKind.PLAN: 0xAB6CCB,  # violet
+    MessageKind.CONFIRM: 0x3D9444,  # green
 }
 
 # The leading symbol of each kind. Short, widely supported emoji only, one per
-# kind and no others in the chrome: a vocabulary of five is learnable, a page of
+# kind and no others in the chrome: a vocabulary of nine is learnable, a page of
 # decoration is noise.
 KIND_SYMBOLS: Final[dict[MessageKind, str]] = {
     MessageKind.ANSWER: "❓",
@@ -91,6 +110,10 @@ KIND_SYMBOLS: Final[dict[MessageKind, str]] = {
     MessageKind.LIMIT: "⏳",
     MessageKind.PROACTIVE: "💡",
     MessageKind.ERROR: "⚠️",
+    MessageKind.DIGEST: "🗞️",
+    MessageKind.ONBOARDING: "👋",
+    MessageKind.PLAN: "⭐",
+    MessageKind.CONFIRM: "✅",
 }
 
 # The Discord backgrounds an accent must stay visible on: the light theme and
@@ -138,6 +161,17 @@ CHANNEL_LABEL_MAX_CHARS: Final = 40
 # How many facts a source block lists at most: SYNTHESIS_FACT_LIMIT retrieved
 # facts plus at most as many linked ones.
 MAX_SOURCES: Final = 10
+
+# --- The section cards (P5: digest, onboarding, /aura-plan) -------------------
+
+# How many lines one section of a card lists before the rest is collapsed into
+# a "and N more" line -- the classic digest's and onboarding's own number, so
+# the new look never shows less than the old one.
+MAX_SECTION_ITEMS: Final = 10
+
+# How much of one fact a section line shows. Shorter than the classic digest's
+# 200, because the new look adds a source line under every item.
+SECTION_ITEM_MAX_CHARS: Final = 180
 
 # --- Discord's own limits (not choices; exceeding one is a 400) ---------------
 

@@ -63,6 +63,8 @@ from pydantic import BaseModel, ValidationError
 from aura.config import load_settings
 from aura.db.extraction_queue import QueuedMessage
 from aura.db.pending_facts import FactCategory
+from aura.llm_request_options import openrouter_extra_body, parse_provider_list
+from aura.llm_usage import log_llm_usage, was_cut_off
 
 # The same fence-tolerant parser /aura-ask and proactive relief go through.
 # Imported rather than re-implemented on purpose: `response_format` is a
@@ -95,6 +97,9 @@ _MAX_MESSAGE_CHARS = 1000
 _MAX_DISTILLED_CHARS = 500
 
 _CATEGORY_VALUES = ", ".join(f'"{category.value}"' for category in FactCategory)
+
+# The usage-log label of this call (see aura.llm_usage).
+USAGE_PURPOSE = "extraction"
 
 
 class DistilledFact(BaseModel):
@@ -301,9 +306,14 @@ async def distill_facts(
     Notes
     -----
     Never raises. Malformed JSON, a hallucinated message number, an
-    out-of-vocabulary category, an empty or oversized sentence, a network error,
-    an auth failure, and a timeout are all real, expected failure modes at this
-    call site, and every one becomes a clean None.
+    out-of-vocabulary category, an empty or oversized sentence, a reply cut off
+    at EXTRACTION_MAX_OUTPUT_TOKENS, a network error, an auth failure, and a
+    timeout are all real, expected failure modes at this call site, and every
+    one becomes a clean None.
+
+    Sends EXTRACTION_PROVIDERS / EXTRACTION_REASONING /
+    EXTRACTION_DENY_DATA_COLLECTION as OpenRouter request options when set, and
+    writes one usage line per response (aura.llm_usage).
     """
     if not candidates:
         # Not a failure and not worth a call: an empty batch has nothing to
@@ -317,6 +327,14 @@ async def distill_facts(
         return None
 
     messages = _build_messages(candidates, channel_name)
+    # The route EXTRACTION_MODEL was measured on, when the operator configured
+    # one; nothing extra otherwise (see aura.llm_request_options).
+    extra_body = openrouter_extra_body(
+        model,
+        providers=parse_provider_list(settings.extraction_providers),
+        deny_data_collection=settings.extraction_deny_data_collection,
+        reasoning=settings.extraction_reasoning,
+    )
 
     try:
         response = await litellm.acompletion(
@@ -331,6 +349,10 @@ async def distill_facts(
             # default temperature, and a fact that appears or vanishes
             # depending on the sampling seed is not a fact.
             temperature=0.0,
+            # Bounded since P5 (EXTRACTION_MAX_OUTPUT_TOKENS); a reply cut off
+            # at the bound is refused below, never staged in part.
+            max_tokens=settings.extraction_max_output_tokens,
+            **({"extra_body": extra_body} if extra_body else {}),
         )
 
         # acompletion's return type also covers a streaming response, which
@@ -339,6 +361,13 @@ async def distill_facts(
         # workaround.
         if not isinstance(response, ModelResponse):
             raise TypeError(f"expected a ModelResponse, got {type(response).__name__}")
+
+        log_llm_usage(response, purpose=USAGE_PURPOSE, model=model)
+        if was_cut_off(response):
+            # Even when the part that arrived happens to parse, a reply stopped
+            # at the output ceiling may be missing its last facts or end inside
+            # one: the whole batch takes the failure path instead.
+            raise ValueError("response was cut off at the output token limit")
 
         raw_content = response.choices[0].message.content
         if not raw_content or not raw_content.strip():

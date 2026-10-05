@@ -9,9 +9,14 @@ The design (P4) places the new modules carefully:
 * `aura.answer_card` renders: it imports Discord's types but no LLM client, no
   database, no retrieval, no grounding.
 * Only the two answering triggers (/aura-ask and the proactive responder) and
-  the operator preview use the format. Extraction, backfill, the digest,
-  onboarding, retrieval, billing and the database layer do not import any of
-  it, so the format can never change what those paths do.
+  the operator preview use the model-calling part of the format (the contract
+  and the check). Since P5 the digest, onboarding, /aura-plan and the command
+  notices also render through `aura.answer_card` -- via `aura.cards` and
+  `aura.card_delivery` -- but only the renderer: no package outside the two
+  answering triggers imports the contract or the check, and the digest and
+  onboarding import no model-calling module at all, so they stay free of LLM
+  calls. Extraction, backfill, retrieval, billing and the database layer import
+  none of the format.
 * The legacy grounding check (`aura.grounding`) and the legacy synthesis
   (`aura.synthesis`) import nothing of the new format: the legacy path does not
   depend on it at all.
@@ -81,22 +86,61 @@ def test_the_renderer_reaches_no_model_database_retrieval_or_grounding() -> None
     assert not {m for m in imported if m.startswith("aura.db.") and m != "aura.db.models"}
 
 
+_MODEL_CALLING_MODULES = frozenset({"aura.answer_contract", "aura.answer_check"})
+_LEGACY_MODEL_CALLING_MODULES = frozenset(
+    {"aura.synthesis", "aura.grounding", "aura.variants_service", "aura.extraction.distiller"}
+)
+
+
 def test_only_the_answering_triggers_and_the_preview_use_the_new_format() -> None:
     assert _files_importing_new_modules() == {
         "aura.commands.ask",
         "aura.commands.operator",
         "aura.commands.preview_samples",
         "aura.proactive.responder",
+        # P5: the card looks of the other message families, renderer only.
+        "aura.cards",
+        "aura.card_delivery",
+        "aura.commands.notices",
     }
 
 
-@pytest.mark.parametrize(
-    "package",
-    ["extraction", "backfill", "digest", "onboarding", "retrieval", "billing", "db"],
-)
+def test_only_the_answering_triggers_reach_the_contract_or_the_check() -> None:
+    reaching = set()
+    for path in _SRC.rglob("*.py"):
+        name = _module_name(path)
+        if name in _NEW_MODULES:
+            continue
+        if set(_imports(path)) & _MODEL_CALLING_MODULES:
+            reaching.add(name)
+    assert reaching == {
+        "aura.commands.ask",
+        "aura.commands.preview_samples",
+        "aura.proactive.responder",
+    }
+
+
+@pytest.mark.parametrize("package", ["extraction", "backfill", "retrieval", "billing", "db"])
 def test_no_other_path_imports_the_new_format(package: str) -> None:
     for path in (_SRC / package).rglob("*.py"):
         assert not set(_imports(path)) & _NEW_MODULES, path
+
+
+@pytest.mark.parametrize("module", ["cards.py", "card_delivery.py", "commands/notices.py"])
+def test_the_card_modules_reach_no_model(module: str) -> None:
+    imported = set(_imports(_SRC / module))
+    assert not imported & _LLM_CLIENTS
+    assert not imported & (_MODEL_CALLING_MODULES | _LEGACY_MODEL_CALLING_MODULES)
+    assert not {m for m in imported if m.startswith(("aura.retrieval", "aiosqlite"))}
+
+
+@pytest.mark.parametrize("package", ["digest", "onboarding"])
+def test_digest_and_onboarding_stay_free_of_model_calls(package: str) -> None:
+    for path in (_SRC / package).rglob("*.py"):
+        imported = set(_imports(path))
+        assert not imported & _LLM_CLIENTS, path
+        assert not imported & (_MODEL_CALLING_MODULES | _LEGACY_MODEL_CALLING_MODULES), path
+        assert not {m for m in imported if m.startswith("aura.extraction")}, path
 
 
 @pytest.mark.parametrize(

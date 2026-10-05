@@ -45,13 +45,15 @@ flip answers_question to true can, at most, affect that one field -- it can
 never make a message that failed the numeric gates reach this code at all,
 because this code only runs behind the gate's ELIGIBLE verdict.
 
-**The v2 answer format** (PROACTIVE_ANSWER_FORMAT, default legacy, not switched
-by P4). Selected, the same gate runs on the structured answer contract: it
-posts only when the answer answers the question, cites a fact, and involves
-neither a same-detail conflict nor an "unclear if same" pair
+**The v2 answer format** (PROACTIVE_ANSWER_FORMAT, default legacy). Selected,
+the same gate runs on the PROACTIVE VARIANT of the structured answer contract
+(P5): the model first names what the message is (`message_kind`), and it posts
+only when that is a sincere request, the answer answers the question, cites a
+fact, and involves neither a same-detail conflict nor an "unclear if same" pair
 (aura.answer_contract.ContractAnswer.answers_unprompted); the statement check of
 aura.answer_check replaces the legacy grounding check; and the post is a
-proactive answer card with at most two points. Everything upstream -- the gate,
+proactive answer card with at most two points. PROACTIVE_PROVIDERS and its
+siblings route the answer, PROACTIVE_MAX_OUTPUT_TOKENS bounds it. Everything upstream -- the gate,
 the thresholds, the budget, the facts retrieved -- is identical in both formats.
 """
 
@@ -84,6 +86,7 @@ from aura.grounding import (
 )
 from aura.i18n import DEFAULT_LOCALE, t
 from aura.links_service import expand_with_linked_facts
+from aura.llm_request_options import openrouter_extra_body, parse_provider_list
 from aura.synthesis import SynthesisResult, synthesize_answer
 
 logger = logging.getLogger(__name__)
@@ -122,6 +125,31 @@ def _proactive_locale(guild: discord.Guild) -> str:
     """
     preferred = getattr(guild, "preferred_locale", None)
     return str(preferred) if preferred else DEFAULT_LOCALE
+
+
+def _proactive_route(settings: Settings, model: str) -> dict[str, object] | None:
+    """Return PROACTIVE_MODEL's OpenRouter request options, or None when none are set.
+
+    Parameters
+    ----------
+    settings
+        Loaded configuration: PROACTIVE_PROVIDERS, PROACTIVE_REASONING and
+        PROACTIVE_DENY_DATA_COLLECTION.
+    model
+        The resolved proactive model.
+
+    Returns
+    -------
+    dict[str, object] or None
+        The `extra_body` both answer formats send; None (nothing extra) when
+        every option is unset or the model is not routed through OpenRouter.
+    """
+    return openrouter_extra_body(
+        model,
+        providers=parse_provider_list(settings.proactive_providers),
+        deny_data_collection=settings.proactive_deny_data_collection,
+        reasoning=settings.proactive_reasoning,
+    )
 
 
 def _build_proactive_embed(
@@ -178,9 +206,10 @@ async def _respond_in_v2(
     locale
         The guild's locale.
     proactive_model
-        The resolved proactive model. It is sent without the ANSWER_V2_*
-        route, which describes ANSWER_V2_MODEL; the check is sent with its
-        own route, since both triggers use the same checker.
+        The resolved proactive model. It is sent with its own PROACTIVE_*
+        route, never the ANSWER_V2_* one, which describes ANSWER_V2_MODEL;
+        the check is sent with its own route, since both triggers use the
+        same checker.
 
     Returns
     -------
@@ -195,7 +224,18 @@ async def _respond_in_v2(
     """
     channel = message.channel
     answer = await synthesize_contract_answer(
-        synthesis_facts, message.content, locale, model=proactive_model, settings=settings
+        synthesis_facts,
+        message.content,
+        locale,
+        model=proactive_model,
+        settings=settings,
+        extra_body=_proactive_route(settings, proactive_model),
+        # P5: the proactive variant of the contract -- the model first says
+        # what the message is, and only a sincere request may be answered
+        # (ContractAnswer.answers_unprompted); it is told the posting date so a
+        # fact about a date already past is not offered as current.
+        proactive_posted_at=message.created_at,
+        max_output_tokens=settings.proactive_max_output_tokens,
     )
     if answer is None:
         return ProactiveResponseOutcome(answers_question=None, posted=False)
@@ -409,6 +449,7 @@ async def respond_with_synthesis(
         question_channel_name=channel_display_name(channel, channel.id),
         question_asked_at=message.created_at,
         fact_channel_names=fact_channel_names(guild, {fact.channel_id for fact in synthesis_facts}),
+        extra_body=_proactive_route(settings, proactive_model),
     )
 
     if result is None:

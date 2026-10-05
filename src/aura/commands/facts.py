@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 from fastembed import TextEmbedding
 
+from aura.commands.notices import send_confirmation
 from aura.db.repository import get_active_facts
 from aura.embeddings import find_similar_facts
 from aura.facts_service import add_fact
@@ -116,9 +117,7 @@ class AddFactModal(discord.ui.Modal):
             message_id=self._message_id,
             content=content,
         )
-        await interaction.response.send_message(
-            t("fact_add_success", locale, fact_id=fact.id), ephemeral=True
-        )
+        await send_confirmation(interaction, t("fact_add_success", locale, fact_id=fact.id))
 
     async def on_error(  # type: ignore[override]
         self, _interaction: discord.Interaction, error: Exception

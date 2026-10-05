@@ -103,6 +103,8 @@ from pydantic import BaseModel, ValidationError
 
 from aura.config import load_settings
 from aura.db.pending_facts import SupersessionRelationship
+from aura.llm_request_options import openrouter_extra_body, parse_provider_list
+from aura.llm_usage import log_llm_usage, was_cut_off
 
 # The same fence-tolerant parser every other call site in this project goes
 # through. Imported rather than re-implemented for the reason recorded at
@@ -145,6 +147,9 @@ _SIGNAL_STRIP_CHARACTERS = "\"'“”«»‚‘’.,;:!?() \t\n"
 _RELATIONSHIP_VALUES = ", ".join(
     f'"{relationship.value}"' for relationship in SupersessionRelationship
 )
+
+# The usage-log label of this call (see aura.llm_usage).
+USAGE_PURPOSE = "supersession"
 
 
 class RelationshipJudgement(BaseModel):
@@ -438,8 +443,13 @@ async def judge_relationship(
     -----
     Never raises for an expected failure: malformed JSON, an out-of-vocabulary
     category, a missing field, an empty or oversized reasoning sentence, a
-    network error, an auth failure and a timeout all become a clean None. There
-    is no failure of this call that can lose a candidate or write a fact.
+    reply cut off at SUPERSESSION_MAX_OUTPUT_TOKENS, a network error, an auth
+    failure and a timeout all become a clean None. There is no failure of this
+    call that can lose a candidate or write a fact.
+
+    Sends SUPERSESSION_PROVIDERS / SUPERSESSION_REASONING /
+    SUPERSESSION_DENY_DATA_COLLECTION as OpenRouter request options when set,
+    and writes one usage line per response (aura.llm_usage).
 
     `asyncio.CancelledError` inherits from BaseException rather than Exception,
     so a shutdown cancelling this task still propagates instead of being logged
@@ -451,6 +461,14 @@ async def judge_relationship(
         return None
 
     messages = _build_messages(predecessor=predecessor, candidate=candidate)
+    # The route SUPERSESSION_MODEL was measured on, when the operator
+    # configured one; nothing extra otherwise (see aura.llm_request_options).
+    extra_body = openrouter_extra_body(
+        model,
+        providers=parse_provider_list(settings.supersession_providers),
+        deny_data_collection=settings.supersession_deny_data_collection,
+        reasoning=settings.supersession_reasoning,
+    )
 
     try:
         response = await litellm.acompletion(
@@ -466,6 +484,10 @@ async def judge_relationship(
             # moderator can act on. The bake-off's four boundary pairs were
             # repeated 3x each specifically to catch that, and did not find it.
             temperature=0.0,
+            # Bounded since P5 (SUPERSESSION_MAX_OUTPUT_TOKENS); a judgement cut
+            # off at the bound is refused below.
+            max_tokens=settings.supersession_max_output_tokens,
+            **({"extra_body": extra_body} if extra_body else {}),
         )
 
         # acompletion's return type also covers a streaming response, which this
@@ -473,6 +495,10 @@ async def judge_relationship(
         # asserting is a real defensive check, not a type-checker workaround.
         if not isinstance(response, ModelResponse):
             raise TypeError(f"expected a ModelResponse, got {type(response).__name__}")
+
+        log_llm_usage(response, purpose=USAGE_PURPOSE, model=model)
+        if was_cut_off(response):
+            raise ValueError("response was cut off at the output token limit")
 
         raw_content = response.choices[0].message.content
         if not raw_content or not raw_content.strip():

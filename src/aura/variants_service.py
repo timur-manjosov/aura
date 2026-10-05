@@ -49,6 +49,7 @@ from aura.db.fact_variants import FactVariant, store_fact_variants
 from aura.db.models import Fact
 from aura.db.variant_state import try_acquire_variant_call_slot
 from aura.embeddings import EMBEDDING_DTYPE, embed_texts
+from aura.llm_usage import was_cut_off
 
 # The same fence-tolerant parser every other call site in this project goes
 # through. Imported rather than re-implemented for the reason recorded at
@@ -296,10 +297,16 @@ async def _generate_variants(canonical: str, *, count: int, model: str) -> list[
             # see this module's docstring for why a temperature tuned for
             # stability would work directly against the point of this call.
             temperature=0.7,
+            # Bounded since P5 (VARIANT_MAX_OUTPUT_TOKENS); a reply cut off at the
+            # bound is refused below rather than used in part.
+            max_tokens=settings.variant_max_output_tokens,
         )
 
         if not isinstance(response, ModelResponse):
             raise TypeError(f"expected a ModelResponse, got {type(response).__name__}")
+
+        if was_cut_off(response):
+            raise ValueError("response was cut off at the output token limit")
 
         raw_content = response.choices[0].message.content
         if not raw_content or not raw_content.strip():
@@ -398,10 +405,16 @@ async def _audit_variants(
             # specific variant preserves one specific fact's meaning must not
             # depend on the sampling seed.
             temperature=0.0,
+            # Bounded since P5 (VARIANT_AUDIT_MAX_OUTPUT_TOKENS); a reply cut off at the
+            # bound is refused below rather than used in part.
+            max_tokens=settings.variant_audit_max_output_tokens,
         )
 
         if not isinstance(response, ModelResponse):
             raise TypeError(f"expected a ModelResponse, got {type(response).__name__}")
+
+        if was_cut_off(response):
+            raise ValueError("response was cut off at the output token limit")
 
         raw_content = response.choices[0].message.content
         if not raw_content or not raw_content.strip():

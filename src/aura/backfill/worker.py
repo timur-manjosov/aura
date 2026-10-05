@@ -97,6 +97,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from typing import Final, Literal
 
 import aiosqlite
 import discord
@@ -124,6 +125,8 @@ from aura.db.pending_facts import staged_message_ids
 from aura.discord_context import channel_display_name
 from aura.extraction.distiller import distill_facts
 from aura.extraction.pipeline import should_extract, stage_distilled_candidates
+from aura.extraction.verifier import VerificationUnavailable, verify_if_configured
+from aura.extraction.verify_retry import VERIFICATION_RETRIES, backfill_key
 from aura.proactive.question_detector import QuestionDetector
 
 logger = logging.getLogger(__name__)
@@ -148,6 +151,11 @@ _PAGE_SIZE = 100
 # enough that progress is visible in /aura-backfill status while a long, quiet
 # stretch of history is being scanned.
 _MAX_PAGES_PER_BATCH = 10
+
+# What _distill_and_stage returns when the batch's verification failed and it
+# is to be tried again later: the cursor must stay where it is, exactly as for
+# a refused slot, but for a different reason (aura.extraction.verify_retry).
+_VERIFICATION_HELD: Final = "verification-held"
 
 
 async def advance_due_backfills(
@@ -280,6 +288,11 @@ async def _advance_one(
         # the moment it is on Pro again.
         return False
 
+    if VERIFICATION_RETRIES.is_waiting(backfill_key(run.id), now):
+        # P5: this run's batch failed its verification and waits for its next
+        # attempt. Nothing is read or spent; the cursor stays where it is.
+        return False
+
     spent = await count_backfill_calls_on(db, guild_id=run.guild_id, day=utc_day(now))
     if spent >= settings.backfill_daily_cap:
         return False
@@ -349,6 +362,10 @@ async def _advance_one(
         if outcome is None:
             # The daily cap refused the call. The cursor stays put, so this exact
             # page is re-fetched and re-offered tomorrow -- nothing is dropped.
+            return False
+        if outcome == _VERIFICATION_HELD:
+            # The verification failed and another attempt is allowed: the
+            # cursor stays put, so the same pages are re-read after the pause.
             return False
         staged, calls_spent = outcome
 
@@ -609,12 +626,14 @@ async def _distill_and_stage(
     candidates: list[QueuedMessage],
     settings: Settings,
     now: datetime,
-) -> tuple[int, int] | None:
+) -> tuple[int, int] | Literal["verification-held"] | None:
     """Claim a slot, distill one batch and stage what it produced.
 
     Returns (candidates staged, calls spent), or None if the daily cap refused
     the call -- which the caller must distinguish from "the call ran and found
-    nothing", because only the refusal must leave the cursor where it is.
+    nothing", because only the refusal must leave the cursor where it is -- or
+    _VERIFICATION_HELD when the verification failed and the batch is to be
+    tried again later, which must also leave the cursor where it is.
 
     The batch is re-checked for strict chronological order immediately before it
     is sent, and re-sorted if it somehow is not. Belt to the braces
@@ -687,6 +706,49 @@ async def _distill_and_stage(
         channel_name=channel_display_name(channel, channel.id),
         model=extraction_model,
     )
+    retry_key = backfill_key(run.id)
+    # Earlier attempts of this same batch each spent a slot; the run's own
+    # count of calls includes them once the batch is finished or given up.
+    calls_spent = 1 + VERIFICATION_RETRIES.failures(retry_key)
+    if distilled:
+        # The same verification as the live path (aura.extraction.verifier),
+        # when EXTRACTION_VERIFY_MODEL is set. A failed verification says
+        # nothing about the messages, so the batch is held and tried again
+        # (aura.extraction.verify_retry) instead of moved past.
+        verified = await verify_if_configured(
+            ordered,
+            distilled,
+            channel_name=channel_display_name(channel, channel.id),
+            settings=settings,
+        )
+        if isinstance(verified, VerificationUnavailable):
+            failures = VERIFICATION_RETRIES.record_failure(
+                retry_key,
+                now,
+                max_attempts=settings.extraction_verify_max_attempts,
+                base_delay_seconds=settings.extraction_verify_retry_delay_seconds,
+            )
+            if failures is not None:
+                logger.warning(
+                    "Verification failed for a %d-message backfill batch in run %s "
+                    "(attempt %d of %d); its cursor stays for a later attempt",
+                    len(ordered),
+                    run.id,
+                    failures,
+                    settings.extraction_verify_max_attempts,
+                )
+                return _VERIFICATION_HELD
+            logger.error(
+                "Giving up a %d-message backfill batch in run %s: its verification "
+                "failed on all %d attempt(s); moving past it",
+                len(ordered),
+                run.id,
+                settings.extraction_verify_max_attempts,
+            )
+            return 0, calls_spent
+        # An unusable reply (None) takes the failed-distillation path below.
+        distilled = verified
+    VERIFICATION_RETRIES.clear(retry_key)
     if distilled is None:
         # The call failed or its result could not be trusted -- distinct from the
         # model judging the batch empty. The slot stays spent (that is what
@@ -700,10 +762,10 @@ async def _distill_and_stage(
             len(ordered),
             run.id,
         )
-        return 0, 1
+        return 0, calls_spent
 
     if not distilled:
-        return 0, 1
+        return 0, calls_spent
 
     staged = await stage_distilled_candidates(
         db,
@@ -714,7 +776,7 @@ async def _distill_and_stage(
         settings=settings,
         now=now,
     )
-    return staged, 1
+    return staged, calls_spent
 
 
 async def _fail(db: aiosqlite.Connection, *, run: BackfillRun, now: datetime) -> None:
