@@ -115,12 +115,30 @@ def _key_pragma(key_hex: str) -> str:
     return f"\"x'{key_hex}'\""
 
 
+# SQLite's own wording for "these bytes are not a database (with this key)".
+_NOT_A_DATABASE: Final = "file is not a database"
+
+
 def _verify_readable(conn: _DbApiConnection, path: str, *, encrypted: bool) -> None:
-    """Read the schema once so a wrong key or a wrong file type fails here, not later."""
+    """Read the schema once so a wrong key or a wrong file type fails here, not later.
+
+    Notes
+    -----
+    Only SQLite's "file is not a database" means a wrong key (or the wrong
+    kind of file); every other failure -- a read-only directory where a WAL
+    file cannot be opened, a missing permission -- is reported as itself, so
+    a backup in the wrong place is never mistaken for a lost key. SQLite's
+    messages name the condition, never the file's content.
+    """
     try:
         conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
     except Exception as exc:
         conn.close()
+        if _NOT_A_DATABASE not in str(exc):
+            raise DatabaseOpenError(
+                f"{path}: cannot be read ({type(exc).__name__}: {str(exc)[:120]}). "
+                "Nothing was changed."
+            ) from exc
         if encrypted:
             raise DatabaseOpenError(
                 f"{path}: the configured key does not open this file (wrong key, or the "
@@ -476,7 +494,9 @@ def backup_database(source: str | Path, target: str | Path, key_hex: str | None)
     -------
     DatabaseReport
         The backup's report, read back from the written file -- a backup that
-        cannot be read back with the key raises instead of returning.
+        cannot be read back with the key raises instead of returning. The
+        backup is in rollback-journal mode: one self-contained file, readable
+        from a read-only location.
 
     Raises
     ------
@@ -493,6 +513,10 @@ def backup_database(source: str | Path, target: str | Path, key_hex: str | None)
             target_conn.execute(f"PRAGMA key = {_key_pragma(key_hex)}")
         try:
             source_conn.backup(target_conn)
+            # The copy inherits the live file's WAL mode, which needs a
+            # writable directory just to be read. A backup is a single,
+            # self-contained file instead, readable wherever it is stored.
+            target_conn.execute("PRAGMA journal_mode = DELETE").fetchone()
         finally:
             target_conn.close()
     finally:

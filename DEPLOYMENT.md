@@ -819,9 +819,15 @@ recorded deletion at start-up, bounded to data from before each deletion.
    manager). Repeat as `dry2-*`. Both must print `integrity=ok cipher=ok` and
    the SAME schema hash and row counts as the plaintext copy. Delete the dry
    files afterwards.
-4. Stop the bot: `docker compose stop aura`. `ls -la data/` must now show
-   no `aura.db-wal` and no `deletion-ledger.db-wal` (a clean close folds the
-   WAL into the file); if one is there, start and stop the bot once more.
+4. Stop the bot (`docker compose stop aura`), then fold the WAL into each
+   file -- the bot's stop does NOT do this (measured at the first switch,
+   2026-10-10: `aura.db-wal` was 4 MB after a stop). The files are still
+   plaintext here, so:
+   ```
+   docker compose run --rm --no-deps -T --entrypoint python aura -c "import sqlite3; [print(f, sqlite3.connect(f).execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()) for f in ('data/aura.db', 'data/deletion-ledger.db')]"
+   ```
+   The first number of each line must be `0`; `ls -la data/` then shows both
+   `-wal` files at size 0.
 5. Encrypt both files, keeping the plaintext ones until step 8:
    ```
    docker compose run --rm --no-deps --entrypoint python -e DATABASE_ENCRYPTION_KEY aura -m aura.db.maintenance encrypt data/aura.db data/aura.encrypted.db
@@ -848,10 +854,35 @@ start. After step 8: `python -m aura.db.maintenance decrypt` writes a
 plaintext copy with the key.
 
 **From then on, backups go through the container** (the host's `sqlite3`
-cannot read the file): `docker compose exec aura python -m aura.db.maintenance
-backup data/aura.db data/backup-<TS>.db`, then move the file into the backup
-folder; `verify <file>` reads one back. Reads for reports use the same tool
+cannot read the file -- it reports `file is not a database`). Verified on the
+live server on 2026-10-10; every step prints integrity, schema fingerprint and
+row counts only:
+```
+cd ~/projects/aura && TS=$(date -u +%Y%m%d-%H%M%S) && B=~/backups/aura-$TS-<why> && (umask 077; mkdir "$B")
+docker compose exec -T aura python -m aura.db.maintenance backup data/aura.db data/backup-$TS.db
+mv data/backup-$TS.db "$B/aura.db"
+docker compose run --rm --no-deps -T -v "$B":/check --entrypoint python aura -m aura.db.maintenance verify /check/aura.db
+```
+The first command must print `backup: integrity=ok cipher=ok`, the last
+`verify: integrity=ok cipher=ok` with the same schema and rows: the backup is
+encrypted with the same key and readable again from its folder. A backup made
+by an image older than the fix of 2026-10-10 is still in WAL mode and is read
+back only from a writable folder (as above, no `:ro`); newer backups are single
+files that read back from anywhere. Reads for reports use the same tool
 (counts only) or a decrypted copy that is deleted right after.
+
+**Fold the WAL before every whole-file operation.** The bot's stop leaves the
+write-ahead log beside the database. Before anything handles the files as files
+while the bot is stopped -- encrypt, decrypt, rekey, copying or restoring
+`data/aura.db`, moving `data/` -- fold it in, with the key from `.env`:
+```
+docker compose stop aura
+docker compose run --rm --no-deps -T --entrypoint python aura -c "import os; from aura.db.encryption import open_sync; [print(f, open_sync(f, os.environ['DATABASE_ENCRYPTION_KEY']).execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()) for f in ('data/aura.db', 'data/deletion-ledger.db')]"
+```
+(for a plaintext deployment, the plain `sqlite3` line of Gate 3a step 4). The
+first number must be `0`; never move or copy `aura.db` without its `-wal` when
+it is not empty. Online backups (`maintenance backup`) need no stop and no
+checkpoint: SQLite's backup API reads a consistent state including the WAL.
 
 **Rotating the key:** stop the bot; with `DATABASE_ENCRYPTION_KEY` (old) and
 `DATABASE_ENCRYPTION_NEW_KEY` (new) in the one-off container's environment run

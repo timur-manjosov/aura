@@ -234,6 +234,47 @@ class TestBackupAndRotation:
         with pytest.raises(DatabaseOpenError):
             inspect_database(tmp_path / "bak.db", _key())
 
+    def test_a_backup_of_a_live_wal_database_reads_back_from_a_read_only_folder(
+        self, plain: Path, tmp_path: Path
+    ) -> None:
+        key = _key()
+        live = tmp_path / "live.db"
+        export_encrypted(plain, live, key)
+        from aura.db.encryption import open_sync
+
+        conn = open_sync(live, key)
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.close()
+        shelf = tmp_path / "shelf"
+        shelf.mkdir()
+        backup_database(live, shelf / "bak.db", key)
+        shelf.chmod(0o500)
+        try:
+            report = inspect_database(shelf / "bak.db", key)
+        finally:
+            shelf.chmod(0o700)
+        assert (report.integrity, report.cipher_integrity) == ("ok", "ok")
+
+    def test_an_unreadable_location_is_not_reported_as_a_wrong_key(
+        self, plain: Path, tmp_path: Path
+    ) -> None:
+        key = _key()
+        live = tmp_path / "wal.db"
+        export_encrypted(plain, live, key)
+        from aura.db.encryption import open_sync
+
+        conn = open_sync(live, key)
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.close()
+        tmp_path.chmod(0o500)  # a WAL file cannot be created next to it
+        try:
+            with pytest.raises(DatabaseOpenError) as error:
+                inspect_database(live, key)
+        finally:
+            tmp_path.chmod(0o700)
+        assert "key" not in str(error.value)
+        assert "cannot be read" in str(error.value)
+
     def test_rotating_the_key_keeps_every_row(self, plain: Path, tmp_path: Path) -> None:
         old, new = _key(), _key()
         export_encrypted(plain, tmp_path / "enc.db", old)
