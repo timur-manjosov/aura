@@ -47,6 +47,7 @@ import aiosqlite
 from pydantic import BaseModel
 
 from aura.db.connection import connection_lock, utc_iso
+from aura.db.encryption import is_integrity_error
 
 # The states a worker may advance. Defined once and used by every read and every
 # guard that needs it, so "is this run live" cannot be answered one way by the
@@ -280,7 +281,11 @@ async def start_backfill_run(
             run_id = cursor.lastrowid
             assert run_id is not None  # guaranteed by sqlite after a successful INSERT
             await conn.commit()
-        except sqlite3.IntegrityError:
+        except Exception as error:
+            # sqlite3's IntegrityError, or SQLCipher's when the database is
+            # encrypted (P7a) -- a different class with the same meaning.
+            if not is_integrity_error(error):
+                raise
             await conn.rollback()
             existing = await _active_run_unlocked(conn, channel_id=channel_id)
             if existing is None:

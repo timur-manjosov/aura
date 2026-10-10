@@ -144,7 +144,8 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = true
 
 [[tool.mypy.overrides]]
-# Neither ships type information; both are used through narrow wrappers
-# (aura.embeddings, aura.synthesis) that annotate their own surface.
-module = ["fastembed.*", "litellm.*"]
+# None ships type information; each is used through a narrow wrapper
+# (aura.embeddings, aura.synthesis, aura.db.encryption) that annotates its own
+# surface.
+module = ["fastembed.*", "litellm.*", "sqlcipher3", "sqlcipher3.*"]
 ignore_missing_imports = true
