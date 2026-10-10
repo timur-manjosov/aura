@@ -90,6 +90,7 @@ async def add_fact(
     channel_id: int,
     message_id: int,
     content: str,
+    source_author_id: int | None = None,
 ) -> Fact:
     """Create a new active fact from a Discord message, embedding included.
 
@@ -103,6 +104,9 @@ async def add_fact(
         The origin reference.
     content
         The sentence a moderator entered.
+    source_author_id
+        The author of the message the fact was taken from (P7a), so a deletion
+        request can find it.
 
     Returns
     -------
@@ -130,6 +134,7 @@ async def add_fact(
         message_id=message_id,
         content=content,
         embedding=embedding.astype(EMBEDDING_DTYPE, copy=False).tobytes(),
+        source_author_id=source_author_id,
     )
     _schedule_variant_generation(conn, model, fact)
     return fact

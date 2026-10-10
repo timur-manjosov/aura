@@ -84,6 +84,10 @@ def _settings(**overrides) -> Settings:
     return Settings(_env_file=None, **values)  # type: ignore[call-arg]
 
 
+# A real discord.Message always has an integer author ID; P7a stores it.
+AUTHOR_ID = 900000000000000001
+
+
 def _message(
     *,
     content: str = "The server is down for maintenance today at 14:00 UTC.",
@@ -106,6 +110,7 @@ def _message(
     message.channel.name = "announcements"
     message.author = MagicMock()
     message.author.bot = bot
+    message.author.id = AUTHOR_ID
     message.webhook_id = webhook_id
     message.interaction_metadata = interaction_metadata
     message.type = message_type
