@@ -688,4 +688,8 @@ def test_every_background_task_the_client_starts_is_given_the_plan_gate() -> Non
         "run_extraction_sweeper": True,
         "run_digest_scheduler": True,
         "run_backfill_worker": True,
+        # P7a: the purge job is deliberately NOT given the plan gate -- what is
+        # deleted never depends on a server's plan, so a downgrade or a
+        # cancellation can never delete anything (R4).
+        "run_purge_sweeper": False,
     }

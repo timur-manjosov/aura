@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from aura.db.encryption import validate_database_key
 
 ENV_EXAMPLE_HINT = "Copy .env.example to .env and fill in the required values."
 
@@ -69,6 +72,9 @@ def require_strong_internal_api_secret(value: str) -> str:
 # goes into a SQLite INTEGER, which is signed 64-bit -- the binding raises past
 # this value, so a configured ID beyond it is refused at startup instead.
 MAX_SQLITE_INTEGER = 2**63 - 1
+
+# The longest PRIVACY_CONTACT accepted; it is shown inside a Discord message.
+MAX_PRIVACY_CONTACT_LENGTH = 200
 
 
 class ModelComponent(StrEnum):
@@ -186,6 +192,24 @@ class MessageLook(StrEnum):
 
     CLASSIC = "classic"
     CARD = "card"
+
+
+class DataPurgeMode(StrEnum):
+    """What the P7a purge job does with data that is due for deletion.
+
+    REPORT (the default): compute exactly what would be deleted -- the same
+    statements, rolled back -- and log the counts per table. Nothing is
+    deleted. This is how the job ships, so its numbers can be reviewed before
+    anything is destroyed.
+
+    DELETE: delete it. Covers the purge of a server Aura left more than
+    GUILD_PURGE_GRACE_DAYS ago and the retention rules for diagnostic rows.
+    Deletions someone REQUESTED (a member, an admin, a moderator, the
+    operator) never wait for this switch; DATA_DELETION_ENABLED governs those.
+    """
+
+    REPORT = "report"
+    DELETE = "delete"
 
 
 class ConfigurationError(Exception):
@@ -1508,6 +1532,42 @@ class Settings(BaseSettings):
     internal_api_host: str = "127.0.0.1"
     internal_api_port: int = Field(default=8081, ge=1, le=65535)
 
+    # --- Data obligations (P7a) ------------------------------------------------
+    # Encryption at rest (SQLCipher) for the database and the deletion ledger:
+    # 64 hex characters, unset = plaintext exactly as before. Switching it on is
+    # a migration (python -m aura.db.maintenance encrypt), never just a setting
+    # change: with a key set, a plaintext or missing file is refused at start.
+    database_encryption_key: SecretStr | None = None
+    # The content-free record of every executed deletion, kept in its own file
+    # so restoring a database backup never restores it; re-applied at every
+    # start and every purge tick (aura.privacy.ledger).
+    deletion_ledger_path: str = "data/deletion-ledger.db"
+    # What the purge job does with due data: report (default) or delete.
+    data_purge_mode: DataPurgeMode = DataPurgeMode.REPORT
+    # Days between Aura leaving a server and that server's data being purged.
+    guild_purge_grace_days: int = Field(default=30, ge=1, le=365)
+    data_purge_check_interval_seconds: float = Field(
+        default=3600.0, ge=60.0, le=86400.0, allow_inf_nan=False
+    )
+    # Retention of rows that are no longer needed (each at least one day, so
+    # today's caps and cooldowns always see their rows).
+    proactive_signal_retention_days: int = Field(default=90, ge=1, le=3650)
+    ask_member_id_retention_days: int = Field(default=2, ge=1, le=3650)
+    onboarding_send_retention_days: int = Field(default=30, ge=1, le=3650)
+    # The four deletion paths (member, server admin, moderator, operator).
+    data_deletion_enabled: bool = False
+    # /aura-export for server admins, and the minimum pause between two exports
+    # of one server.
+    data_export_enabled: bool = False
+    export_cooldown_seconds: float = Field(default=600.0, ge=60.0, le=86400.0, allow_inf_nan=False)
+    # /aura-privacy, the privacy line under every answer, the notice in a
+    # channel when capture is switched on, and the line in the welcome card.
+    privacy_info_enabled: bool = False
+    privacy_policy_url: str | None = None
+    privacy_contact: str | None = None
+    # The "AI-generated" label on both answer types.
+    ai_label_enabled: bool = False
+
     log_level: str = "INFO"
 
     @field_validator("discord_token")
@@ -1618,6 +1678,91 @@ class Settings(BaseSettings):
         if not stripped:
             raise ValueError("INTERNAL_API_HOST must not be blank.")
         return stripped
+
+    @field_validator(
+        "database_encryption_key", "privacy_policy_url", "privacy_contact", mode="before"
+    )
+    @classmethod
+    def _blank_privacy_setting_means_unset(cls, value: object) -> object:
+        """Treat the P7a optional strings left blank in .env as unset."""
+        if isinstance(value, SecretStr):
+            stripped_secret = value.get_secret_value().strip()
+            return SecretStr(stripped_secret) if stripped_secret else None
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @field_validator("database_encryption_key")
+    @classmethod
+    def _database_key_is_hex(cls, value: SecretStr | None) -> SecretStr | None:
+        """Refuse a key that is not exactly 64 hex characters, without echoing it."""
+        if value is None:
+            return None
+        return SecretStr(validate_database_key(value.get_secret_value()))
+
+    @field_validator("privacy_policy_url")
+    @classmethod
+    def _privacy_url_is_absolute_https(cls, value: str | None) -> str | None:
+        """A privacy link must open in every client: an absolute https URL."""
+        if value is None:
+            return None
+        parsed = urlparse(value)
+        if parsed.scheme != "https" or not parsed.netloc or any(c.isspace() for c in value):
+            raise ValueError(f"PRIVACY_POLICY_URL must be an absolute https URL, got {value!r}.")
+        return value
+
+    @field_validator("privacy_contact")
+    @classmethod
+    def _privacy_contact_is_one_short_line(cls, value: str | None) -> str | None:
+        """A contact is shown inside a message: one printable line, bounded."""
+        if value is None:
+            return None
+        if len(value) > MAX_PRIVACY_CONTACT_LENGTH or not value.isprintable():
+            raise ValueError(
+                f"PRIVACY_CONTACT must be one printable line of at most "
+                f"{MAX_PRIVACY_CONTACT_LENGTH} characters."
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _privacy_switches_have_what_they_show(self) -> Settings:
+        """Refuse switches that would show a broken or missing path to the member.
+
+        /aura-privacy without a link or a contact would tell members to ask
+        "someone" -- exactly the gap it exists to close. The member's deletion
+        button lives in /aura-privacy, so deletion without it would leave
+        members, alone among the four paths, without a way in.
+        """
+        if self.privacy_info_enabled and (
+            self.privacy_policy_url is None or self.privacy_contact is None
+        ):
+            raise ValueError(
+                "PRIVACY_INFO_ENABLED=true requires PRIVACY_POLICY_URL and PRIVACY_CONTACT."
+            )
+        if Path(self.deletion_ledger_path).resolve() == Path(self.database_path).resolve():
+            raise ValueError(
+                "DELETION_LEDGER_PATH must not be DATABASE_PATH: the ledger must never be "
+                "restored together with a database backup."
+            )
+        if self.data_deletion_enabled and not self.privacy_info_enabled:
+            raise ValueError(
+                "DATA_DELETION_ENABLED=true requires PRIVACY_INFO_ENABLED=true: members "
+                "ask for deletion through /aura-privacy."
+            )
+        return self
+
+    @property
+    def database_key_hex(self) -> str | None:
+        """Return the validated database key, or None for a plaintext database.
+
+        Returns
+        -------
+        str or None
+            64 lower-case hex characters.
+        """
+        if self.database_encryption_key is None:
+            return None
+        return self.database_encryption_key.get_secret_value()
 
     @model_validator(mode="after")
     def _enforced_billing_needs_the_internal_api(self) -> Settings:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
@@ -377,6 +378,22 @@ class TestBackgroundTasks:
             await client.close()
 
 
+@pytest.fixture(autouse=True)
+def _p7a_startup_isolated() -> Iterator[None]:
+    """Keep P7a's start-up steps (migration, ledger file, purge job) out of these wiring tests.
+
+    They open real files and start a task that runs forever; their own tests
+    are in test_deletion_ledger.py and test_p7a_wiring.py.
+    """
+    with (
+        patch("aura.main.verify_data_obligations_schema", AsyncMock(return_value=[])),
+        patch("aura.main.DeletionLedger.open", AsyncMock(return_value=MagicMock())),
+        patch("aura.main.reapply_ledger", AsyncMock()),
+        patch("aura.main.run_purge_sweeper", AsyncMock()),
+    ):
+        yield
+
+
 class TestBackfillWiring:
     """Phase 3b's worker is started once, with the dependencies it must share.
 
@@ -408,7 +425,7 @@ class TestBackfillWiring:
             await asyncio.Event().wait()
 
         with (
-            patch("aura.main.aiosqlite.connect", AsyncMock(return_value=client.db)),
+            patch("aura.main.connect_database", AsyncMock(return_value=client.db)),
             patch("aura.main.load_subscription_records", AsyncMock(return_value=[])),
             patch("aura.main.init_schema", AsyncMock()),
             patch("aura.main.verify_signal_schema", AsyncMock()),
@@ -447,7 +464,7 @@ class TestBackfillWiring:
         client.embedding_model = MagicMock()
 
         with (
-            patch("aura.main.aiosqlite.connect", AsyncMock(return_value=client.db)),
+            patch("aura.main.connect_database", AsyncMock(return_value=client.db)),
             patch("aura.main.load_subscription_records", AsyncMock(return_value=[])),
             patch("aura.main.init_schema", AsyncMock()),
             patch("aura.main.verify_signal_schema", AsyncMock()),
@@ -469,7 +486,7 @@ class TestBackfillWiring:
 def _setup_hook_patches(client: AuraClient, *, records: list[object] | None = None):
     """Everything setup_hook touches outside billing, replaced; billing left real unless patched."""
     return (
-        patch("aura.main.aiosqlite.connect", AsyncMock(return_value=client.db)),
+        patch("aura.main.connect_database", AsyncMock(return_value=client.db)),
         patch("aura.main.load_subscription_records", AsyncMock(return_value=records or [])),
         patch("aura.main.init_schema", AsyncMock()),
         patch("aura.main.verify_signal_schema", AsyncMock()),
