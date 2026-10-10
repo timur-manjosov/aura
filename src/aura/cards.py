@@ -209,6 +209,7 @@ def build_onboarding_card(
     locale: str,
     server_name: str,
     channel_names: Mapping[int, str],
+    privacy_line: bool = False,
 ) -> AnswerCard:
     """Render an assembled onboarding summary as a card.
 
@@ -223,6 +224,9 @@ def build_onboarding_card(
         escaped wherever it renders as markup.
     channel_names
         Channel names by channel id, for every fact shown.
+    privacy_line
+        PRIVACY_INFO_ENABLED (P7a): add the line telling new members that Aura
+        reads some channels, and where to read more.
 
     Returns
     -------
@@ -264,6 +268,8 @@ def build_onboarding_card(
     footer = t("onboarding_card_footer", locale)
     if content.omitted_count > 0:
         footer += " " + t("onboarding_capped_note", locale, count=content.omitted_count)
+    if privacy_line:
+        footer += " " + t("privacy_welcome_line", locale)
     return AnswerCard(
         kind=MessageKind.ONBOARDING,
         top_line=(

@@ -42,7 +42,8 @@ from aura.db.connection import connection_lock, utc_iso
 MAX_BATCH_WINDOW_SECONDS = 24 * 60 * 60.0
 
 _QUEUED_COLUMNS = (
-    "channel_id, message_id, guild_id, channel_name, content, message_created_at, enqueued_at"
+    "channel_id, message_id, guild_id, channel_name, content, message_created_at, enqueued_at, "
+    "author_id"
 )
 
 
@@ -61,6 +62,10 @@ class QueuedMessage(BaseModel):
         When Discord says the message was written.
     enqueued_at
         When Aura queued it.
+    author_id
+        The message's author (P7a), carried onto any candidate distilled from
+        it so a deletion request can find that candidate. None for a message
+        queued before P7a.
 
     Notes
     -----
@@ -79,6 +84,7 @@ class QueuedMessage(BaseModel):
     content: str
     message_created_at: datetime
     enqueued_at: datetime
+    author_id: int | None = None
 
 
 def _row_to_queued_message(row: sqlite3.Row) -> QueuedMessage:
@@ -90,6 +96,7 @@ def _row_to_queued_message(row: sqlite3.Row) -> QueuedMessage:
         content=row[4],
         message_created_at=row[5],
         enqueued_at=row[6],
+        author_id=row[7],
     )
 
 
@@ -103,6 +110,7 @@ async def enqueue_message(
     content: str,
     message_created_at: datetime,
     now: datetime,
+    author_id: int | None = None,
 ) -> bool:
     """Add one message to its channel's pending batch.
 
@@ -121,6 +129,8 @@ async def enqueue_message(
         Discord's own timestamp for the message.
     now
         When it was queued.
+    author_id
+        The message's author (P7a).
 
     Returns
     -------
@@ -149,8 +159,8 @@ async def enqueue_message(
             """
             INSERT INTO extraction_queue
                 (channel_id, message_id, guild_id, channel_name, content,
-                 message_created_at, enqueued_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 message_created_at, enqueued_at, author_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (channel_id, message_id) DO NOTHING
             """,
             (
@@ -161,6 +171,7 @@ async def enqueue_message(
                 content,
                 utc_iso(message_created_at),
                 utc_iso(now),
+                author_id,
             ),
         )
         await conn.commit()

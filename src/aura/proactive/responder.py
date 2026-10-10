@@ -83,6 +83,8 @@ from aura.answer_card import (
     card_to_embed,
     card_to_layout_view,
     components_v2_available,
+    label_legacy_embed,
+    with_answer_labels,
 )
 from aura.answer_check import build_statements, verify_answer_v2
 from aura.answer_contract import synthesize_contract_answer
@@ -99,6 +101,7 @@ from aura.grounding import (
 from aura.i18n import DEFAULT_LOCALE, t
 from aura.links_service import expand_with_linked_facts
 from aura.llm_request_options import openrouter_extra_body, parse_provider_list
+from aura.rendering import source_link
 from aura.synthesis import SynthesisResult, synthesize_answer
 
 logger = logging.getLogger(__name__)
@@ -270,10 +273,7 @@ def _build_proactive_embed(
 
     cited_facts = [fact for fact in facts if fact.id in result.used_fact_ids]
     if cited_facts:
-        links = "\n".join(
-            f"https://discord.com/channels/{fact.guild_id}/{fact.channel_id}/{fact.message_id}"
-            for fact in cited_facts
-        )
+        links = "\n".join(source_link(fact) for fact in cited_facts)
         embed.add_field(name=t("ask_sources_label", locale), value=links, inline=False)
 
     embed.set_footer(text=t("proactive_reply_footer", locale))
@@ -391,6 +391,14 @@ async def _respond_in_v2(
     if _stale(freshness, settings, channel):
         return ProactiveResponseOutcome(answers_question=answer.answers_question, posted=False)
 
+    # P7a: the AI label and the privacy line, added after the check (they are
+    # template text, never checked) and only when switched on.
+    card = with_answer_labels(
+        card,
+        locale=locale,
+        ai_label=settings.ai_label_enabled,
+        privacy_line=settings.privacy_info_enabled,
+    )
     try:
         if settings.answer_card_style is CardStyle.CONTAINER and components_v2_available():
             await channel.send(
@@ -643,7 +651,12 @@ async def respond_with_synthesis(
     # It must be synthesis_facts rather than relevant_facts, though -- a source
     # link for a fact the model cited through a link has to survive into the
     # embed, and filtering against the narrower list would silently drop it.
-    embed = _build_proactive_embed(result, synthesis_facts, locale)
+    embed = label_legacy_embed(
+        _build_proactive_embed(result, synthesis_facts, locale),
+        locale=locale,
+        ai_label=settings.ai_label_enabled,
+        privacy_line=settings.privacy_info_enabled,
+    )
     try:
         await channel.send(embed=embed)
     except Exception:

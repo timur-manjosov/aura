@@ -14,6 +14,14 @@ services:
       INTERNAL_API_HOST: "0.0.0.0"
     volumes:
       - ./data:/app/data
+    # P7a: the bot's log is bounded like the web containers' (5 x 10 MB). It
+    # holds no message or fact text and no member IDs; the bound keeps it from
+    # growing without end between deploys (each recreate starts a new log).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     networks:
       default: {}
       aura-billing:

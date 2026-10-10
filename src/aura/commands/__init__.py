@@ -3,13 +3,16 @@
 from aura.commands.ask import register_ask_command
 from aura.commands.backfill import register_backfill_command
 from aura.commands.config import register_config_command
+from aura.commands.data_admin import register_data_admin_commands
 from aura.commands.digest import register_digest_command
 from aura.commands.facts import register_fact_commands
 from aura.commands.links import register_link_commands
 from aura.commands.onboarding import register_onboarding_command
 from aura.commands.operator import register_operator_commands
+from aura.commands.operator_privacy import register_operator_privacy_commands
 from aura.commands.pending import register_pending_command
 from aura.commands.plan import register_plan_command
+from aura.commands.privacy import register_privacy_command
 from aura.commands.proactive import register_proactive_commands
 from aura.commands.supersede import register_supersede_command
 
@@ -17,13 +20,16 @@ __all__ = [
     "register_ask_command",
     "register_backfill_command",
     "register_config_command",
+    "register_data_admin_commands",
     "register_digest_command",
     "register_fact_commands",
     "register_link_commands",
     "register_onboarding_command",
     "register_operator_commands",
+    "register_operator_privacy_commands",
     "register_pending_command",
     "register_plan_command",
+    "register_privacy_command",
     "register_proactive_commands",
     "register_supersede_command",
 ]

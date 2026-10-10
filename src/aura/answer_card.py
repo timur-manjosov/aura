@@ -407,6 +407,79 @@ def build_answer_card(
     return card
 
 
+# Joins a label to the line it is added to (top line or footer).
+LABEL_SEPARATOR: Final = " · "
+
+
+def with_answer_labels(
+    card: AnswerCard, *, locale: str, ai_label: bool, privacy_line: bool
+) -> AnswerCard:
+    """Add P7a's "AI-generated" label and privacy line to an answer card.
+
+    Parameters
+    ----------
+    card
+        A finished card.
+    locale
+        The reader's locale.
+    ai_label
+        AI_LABEL_ENABLED: put the label in front of the top line (or make it
+        the top line), where every look shows it and no length rule drops it
+        before the answer.
+    privacy_line
+        PRIVACY_INFO_ENABLED: add "Privacy: /aura-privacy" to the footer.
+
+    Returns
+    -------
+    AnswerCard
+        `card` itself, unchanged, when both are off -- so with the defaults
+        every card is byte for byte what it was.
+    """
+    if not ai_label and not privacy_line:
+        return card
+    top_line = card.top_line
+    footer = card.footer
+    if ai_label:
+        label = t("ai_label", locale)
+        top_line = f"{label}{LABEL_SEPARATOR}{top_line}" if top_line else label
+    if privacy_line:
+        privacy = t("privacy_answer_footer", locale)
+        footer = f"{footer}{LABEL_SEPARATOR}{privacy}" if footer else privacy
+    return replace(card, top_line=top_line, footer=footer)
+
+
+def label_legacy_embed(
+    embed: discord.Embed, *, locale: str, ai_label: bool, privacy_line: bool
+) -> discord.Embed:
+    """Add the same label and privacy line to a legacy-format answer embed.
+
+    Parameters
+    ----------
+    embed
+        A legacy /aura-ask or proactive answer embed; changed in place.
+    locale
+        The reader's locale.
+    ai_label, privacy_line
+        As for `with_answer_labels`.
+
+    Returns
+    -------
+    discord.Embed
+        The same embed, untouched when both are off.
+    """
+    if ai_label:
+        label = t("ai_label", locale)
+        current = embed.author.name
+        embed.set_author(name=f"{label}{LABEL_SEPARATOR}{current}" if current else label)
+    if privacy_line:
+        privacy = t("privacy_answer_footer", locale)
+        current_footer = embed.footer.text
+        embed.set_footer(
+            text=f"{current_footer}{LABEL_SEPARATOR}{privacy}" if current_footer else privacy
+        )
+    return embed
+
+
 def build_fact_list_card(
     kind: MessageKind, note: str, facts: Sequence[Fact], *, question: str | None
 ) -> AnswerCard:

@@ -19,19 +19,27 @@ from aura.commands import (
     register_ask_command,
     register_backfill_command,
     register_config_command,
+    register_data_admin_commands,
     register_digest_command,
     register_fact_commands,
     register_link_commands,
     register_onboarding_command,
     register_operator_commands,
+    register_operator_privacy_commands,
     register_pending_command,
     register_plan_command,
+    register_privacy_command,
     register_proactive_commands,
     register_supersede_command,
 )
 from aura.config import ConfigurationError, ModelComponent, Settings, load_settings
 from aura.db import init_schema
+from aura.db.connection import utc_now
+from aura.db.deletion import guilds_with_data
+from aura.db.encryption import DatabaseOpenError, connect_database
+from aura.db.guild_departures import clear_departure, mark_departed, reconcile_departures
 from aura.db.pending_facts import verify_pending_facts_schema
+from aura.db.privacy_schema import verify_data_obligations_schema
 from aura.db.proactive_signals import OutdatedDiagnosticTableError, verify_signal_schema
 from aura.db.subscriptions import load_subscription_records, verify_subscriptions_schema
 from aura.digest import ClientDigestGateway, run_digest_scheduler
@@ -45,6 +53,11 @@ from aura.extraction import (
 from aura.i18n import DEFAULT_LOCALE, TranslationLoadError, Translator, get_translator
 from aura.logging_config import configure_logging
 from aura.onboarding import ClientOnboardingGateway, handle_member_join
+from aura.privacy.author_lookup import run_author_lookup
+from aura.privacy.gateway import ClientGuildPresence, ClientMessageAuthorSource
+from aura.privacy.ledger import DeletionLedger
+from aura.privacy.requests import reapply_ledger
+from aura.privacy.sweeper import run_purge_sweeper
 from aura.proactive import GraceRegistry, ProactiveGateConfig, QuestionDetector, handle_message
 from aura.retrieval.hybrid import HybridRetrievalConfig
 from aura.retrieval.stopwords import StopwordLoadError, shipped_stopword_lists
@@ -103,6 +116,12 @@ class AuraClient(discord.Client):
         # before anything that could ask either question has started.
         self.plan_gate: PlanGate | None = None
         self.internal_api: InternalApiServer | None = None
+        # P7a: the deletion ledger (its own file), the purge job, and the
+        # one-time author lookup that runs once the gateway is ready when
+        # deletion is switched on.
+        self.deletion_ledger: DeletionLedger | None = None
+        self.purge_sweeper: asyncio.Task[None] | None = None
+        self.author_lookup: asyncio.Task[None] | None = None
 
     async def setup_hook(self) -> None:
         """Open the database, load the embedding model, and sync commands -- once.
@@ -113,7 +132,12 @@ class AuraClient(discord.Client):
         receiving events -- not be silently repeated (or raced) on a
         reconnect.
         """
-        self.db = await aiosqlite.connect(self.settings.database_path)
+        # P7a: plaintext exactly as before unless DATABASE_ENCRYPTION_KEY is
+        # set; a key that does not fit, or a plaintext/missing file with a key,
+        # raises DatabaseOpenError here and the process stops with that reason.
+        self.db = await connect_database(
+            self.settings.database_path, self.settings.database_key_hex
+        )
         await init_schema(self.db)
         # CREATE TABLE IF NOT EXISTS cannot reshape a table that already
         # exists, so a database carried over from Phase 2a-1 would keep its
@@ -130,7 +154,30 @@ class AuraClient(discord.Client):
         # guild_subscriptions: additive, so migrated in place before the plan
         # gate below reads a single row.
         await verify_subscriptions_schema(self.db)
-        logger.info("Database ready at %s", self.settings.database_path)
+        # P7a's additive columns (authors, the capture-notice mark) and the
+        # departures table's indexes, migrated in place.
+        added = await verify_data_obligations_schema(self.db)
+        if added:
+            logger.info("Database migrated: added %s", ", ".join(added))
+        logger.info(
+            "Database ready at %s (%s)",
+            self.settings.database_path,
+            "encrypted at rest" if self.settings.database_key_hex else "not encrypted",
+        )
+
+        # P7a: the deletion ledger, re-applied before any event can read the
+        # database, so a restored backup never serves a deleted row.
+        self.deletion_ledger = await DeletionLedger.open(
+            self.settings.deletion_ledger_path, self.settings.database_key_hex
+        )
+        await reapply_ledger(self.db, self.deletion_ledger)
+        self.purge_sweeper = asyncio.create_task(
+            run_purge_sweeper(
+                self.db, self.deletion_ledger, ClientGuildPresence(self), settings=self.settings
+            )
+        )
+        if self.settings.data_deletion_enabled:
+            self.author_lookup = asyncio.create_task(self._lookup_authors_when_ready())
 
         # Phase 4c: the plan gate is built from every stored subscription
         # before any background task starts or any event arrives, so no Pro
@@ -344,6 +391,27 @@ class AuraClient(discord.Client):
         register_backfill_command(self.tree)
         register_operator_commands(self.tree)
         register_plan_command(self.tree)
+        # P7a: registered only when switched on, so with the defaults the
+        # command list every server sees is exactly what it was.
+        if self.settings.privacy_info_enabled:
+            register_privacy_command(self.tree)
+        register_data_admin_commands(
+            self.tree,
+            deletion=self.settings.data_deletion_enabled,
+            export=self.settings.data_export_enabled,
+        )
+        if self.settings.data_deletion_enabled:
+            register_operator_privacy_commands(self.tree)
+        logger.info(
+            "Data obligations: purge job %s after %d day(s), deletion %s, export %s, privacy "
+            "info %s, AI label %s",
+            self.settings.data_purge_mode.value,
+            self.settings.guild_purge_grace_days,
+            "on" if self.settings.data_deletion_enabled else "off",
+            "on" if self.settings.data_export_enabled else "off",
+            "on" if self.settings.privacy_info_enabled else "off",
+            "on" if self.settings.ai_label_enabled else "off",
+        )
 
         # Global sync; Discord can take up to an hour to propagate new or
         # changed commands globally. Sync to a specific guild instead
@@ -371,7 +439,13 @@ class AuraClient(discord.Client):
         if self.internal_api is not None:
             await self.internal_api.stop()
             self.internal_api = None
-        for task_name in ("extraction_sweeper", "digest_scheduler", "backfill_worker"):
+        for task_name in (
+            "extraction_sweeper",
+            "digest_scheduler",
+            "backfill_worker",
+            "purge_sweeper",
+            "author_lookup",
+        ):
             task: asyncio.Task[None] | None = getattr(self, task_name)
             if task is None:
                 continue
@@ -381,6 +455,9 @@ class AuraClient(discord.Client):
             with suppress(asyncio.CancelledError):
                 await task
             setattr(self, task_name, None)
+        if self.deletion_ledger is not None:
+            await self.deletion_ledger.close()
+            self.deletion_ledger = None
         if self.db is not None:
             await self.db.close()
         await super().close()
@@ -588,12 +665,107 @@ class AuraClient(discord.Client):
         )
 
     async def on_ready(self) -> None:
-        """Log a clear, greppable line once the gateway connection is live."""
+        """Log a clear, greppable line once the gateway is live, then reconcile departures.
+
+        Notes
+        -----
+        P7a: a server Aura was removed from while offline sends no event; the
+        reconciliation here marks it (its period starts now), and clears the
+        mark of a server Aura is back in. on_ready fires again after a
+        reconnect, which only repeats an idempotent comparison. The guild list
+        includes temporarily unavailable servers, so an outage never reads as
+        a departure.
+        """
         logger.info(
             "Aura is ready: logged in as %s, serving %d guild(s)",
             self.user,
             len(self.guilds),
         )
+        if self.db is None:
+            return
+        try:
+            marked, cleared = await reconcile_departures(
+                self.db,
+                guilds_with_data=await guilds_with_data(self.db),
+                present_guild_ids={guild.id for guild in self.guilds},
+                now=utc_now(),
+                grace_days=self.settings.guild_purge_grace_days,
+            )
+        except Exception:
+            logger.exception("Could not reconcile the servers Aura has left")
+            return
+        if marked or cleared:
+            logger.info(
+                "Departures reconciled: %d server(s) newly marked as left, %d returned",
+                marked,
+                cleared,
+            )
+
+    async def on_guild_remove(self, guild: discord.Guild) -> None:
+        """Mark a server Aura was removed from; its data is purged after the period (P7a).
+
+        Parameters
+        ----------
+        guild
+            The server Aura is no longer in.
+
+        Returns
+        -------
+        None
+        """
+        if self.db is None:
+            return
+        try:
+            if await mark_departed(
+                self.db,
+                guild_id=guild.id,
+                now=utc_now(),
+                grace_days=self.settings.guild_purge_grace_days,
+            ):
+                logger.info(
+                    "Aura left server %s; its data is due for purging in %d day(s)",
+                    guild.id,
+                    self.settings.guild_purge_grace_days,
+                )
+        except Exception:
+            logger.exception("Could not record that Aura left server %s", guild.id)
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        """Clear a pending purge when Aura returns to a server within the period (P7a).
+
+        Parameters
+        ----------
+        guild
+            The server Aura joined.
+
+        Returns
+        -------
+        None
+        """
+        if self.db is None:
+            return
+        try:
+            if await clear_departure(self.db, guild_id=guild.id):
+                logger.info("Aura is back in server %s; its data is kept", guild.id)
+        except Exception:
+            logger.exception("Could not clear the departure of server %s", guild.id)
+
+    async def _lookup_authors_when_ready(self) -> None:
+        """Fill in the authors of sources stored before P7a, once the gateway is ready.
+
+        A background task: paced, backing off on Discord's rate limit, and
+        resumable after a restart (see aura.privacy.author_lookup). Content-free:
+        only author IDs are stored.
+        """
+        await self.wait_until_ready()
+        if self.db is None:
+            return
+        try:
+            await run_author_lookup(self.db, ClientMessageAuthorSource(self))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Author lookup failed; run it again from the operator command")
 
 
 def build_intents() -> discord.Intents:
@@ -709,6 +881,11 @@ def main() -> None:
             "Discord rejected the bot token. Check DISCORD_TOKEN in .env — "
             "it may be invalid, revoked, or copied incorrectly."
         )
+        sys.exit(1)
+    except DatabaseOpenError as exc:
+        # P7a: a key that does not open the file, an encrypted file without a
+        # key, or a missing file with a key. Nothing was created or changed.
+        logger.critical("Startup aborted: %s", exc)
         sys.exit(1)
     except OutdatedDiagnosticTableError as exc:
         # Raised out of setup_hook, so this is a startup problem with an

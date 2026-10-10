@@ -36,6 +36,7 @@ from aura.commands.plan import pro_feature_refusal, send_pro_refusal
 from aura.db.extraction_channel_config import set_extraction_enabled
 from aura.db.proactive_channel_config import set_channel_enabled
 from aura.i18n import t
+from aura.privacy.notices import post_capture_notice_once
 
 if TYPE_CHECKING:
     from aura.main import AuraClient
@@ -163,6 +164,13 @@ async def config_command(
     # Ephemeral: a configuration confirmation is for the moderator who ran it,
     # not an announcement to the channel.
     await send_confirmation(interaction, message)
+
+    # P7a: the members of a channel whose messages Aura starts reading are
+    # told so, once, in that channel -- after the confirmation, so a slow or
+    # refused post never delays or fails the moderator's own reply.
+    if extraction is True and interaction.client.settings.privacy_info_enabled:
+        guild_locale = str(getattr(interaction.guild, "preferred_locale", None) or locale)
+        await post_capture_notice_once(db, channel, locale=guild_locale)
 
 
 config_command.error(_handle_config_command_error)

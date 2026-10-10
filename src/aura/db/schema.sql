@@ -8,7 +8,14 @@ CREATE TABLE IF NOT EXISTS facts (
     status TEXT NOT NULL CHECK (status IN ('active', 'superseded')) DEFAULT 'active',
     superseded_by_id INTEGER REFERENCES facts(id),
     created_at TEXT NOT NULL,
-    superseded_at TEXT
+    superseded_at TEXT,
+    -- P7a: the Discord user who wrote the source message, kept so a member's
+    -- deletion request can find what was taken from their messages even after
+    -- the message itself is gone. NULL = never looked up (rows from before
+    -- P7a), 0 = looked up and unknown. A deletion request deletes the row or
+    -- clears this column with the message link. Not a knowledge-model
+    -- component: like `embedding`, it is derived from the origin reference.
+    source_author_id INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_facts_guild_status ON facts(guild_id, status);
@@ -228,7 +235,10 @@ CREATE TABLE IF NOT EXISTS extraction_channel_config (
     guild_id INTEGER NOT NULL,
     extraction_enabled INTEGER NOT NULL CHECK (extraction_enabled IN (0, 1)),
     updated_by_id INTEGER NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    -- P7a: when Aura posted its one-time "messages here are read" notice in
+    -- this channel; NULL = never. Set once, never cleared.
+    privacy_notice_posted_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_extraction_channel_config_guild
@@ -269,6 +279,9 @@ CREATE TABLE IF NOT EXISTS extraction_queue (
     content TEXT NOT NULL,
     message_created_at TEXT NOT NULL,
     enqueued_at TEXT NOT NULL,
+    -- P7a: the message's author, so a deletion request can remove a message
+    -- still waiting here. NULL only for rows queued before P7a (minutes).
+    author_id INTEGER,
     PRIMARY KEY (channel_id, message_id)
 );
 
@@ -369,6 +382,8 @@ CREATE TABLE IF NOT EXISTS pending_facts (
     created_at TEXT NOT NULL,
     resolved_at TEXT,
     resolved_by_id INTEGER,
+    -- P7a: the source message's author; same meaning as facts.source_author_id.
+    source_author_id INTEGER,
     UNIQUE (channel_id, message_id, content)
 );
 
@@ -903,4 +918,25 @@ CREATE TABLE IF NOT EXISTS stripe_processed_events (
     event_type TEXT NOT NULL,
     subscription_id TEXT NOT NULL,
     processed_at TEXT NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- P7a: servers Aura has left, waiting for their data to be purged.
+-- ---------------------------------------------------------------------------
+
+-- One row per server Aura is no longer a member of while it still holds data
+-- for it. Written when Discord reports the removal (on_guild_remove) or when
+-- the start-up reconciliation finds a server with data that Aura is not in;
+-- deleted when Aura returns within the period (nothing is lost) or by the
+-- purge itself. purge_after = left_at + GUILD_PURGE_GRACE_DAYS, stored rather
+-- than recomputed, so a later change of the setting never shortens a period
+-- already announced to that server.
+--
+-- Not a knowledge-model table and not a record of anyone: a guild ID and two
+-- timestamps.
+CREATE TABLE IF NOT EXISTS guild_departures (
+    guild_id INTEGER PRIMARY KEY,
+    left_at TEXT NOT NULL,
+    purge_after TEXT NOT NULL,
+    CHECK (purge_after >= left_at)
 );

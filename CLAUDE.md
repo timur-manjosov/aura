@@ -10,7 +10,7 @@ Aura is a Discord bot with exactly one function: **it knows the server.**
 
 - **Fact** — one distilled sentence, not a duplicated copy of the raw message, plus a reference to its origin via Discord channel ID + message ID. Discord permalinks make this reference resolvable, so the original text never has to be stored twice.
 - **Timestamp** — when the fact was created or last changed.
-- **Status** — active or superseded, chained to its successor fact. Old facts are never deleted, only marked superseded, so the history of what used to be true stays intact.
+- **Status** — active or superseded, chained to its successor fact. Old facts are never deleted, only marked superseded, so the history of what used to be true stays intact. (The one exception is a deletion the law or Discord's terms require — see "Data Obligations (P7a)" below.)
 - **Link** — thematically related facts, even ones spread across time and different channels, are pulled together into one synthesized answer with multiple source citations, instead of being returned as isolated fragments.
 
 Everything Aura does is **one mechanism with four different triggers**, all operating on this same knowledge model — there is no fifth function, and no function that works any other way:
@@ -37,6 +37,7 @@ Do not add, even if it seems like a natural extension:
 
 - `discord.py` — Discord API, bot framework, slash commands
 - `aiosqlite` — async SQLite access (never block the event loop with sync `sqlite3` calls)
+- `sqlcipher3` — SQLCipher binding for encryption at rest (P7a); imported only when `DATABASE_ENCRYPTION_KEY` is set
 - `pydantic` — data models for Fact, Status, Link
 - `fastembed` — local CPU embedding model for semantic similarity
 - `numpy` — cosine similarity over embeddings
@@ -207,6 +208,57 @@ looks** (`aura.cards`, `aura.card_delivery`), each behind its own switch
 data only: **digest and onboarding make no LLM call and import no model-calling
 module** (asserted by `tests/test_answer_format_boundaries.py`).
 
+## Data Obligations (P7a): Deletion Is the One Exception
+
+P7a implemented what Discord's Developer Terms and the privacy groundwork
+require before a public listing (private report
+`reports/p7a-data-obligations-<date>.md`). Everything ships dark; DEPLOYMENT.md,
+"Data obligations (P7a)", has the switches and the Gate 3 steps.
+
+**Deletion lives in one module.** `aura.db.deletion` is the only code that
+deletes knowledge-model rows (a structural test enforces it). Its rules: a
+member's data (`forget_member`: facts and candidates from their messages,
+queued messages, their ID on counters and in moderator columns, welcome
+records; the member chooses "delete the facts" (default) or "keep them
+without the link"), a whole server (`purge_guild`, billing rows never), one
+fact (`forget_fact`, its replacement chain repaired: a predecessor points at
+the next surviving fact, or stays retired with no successor -- a deleted
+replacement never brings an outdated fact back), and retention by age. Each
+rule runs in ONE transaction, a dry run is the same statements rolled back
+(so dry-run counts equal real counts by construction), and each is bounded by
+a moment: only rows that existed then -- for message-derived rows, from
+messages written by then -- are touched.
+
+**The ledger makes deletions survive a restore.** Every executed deletion is
+recorded first in `data/deletion-ledger.db` (its own file, never restored with
+a database backup; content-free: kind, reason, server, a member's Discord ID,
+counts) and re-applied at every start and every purge tick, bounded to its
+moment. Who it is about is kept because a deletion could not be re-applied
+otherwise.
+
+**Leaving a server** marks it (`guild_departures`); after
+`GUILD_PURGE_GRACE_DAYS` (30) the purge job deletes its data -- only in
+`DATA_PURGE_MODE=delete`, only while the gateway is ready, and only if Discord
+confirms Aura is still not in that server. Returning within the period clears
+the mark. **Nothing is ever deleted because of a plan change** (the purge job
+is deliberately not given the plan gate).
+
+**Encryption at rest** is SQLCipher on the database and the ledger, keyed by
+`DATABASE_ENCRYPTION_KEY` (64 hex). With a key, a plaintext, wrongly keyed or
+missing file is refused at start -- never replaced by an empty database. It
+protects the files and their copies, not a logged-in attacker (the key is in
+`.env`).
+
+**Logs hold no content and no member IDs.** Model-failure lines go through
+`aura.log_safety.content_free_reason`; `discord`, `LiteLLM` and `aiosqlite`
+never log below INFO. A structural test sweeps every logger call.
+
+**Members are told.** `/aura-privacy` (summary, policy link, contact, the
+member's own delete button), "Privacy: /aura-privacy" under answers, a line in
+the welcome message, a one-time notice in a channel when capture is switched
+on there, and "🤖 AI-generated" on both answer types -- each behind a switch,
+the cards byte for byte unchanged while it is off.
+
 ## Core Principles
 
 ### Performance
@@ -350,6 +402,19 @@ Therefore, for every implementation, without exception:
   operator alarm. (d) Proactive relief keeps the grace period's watch until the
   post: a different member writing, or the question edited or deleted, after
   the grace period means no post.
+
+- **Open from P7a (all dark until Gate 3).** (1) The legal texts (privacy
+  policy, terms, Impressum, Art. 13/14 information) are not written; the
+  privacy summary's texts and its link/contact are placeholders from settings
+  and locale files. (2) Questions for the tax advisor: how long the billing rows
+  (`guild_subscriptions`, `stripe_processed_events`) must stay -- they are kept
+  by every rule. (3) Diagnostic rows that point at a member's message without
+  naming its author (`proactive_signals`, `proactive_escalations`) are not
+  found by a member's request; they leave by retention (90 days). (4) The
+  repository has no LICENSE file -- the licence is undecided. (5) Discord
+  verification and the Message Content application are due only when Aura
+  approaches 100 servers / 10,000 users (P6). (6) No native-speaker review of
+  the eight non-German P7a texts.
 
 - **Cross-guild shared budget — RESOLVED in Phase 4a-2.** The note that used to
   stand here said the five per-guild daily caps bound one guild's worst case

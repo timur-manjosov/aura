@@ -387,11 +387,10 @@ async def backfill_start(
         return
 
     logger.info(
-        "Backfill run %s started for channel %s in guild %s by user %s (since=%s)",
+        "Backfill run %s started for channel %s in guild %s by a moderator (since=%s)",
         run.id,
         channel.id,
         interaction.guild_id,
-        interaction.user.id,
         since or "the beginning of the channel",
     )
 
@@ -616,11 +615,10 @@ async def _transition(
         return
 
     logger.info(
-        "Backfill run %s (channel %s) moved to %s by user %s",
+        "Backfill run %s (channel %s) moved to %s by a moderator",
         run.id,
         channel.id,
         target.value,
-        interaction.user.id,
     )
     await interaction.response.send_message(
         t(success_key, locale, channel=channel.mention) + "\n" + _describe_progress(run, locale),

@@ -78,6 +78,7 @@ from aura.db.models import Fact
 from aura.llm_failures import record_call_failure
 from aura.llm_request_options import openrouter_extra_body, parse_provider_list
 from aura.llm_usage import log_llm_usage, was_cut_off
+from aura.log_safety import content_free_reason
 from aura.rendering import collapse_display_text
 from aura.synthesis import (
     MAX_PROMPT_FACT_CHARS,
@@ -845,11 +846,10 @@ def build_proactive_contract_messages(
 
 def _failure_reason(exc: Exception) -> str:
     """Describe why a reply was unusable without quoting any of its content."""
-    if isinstance(exc, ValidationError):
-        locations = [error["loc"] for error in exc.errors(include_input=False)][:5]
-        return f"{exc.error_count()} schema error(s) at {locations}"
     if isinstance(exc, json.JSONDecodeError):
         return "JSONDecodeError"
+    if isinstance(exc, ValidationError):
+        return content_free_reason(exc)
     return str(exc)[:300]
 
 

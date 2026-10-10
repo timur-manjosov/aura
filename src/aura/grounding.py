@@ -78,6 +78,7 @@ from aura.config import ModelComponent, Settings
 from aura.db.models import Fact
 from aura.llm_failures import record_call_failure
 from aura.llm_usage import log_llm_usage, was_cut_off
+from aura.log_safety import content_free_reason
 
 # The same fence-tolerant parser every other call site in this project goes
 # through -- see aura.synthesis._parse_json_response for the measurement behind
@@ -147,15 +148,14 @@ _MAX_ANSWER_CHARS = 4096
 # not earned trust in the field beside the one it ignored.
 _MAX_REASONING_CHARS = 600
 
-# The three finding DESCRIPTIONS are bounded differently: truncated for the log
-# rather than rejected. They carry no decision weight -- the booleans beside them
-# do -- so failing a whole check because a model was verbose about a finding it
-# already committed to would silence Aura for a formatting infraction, buying no
-# correctness at all. That direction of failure is not hypothetical here: it is
-# what Section 3 of reports/grounding-check.txt measured when this module's
-# earlier over-strictness refused 22 of 27 correct answers. Bounded anyway, so
-# an unbounded string cannot land whole in a log line.
-_MAX_LOGGED_DESCRIPTION_CHARS = 400
+# The three finding DESCRIPTIONS are not bounded or rejected at all: they carry
+# no decision weight -- the booleans beside them do -- so failing a whole check
+# because a model was verbose about a finding it already committed to would
+# silence Aura for a formatting infraction, buying no correctness at all. That
+# direction of failure is not hypothetical here: it is what Section 3 of
+# reports/grounding-check.txt measured when this module's earlier
+# over-strictness refused 22 of 27 correct answers. Since P7a they are not
+# logged either: they quote the answer and the facts, and logs hold no content.
 
 # There is deliberately NO sentinel string for "no finding" here, unlike
 # aura.extraction.supersession's `change_signal`. The first version of this
@@ -412,11 +412,6 @@ def _apply_evidence_rule(raw: _RawGroundingVerdict) -> bool:
     if not raw.grounded:
         return False
 
-    named = {
-        "unsupported_claim": raw.unsupported_claim,
-        "contradicted_claim": raw.contradicted_claim,
-        "invented_source": raw.invented_source,
-    }
     flagged = [
         field
         for field, flag in (
@@ -429,9 +424,7 @@ def _apply_evidence_rule(raw: _RawGroundingVerdict) -> bool:
     if flagged:
         logger.warning(
             "Grounding check reported %s while answering grounded=true; overruling it to false",
-            ", ".join(
-                f"{field}={named[field][:_MAX_LOGGED_DESCRIPTION_CHARS]!r}" for field in flagged
-            ),
+            ", ".join(flagged),
         )
         return False
     return True
@@ -519,22 +512,22 @@ async def _request_verdict(
 
         grounded = _apply_evidence_rule(raw)
         if not grounded:
+            # P7a: names of the flags only -- the reasoning, the claims and the
+            # answer quote facts and messages, and logs hold no content.
             logger.warning(
-                "Grounding check REJECTED an answer: %s (unsupported=%r, "
-                "contradicted=%r, invented_source=%r); answer was %r",
-                reasoning,
-                raw.unsupported_claim[:_MAX_LOGGED_DESCRIPTION_CHARS],
-                raw.contradicted_claim[:_MAX_LOGGED_DESCRIPTION_CHARS],
-                raw.invented_source[:_MAX_LOGGED_DESCRIPTION_CHARS],
-                answer[:500],
+                "Grounding check REJECTED an answer (unsupported=%s, contradicted=%s, "
+                "invented_source=%s)",
+                raw.has_unsupported_claim,
+                raw.has_contradicted_claim,
+                raw.has_invented_source,
             )
         else:
-            logger.debug("Grounding check passed an answer: %s", reasoning)
+            logger.debug("Grounding check passed an answer")
         return grounded
 
     except (ValidationError, ValueError) as exc:
         # json.JSONDecodeError is a ValueError subclass, so it is covered here.
-        logger.error("Grounding check response was malformed: %s", exc)
+        logger.error("Grounding check response was malformed: %s", content_free_reason(exc))
         return None
     except TimeoutError:
         logger.error(

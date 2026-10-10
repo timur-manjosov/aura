@@ -6,6 +6,9 @@ python-dotenv>=1.0.1
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 aiosqlite>=0.20.0
+# P7a: encryption at rest for the database (SQLCipher, bundled in the wheel).
+# Imported only when DATABASE_ENCRYPTION_KEY is set.
+sqlcipher3>=0.6.3
 fastembed>=0.8.0
 numpy>=2.0.0
 litellm>=1.93.0

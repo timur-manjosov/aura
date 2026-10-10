@@ -70,6 +70,7 @@ class AddFactModal(discord.ui.Modal):
         channel_id: int,
         message_id: int,
         prefill_content: str,
+        source_author_id: int | None = None,
     ) -> None:
         super().__init__(title=_truncate(t("fact_add_modal_title", locale), 45))
         self._db = db
@@ -77,6 +78,7 @@ class AddFactModal(discord.ui.Modal):
         self._guild_id = guild_id
         self._channel_id = channel_id
         self._message_id = message_id
+        self._source_author_id = source_author_id
 
         default = _truncate(prefill_content, _TEXT_INPUT_MAX_LENGTH) if prefill_content else None
         self.content_input: discord.ui.TextInput[discord.ui.Modal] = discord.ui.TextInput(
@@ -116,6 +118,7 @@ class AddFactModal(discord.ui.Modal):
             channel_id=self._channel_id,
             message_id=self._message_id,
             content=content,
+            source_author_id=self._source_author_id,
         )
         await send_confirmation(interaction, t("fact_add_success", locale, fact_id=fact.id))
 
@@ -206,6 +209,7 @@ async def add_fact_context_menu(
         channel_id=message.channel.id,
         message_id=message.id,
         prefill_content=message.content,
+        source_author_id=message.author.id,
     )
     await interaction.response.send_modal(modal)
 

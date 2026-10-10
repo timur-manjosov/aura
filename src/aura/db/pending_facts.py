@@ -274,6 +274,7 @@ async def stage_pending_fact(
     category: FactCategory,
     similar_fact_id: int | None = None,
     similar_fact_score: float | None = None,
+    source_author_id: int | None = None,
 ) -> PendingFact | None:
     """Stage one distilled candidate for review.
 
@@ -294,6 +295,9 @@ async def stage_pending_fact(
         the dedup threshold.
     similar_fact_score
         That fact's similarity, or None when `similar_fact_id` is None.
+    source_author_id
+        The source message's author (P7a); carried onto the fact if the
+        candidate is confirmed.
 
     Returns
     -------
@@ -321,8 +325,8 @@ async def stage_pending_fact(
             """
             INSERT INTO pending_facts
                 (guild_id, channel_id, message_id, content, embedding, category, status,
-                 similar_fact_id, similar_fact_score, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 similar_fact_id, similar_fact_score, created_at, source_author_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (channel_id, message_id, content) DO NOTHING
             """,
             (
@@ -336,6 +340,7 @@ async def stage_pending_fact(
                 similar_fact_id,
                 similar_fact_score,
                 created_at,
+                source_author_id,
             ),
         )
         await conn.commit()
@@ -730,6 +735,11 @@ async def confirm_pending_fact(
                     "discarded (possibly by a concurrent call); nothing was changed."
                 )
 
+            async with conn.execute(
+                "SELECT source_author_id FROM pending_facts WHERE id = ?", (pending_id,)
+            ) as cursor:
+                author_row = await cursor.fetchone()
+
             fact = await insert_fact_within_transaction(
                 conn,
                 guild_id=candidate.guild_id,
@@ -738,6 +748,7 @@ async def confirm_pending_fact(
                 content=candidate.content,
                 embedding=candidate.embedding,
                 created_at=now,
+                source_author_id=author_row[0] if author_row is not None else None,
             )
 
             await conn.execute(

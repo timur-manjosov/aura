@@ -615,6 +615,7 @@ async def _select_candidates(
                 # QueuedMessage is the shape distill_facts and
                 # stage_distilled_candidates already speak.
                 enqueued_at=utc_now(),
+                author_id=message.author.id,
             )
         )
     return selected

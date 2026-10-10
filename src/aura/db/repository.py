@@ -67,8 +67,9 @@ _FACT_COLUMNS = (
 )
 
 _INSERT_FACT_SQL = """
-INSERT INTO facts (guild_id, channel_id, message_id, content, embedding, status, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO facts
+    (guild_id, channel_id, message_id, content, embedding, status, created_at, source_author_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -204,6 +205,11 @@ async def init_schema(conn: aiosqlite.Connection) -> None:
     against would silently accept orphaned fact_links rows.
     """
     await conn.execute("PRAGMA foreign_keys = ON")
+    # P7a: a deleted row's bytes are overwritten with zeros instead of lingering
+    # in free pages, so a deletion request also removes the text from the file.
+    # Debian's SQLite build already defaults to this; set explicitly so the
+    # promise does not depend on how a given SQLite was compiled.
+    await conn.execute("PRAGMA secure_delete = ON")
     await conn.execute("PRAGMA journal_mode = WAL")
     schema_sql = await asyncio.to_thread(_SCHEMA_PATH.read_text, encoding="utf-8")
     await conn.executescript(schema_sql)
@@ -219,6 +225,7 @@ async def insert_fact_within_transaction(
     content: str,
     embedding: bytes,
     created_at: str,
+    source_author_id: int | None = None,
 ) -> Fact:
     """Insert one active fact into an already-open transaction.
 
@@ -235,6 +242,10 @@ async def insert_fact_within_transaction(
         `content`'s vector, `EMBEDDING_DTYPE` bytes.
     created_at
         The fact's timestamp, as fixed-width UTC ISO-8601 text.
+    source_author_id
+        The Discord user who wrote the source message, when known (P7a).
+        Stored so a deletion request can find the fact; never part of the
+        returned `Fact`.
 
     Returns
     -------
@@ -261,7 +272,16 @@ async def insert_fact_within_transaction(
     """
     cursor = await conn.execute(
         _INSERT_FACT_SQL,
-        (guild_id, channel_id, message_id, content, embedding, FactStatus.ACTIVE, created_at),
+        (
+            guild_id,
+            channel_id,
+            message_id,
+            content,
+            embedding,
+            FactStatus.ACTIVE,
+            created_at,
+            source_author_id,
+        ),
     )
     fact_id = cursor.lastrowid
     assert fact_id is not None  # guaranteed by sqlite after a successful INSERT
@@ -288,6 +308,7 @@ async def create_fact(
     message_id: int,
     content: str,
     embedding: bytes,
+    source_author_id: int | None = None,
 ) -> Fact:
     """Insert a new active fact in its own transaction and return it.
 
@@ -301,6 +322,8 @@ async def create_fact(
         The distilled sentence.
     embedding
         `content`'s vector.
+    source_author_id
+        The source message's author, when known (P7a).
 
     Returns
     -------
@@ -325,6 +348,7 @@ async def create_fact(
             content=content,
             embedding=embedding,
             created_at=utc_now_iso(),
+            source_author_id=source_author_id,
         )
         await conn.commit()
     return fact
@@ -726,6 +750,65 @@ async def unlink_facts(
         await conn.commit()
 
     return removed
+
+
+async def get_guild_facts(conn: aiosqlite.Connection, guild_id: int) -> list[Fact]:
+    """Return every fact of a guild, active and superseded, by ID.
+
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        The guild.
+
+    Returns
+    -------
+    list[Fact]
+        All of the guild's facts, oldest ID first. For the export (P7a), which
+        hands over the whole knowledge base including its history.
+    """
+    async with (
+        connection_lock(conn),
+        conn.execute(
+            f"SELECT {_FACT_COLUMNS} FROM facts WHERE guild_id = ? ORDER BY id", (guild_id,)
+        ) as cursor,
+    ):
+        rows = await cursor.fetchall()
+    return [_row_to_fact(row) for row in rows]
+
+
+async def get_guild_links(conn: aiosqlite.Connection, guild_id: int) -> list[tuple[int, int]]:
+    """Return every linked pair of a guild's facts.
+
+    Parameters
+    ----------
+    conn
+        Open database connection.
+    guild_id
+        The guild.
+
+    Returns
+    -------
+    list[tuple[int, int]]
+        (smaller ID, larger ID) pairs, both facts of this guild.
+    """
+    async with (
+        connection_lock(conn),
+        conn.execute(
+            """
+            SELECT link.fact_a_id, link.fact_b_id
+            FROM fact_links AS link
+            JOIN facts AS first ON first.id = link.fact_a_id
+            JOIN facts AS second ON second.id = link.fact_b_id
+            WHERE first.guild_id = ? AND second.guild_id = ?
+            ORDER BY link.fact_a_id, link.fact_b_id
+            """,
+            (guild_id, guild_id),
+        ) as cursor,
+    ):
+        rows = await cursor.fetchall()
+    return [(row[0], row[1]) for row in rows]
 
 
 async def get_active_facts(conn: aiosqlite.Connection, guild_id: int) -> list[Fact]:

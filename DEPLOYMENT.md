@@ -746,6 +746,156 @@ after a code change" and recreate the bot; to undo only the supersession model
 switch, remove its five lines from `.env` and recreate. No database change is
 involved.
 
+## Data obligations (P7a) -- ship dark
+
+P7a builds what Discord's Developer Terms and the privacy groundwork require
+before a public listing: encryption at rest, deletion on request, clean-up
+after Aura leaves a server, rows kept no longer than needed, an export of the
+knowledge base, a privacy summary for members and an "AI-generated" label. The
+private report is `reports/p7a-data-obligations-<date>.md`.
+
+**Active on deploy (no switch):**
+
+- Three nullable columns and one table are added at start-up, in place:
+  `facts.source_author_id`, `pending_facts.source_author_id`,
+  `extraction_queue.author_id`, `extraction_channel_config.privacy_notice_posted_at`
+  and `guild_departures`. From now on the author of a fact's source message is
+  stored, so a member's deletion request can find it. Rollback: the previous
+  image ignores the new columns (no data is changed by them).
+- `on_guild_remove` marks a server Aura left; `on_guild_join` clears the mark;
+  every `on_ready` reconciles servers left while the bot was offline. A mark
+  deletes nothing.
+- The purge job runs every `DATA_PURGE_CHECK_INTERVAL_SECONDS` in `report`
+  mode: it logs what it WOULD delete (`Purge job (report only): ...`,
+  `Purge job retention (report only, nothing deleted): ...`) and deletes
+  nothing. It also re-applies the deletion ledger, which is empty until someone
+  deletes something.
+- `secure_delete` is set on every connection; the WAL is truncated after every
+  deletion.
+- Logs: no member IDs in the onboarding and backfill lines, no content in any
+  model-failure line, and `discord`, `LiteLLM` and `aiosqlite` never log below
+  INFO (their DEBUG output carries message text and prompts). The bot
+  container's log is bounded to 5 × 10 MB.
+- `data/deletion-ledger.db` is created (empty) next to the database.
+
+**The switches (all off by default):**
+
+| Key | Default | Meaning |
+|---|---|---|
+| `DATABASE_ENCRYPTION_KEY` | unset | 64 hex characters; the database and the ledger are SQLCipher files. A migration, not a toggle (below). |
+| `DATA_PURGE_MODE` | `report` | `delete`: purge servers left more than `GUILD_PURGE_GRACE_DAYS` (30) days ago and apply the retention rules. |
+| `PROACTIVE_SIGNAL_RETENTION_DAYS` / `ASK_MEMBER_ID_RETENTION_DAYS` / `ONBOARDING_SEND_RETENTION_DAYS` | 90 / 2 / 30 | diagnostic rows with message IDs deleted; the member ID on `/aura-ask` counters replaced by 0 (counts per server stay); welcome records deleted |
+| `PRIVACY_INFO_ENABLED` | `false` | `/aura-privacy`, "Privacy: /aura-privacy" under every answer, a line in the welcome message, and a one-time notice in a channel when a moderator switches capture on there. Needs `PRIVACY_POLICY_URL` (https) and `PRIVACY_CONTACT`. |
+| `DATA_DELETION_ENABLED` | `false` | the delete button in `/aura-privacy`, `/aura-forget`, `/aura-delete-server-data`, `/aura-operator-privacy`, and the one-time author lookup. Needs `PRIVACY_INFO_ENABLED`. |
+| `DATA_EXPORT_ENABLED` | `false` | `/aura-export` (one per server per `EXPORT_COOLDOWN_SECONDS`, 600) |
+| `AI_LABEL_ENABLED` | `false` | "🤖 AI-generated" in front of every `/aura-ask` and unprompted answer |
+
+New commands appear only when their switch is on (the command list every
+server sees is unchanged with the defaults).
+
+**Backups from now on (both modes).** Keep backup folders at most 30 days:
+at every deploy, after the new backup is verified, delete the `aura-*` folders
+in `~/backups` older than 30 days (`find ~/backups -maxdepth 1 -name 'aura-*'
+-mtime +30` lists them; delete after looking). A deletion therefore leaves the
+live database at once and every backup within 30 days. **Never restore
+`data/deletion-ledger.db` together with a database backup**: restore
+`data/aura.db` only, then start the bot -- the ledger re-applies every
+recorded deletion at start-up, bounded to data from before each deletion.
+
+### Gate 3a: encryption at rest
+
+1. Generate the key on the deploying machine:
+   `python -c "import secrets; print(secrets.token_hex(32))"`. Put it in the
+   password manager FIRST (entry "Aura database key"), then into the local
+   `.env` as `DATABASE_ENCRYPTION_KEY=`.
+2. Backup as in "Redeploying after a code change", plus a rollback tag.
+3. Two dry runs on copies, the bot still running (key passed in the
+   environment of a one-off container, never on the command line):
+   ```
+   cd ~/projects/aura && docker compose exec aura python -m aura.db.maintenance backup data/aura.db data/dry1-plain.db
+   docker compose run --rm --no-deps --entrypoint python -e DATABASE_ENCRYPTION_KEY aura -m aura.db.maintenance encrypt data/dry1-plain.db data/dry1-enc.db
+   ```
+   (export `DATABASE_ENCRYPTION_KEY` in the shell first, from the password
+   manager). Repeat as `dry2-*`. Both must print `integrity=ok cipher=ok` and
+   the SAME schema hash and row counts as the plaintext copy. Delete the dry
+   files afterwards.
+4. Stop the bot: `docker compose stop aura`. `ls -la data/` must now show
+   no `aura.db-wal` and no `deletion-ledger.db-wal` (a clean close folds the
+   WAL into the file); if one is there, start and stop the bot once more.
+5. Encrypt both files, keeping the plaintext ones until step 8:
+   ```
+   docker compose run --rm --no-deps --entrypoint python -e DATABASE_ENCRYPTION_KEY aura -m aura.db.maintenance encrypt data/aura.db data/aura.encrypted.db
+   docker compose run --rm --no-deps --entrypoint python -e DATABASE_ENCRYPTION_KEY aura -m aura.db.maintenance encrypt data/deletion-ledger.db data/deletion-ledger.encrypted.db
+   mv data/aura.db data/aura.plain.db && mv data/aura.encrypted.db data/aura.db
+   mv data/deletion-ledger.db data/deletion-ledger.plain.db && mv data/deletion-ledger.encrypted.db data/deletion-ledger.db
+   ```
+   (`encrypt` refuses to write over an existing file, and checks that the
+   copy has the source's schema and row counts before it reports success.)
+6. Add `DATABASE_ENCRYPTION_KEY` to the server's `.env` (mode 600), start:
+   `docker compose up -d --no-deps aura`. Check `Database ready at
+   data/aura.db (encrypted at rest)` and no CRITICAL.
+7. Encrypted backup, read back: `docker compose exec aura python -m
+   aura.db.maintenance backup data/aura.db data/check-backup.db` must print
+   `integrity=ok cipher=ok` and the expected counts; move it into the backup
+   folder.
+8. After Timur's "go": delete the plaintext files (`data/aura.plain.db`,
+   `data/deletion-ledger.plain.db`) and the older plaintext backup folders and
+   archives in `~/backups`.
+
+**Rollback (before step 8):** stop the bot, `mv data/aura.plain.db
+data/aura.db` (and the ledger), remove `DATABASE_ENCRYPTION_KEY` from `.env`,
+start. After step 8: `python -m aura.db.maintenance decrypt` writes a
+plaintext copy with the key.
+
+**From then on, backups go through the container** (the host's `sqlite3`
+cannot read the file): `docker compose exec aura python -m aura.db.maintenance
+backup data/aura.db data/backup-<TS>.db`, then move the file into the backup
+folder; `verify <file>` reads one back. Reads for reports use the same tool
+(counts only) or a decrypted copy that is deleted right after.
+
+**Rotating the key:** stop the bot; with `DATABASE_ENCRYPTION_KEY` (old) and
+`DATABASE_ENCRYPTION_NEW_KEY` (new) in the one-off container's environment run
+`maintenance rekey data/aura.db` and `maintenance rekey
+data/deletion-ledger.db`; put the new key in `.env` and the password manager;
+start. Old backups keep the old key -- keep it until they have aged out.
+
+**Key loss.** With a wrong or missing key the bot refuses to start (`Startup
+aborted: data/aura.db: the configured key does not open this file ...`) and
+changes nothing; it never creates a new, empty database in place of the
+encrypted one. Then: (1) look for the key in the password manager and in the
+local `.env`; (2) if found, put it back and start; (3) if it is lost for good,
+the database AND every backup made since the migration are unreadable --
+there is no recovery. Stop the bot, move the unreadable files aside (do not
+delete them, in case the key turns up), remove `DATABASE_ENCRYPTION_KEY` (or
+generate a new one and run the steps above on an empty database), start the
+bot with an empty knowledge base and tell the servers. Tested:
+`tests/test_database_encryption.py::TestKeyLoss`.
+
+### Gate 3b: the purge job
+
+Read the `Purge job (report only)` lines for at least one cycle: they name the
+servers that would be purged and the rows per table, and the retention counts.
+Then set `DATA_PURGE_MODE=delete` and recreate the bot. Each purge writes a
+`Deletion N (server, left_server): ...` line and a ledger entry. Rollback:
+`DATA_PURGE_MODE=report` (what was deleted stays deleted -- restore from the
+pre-switch backup only if a purge was wrong, and then expect the ledger to
+re-apply it at start; remove the wrong entry from `data/deletion-ledger.db`
+first, with the bot stopped).
+
+### Gate 3c: deletion, export, privacy summary, AI label
+
+Set `PRIVACY_POLICY_URL`, `PRIVACY_CONTACT`, `PRIVACY_INFO_ENABLED=true`,
+`DATA_DELETION_ENABLED=true`, `DATA_EXPORT_ENABLED=true`,
+`AI_LABEL_ENABLED=true`; recreate. Within a minute of the start the author
+lookup runs once (`Author lookup: N resolved, ...`); `/aura-operator-privacy
+status` shows how many sources are still without an author and `lookup-authors`
+runs it again. Rollback: set the four switches back to `false` and recreate.
+
+**When Aura stops for good** (Discord's terms): purge every server
+(`/aura-operator-privacy forget-server` for each, or `DATA_PURGE_MODE=delete`
+after removing the bot from every server and waiting the period), then delete
+`data/` and every backup.
+
 ## Plans and billing (Phase 4c)
 
 Billing ships switched off (`BILLING_MODE=disabled`): a redeploy with this code

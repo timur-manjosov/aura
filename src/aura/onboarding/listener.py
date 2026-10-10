@@ -108,8 +108,7 @@ async def handle_member_join(
     )
     if content.is_empty:
         logger.info(
-            "No onboarding message for member %s in guild %s: no eligible active facts yet",
-            member.id,
+            "No onboarding message for a new member in guild %s: no eligible active facts yet",
             guild.id,
         )
         return
@@ -151,15 +150,13 @@ async def handle_member_join(
     )
     if outcome is OnboardingSendOutcome.ALREADY_SENT:
         logger.info(
-            "Onboarding for member %s in guild %s was already sent for this join; staying silent",
-            member.id,
+            "Onboarding for a member in guild %s was already sent for this join; staying silent",
             guild.id,
         )
         return
     if outcome is OnboardingSendOutcome.DAILY_CAP_REACHED:
         logger.warning(
-            "Onboarding for member %s in guild %s skipped: daily cap of %d reached",
-            member.id,
+            "Onboarding for a member in guild %s skipped: daily cap of %d reached",
             guild.id,
             settings.onboarding_daily_cap,
         )
@@ -177,27 +174,28 @@ async def handle_member_join(
                 locale=locale,
                 server_name=str(getattr(guild, "name", "") or ""),
                 channel_names=fact_channel_names(guild, {fact.channel_id for fact in shown}),
+                privacy_line=settings.privacy_info_enabled,
             )
             await send_card_to_channel(channel, card, style=settings.answer_card_style)
         else:
-            embed = build_onboarding_embed(content, locale=locale)
+            embed = build_onboarding_embed(
+                content, locale=locale, privacy_line=settings.privacy_info_enabled
+            )
             # Mentions are suppressed for the same reason the digest suppresses
             # them: a fact's text is written by a server member, and "@everyone"
             # reaching an automated post must be impossible by construction.
             await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     except Exception:
         logger.exception(
-            "Onboarding post failed in channel %s (guild %s) for member %s",
+            "Onboarding post failed in channel %s (guild %s)",
             config.channel_id,
             guild.id,
-            member.id,
         )
         return
 
     logger.info(
-        "Posted onboarding for member %s in guild %s: %d fact(s) (%d rule(s), "
+        "Posted onboarding for a new member in guild %s: %d fact(s) (%d rule(s), "
         "%d status change(s), %d other), %d omitted by the cap",
-        member.id,
         guild.id,
         content.shown_count,
         len(content.rules),

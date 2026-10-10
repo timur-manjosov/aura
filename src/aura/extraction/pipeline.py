@@ -306,6 +306,7 @@ async def handle_extraction_message(
             content=message.content,
             message_created_at=message.created_at,
             now=utc_now(),
+            author_id=message.author.id,
         )
     except Exception:
         logger.exception("Extraction intake failed for message %s", _log_reference(message))
@@ -824,6 +825,7 @@ async def stage_distilled_candidates(
             category=candidate.category,
             similar_fact_id=similar_fact.id if above_threshold and similar_fact else None,
             similar_fact_score=similar_score if above_threshold else None,
+            source_author_id=source.author_id,
         )
         if staged is None:
             logger.info(

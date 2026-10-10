@@ -51,6 +51,7 @@ from aura.db.variant_state import try_acquire_variant_call_slot
 from aura.embeddings import EMBEDDING_DTYPE, embed_texts
 from aura.llm_failures import record_call_failure
 from aura.llm_usage import was_cut_off
+from aura.log_safety import content_free_reason
 
 # The same fence-tolerant parser every other call site in this project goes
 # through. Imported rather than re-implemented for the reason recorded at
@@ -319,7 +320,7 @@ async def _generate_variants(canonical: str, *, count: int, model: str) -> list[
         return _validate_generated_variants(raw_result.variants)
 
     except (ValidationError, ValueError) as exc:
-        logger.error("Variant generation response was malformed: %s", exc)
+        logger.error("Variant generation response was malformed: %s", content_free_reason(exc))
         return None
     except Exception as exc:
         # P5c: a refused key raises the operator's alarm (aura.llm_failures).
@@ -429,7 +430,7 @@ async def _audit_variants(
         return _apply_audit_verdicts(raw_result.verdicts, variant_count=len(variants))
 
     except (ValidationError, ValueError) as exc:
-        logger.error("Variant fidelity audit response was malformed: %s", exc)
+        logger.error("Variant fidelity audit response was malformed: %s", content_free_reason(exc))
         return None
     except Exception as exc:
         # P5c: a refused key raises the operator's alarm (aura.llm_failures).
