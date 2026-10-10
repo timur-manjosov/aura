@@ -77,6 +77,7 @@ from aura.db.pending_facts import FactCategory
 from aura.llm_failures import is_retryable, record_call_failure
 from aura.llm_request_options import openrouter_extra_body, parse_provider_list
 from aura.llm_usage import log_llm_usage, was_cut_off
+from aura.log_safety import content_free_reason
 
 # The same fence-tolerant parser /aura-ask and proactive relief go through.
 # Imported rather than re-implemented on purpose: `response_format` is a
@@ -410,7 +411,7 @@ async def distill_facts(
             "Distillation response was malformed for a %d-message batch in #%s: %s",
             len(candidates),
             channel_name,
-            exc,
+            content_free_reason(exc),
         )
         return None
     except Exception as exc:

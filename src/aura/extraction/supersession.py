@@ -117,6 +117,7 @@ from aura.db.pending_facts import SupersessionRelationship
 from aura.llm_failures import record_call_failure
 from aura.llm_request_options import openrouter_extra_body, parse_provider_list
 from aura.llm_usage import log_llm_usage, was_cut_off
+from aura.log_safety import content_free_reason
 
 # The same fence-tolerant parser every other call site in this project goes
 # through. Imported rather than re-implemented for the reason recorded at
@@ -439,9 +440,8 @@ def _apply_change_signal_rule(raw: _RawJudgement) -> SupersessionRelationship:
         raw.change_signal
     ):
         logger.warning(
-            "Model proposed a supersession with no transition wording to point at "
-            "(change_signal=%r); escalating it as a contradiction instead",
-            raw.change_signal,
+            "Model proposed a supersession with no transition wording to point at; "
+            "escalating it as a contradiction instead"
         )
         return SupersessionRelationship.CONTRADICTION
     return raw.category
@@ -555,7 +555,7 @@ async def judge_relationship(
 
     except (ValidationError, ValueError) as exc:
         # json.JSONDecodeError is a ValueError subclass, so it is covered here.
-        logger.error("Supersession judgement response was malformed: %s", exc)
+        logger.error("Supersession judgement response was malformed: %s", content_free_reason(exc))
         return None
     except Exception as exc:
         # P5c: a refused key raises the operator's alarm (aura.llm_failures).

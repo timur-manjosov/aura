@@ -49,6 +49,7 @@ from aura.config import load_settings
 from aura.db.models import Fact
 from aura.llm_failures import record_call_failure
 from aura.llm_usage import log_llm_usage, was_cut_off
+from aura.log_safety import content_free_reason
 
 logger = logging.getLogger(__name__)
 
@@ -473,10 +474,10 @@ async def synthesize_answer(
         )
 
     except (json.JSONDecodeError, ValidationError, ValueError) as exc:
-        logger.error("Synthesis response was malformed for question %r: %s", question, exc)
+        logger.error("Synthesis response was malformed: %s", content_free_reason(exc))
         return None
     except Exception as exc:
         # P5c: a refused key raises the operator's alarm (aura.llm_failures).
         record_call_failure(exc, purpose="synthesis", model=model)
-        logger.exception("Synthesis call failed for question %r", question)
+        logger.exception("Synthesis call failed")
         return None

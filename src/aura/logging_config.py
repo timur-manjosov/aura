@@ -15,6 +15,12 @@ import sys
 from typing import Final
 
 _LOG_FORMAT: Final = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+
+# Third-party loggers whose DEBUG output carries content: discord.py's gateway
+# dumps every event (message text included), LiteLLM dumps whole prompts, and
+# aiosqlite logs each statement with its parameters. P7a: they never log below
+# INFO, whatever LOG_LEVEL says -- logs hold no message or fact text.
+CONTENT_BEARING_LOGGERS: Final[tuple[str, ...]] = ("discord", "LiteLLM", "aiosqlite")
 _DATE_FORMAT: Final = "%Y-%m-%d %H:%M:%S"
 
 logger = logging.getLogger(__name__)
@@ -61,8 +67,10 @@ def configure_logging(level: str = "INFO") -> None:
     root_logger.addHandler(handler)
 
     # discord.py logs through its own "discord" logger hierarchy; keep it at
-    # the same level so gateway events are as visible/quiet as everything else.
-    logging.getLogger("discord").setLevel(resolved_level)
+    # the same level so gateway events are as visible/quiet as everything else
+    # -- but never below INFO (see CONTENT_BEARING_LOGGERS).
+    for name in CONTENT_BEARING_LOGGERS:
+        logging.getLogger(name).setLevel(max(resolved_level, logging.INFO))
 
     if used_fallback:
         logger.warning(
