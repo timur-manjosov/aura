@@ -97,7 +97,9 @@ def _fit_section(facts: list[Fact], locale: str) -> str:
     )
 
 
-def build_onboarding_embed(content: OnboardingContent, *, locale: str) -> discord.Embed:
+def build_onboarding_embed(
+    content: OnboardingContent, *, locale: str, privacy_line: bool = False
+) -> discord.Embed:
     """Render an assembled onboarding summary as the embed that gets posted.
 
     Parameters
@@ -108,6 +110,9 @@ def build_onboarding_embed(content: OnboardingContent, *, locale: str) -> discor
         (mirrors `build_digest_embed` exactly).
     locale
         Language to render in.
+    privacy_line
+        PRIVACY_INFO_ENABLED (P7a): add the line telling new members that Aura
+        reads some channels, and where to read more.
 
     Returns
     -------
@@ -159,5 +164,7 @@ def build_onboarding_embed(content: OnboardingContent, *, locale: str) -> discor
         # speaks about the section it is attached to. Named once, at the
         # message level, so the gap is never silent.
         footer = footer + " " + t("onboarding_capped_note", locale, count=content.omitted_count)
+    if privacy_line:
+        footer = footer + " " + t("privacy_welcome_line", locale)
     embed.set_footer(text=footer)
     return embed

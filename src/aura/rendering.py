@@ -264,7 +264,13 @@ def source_link(fact: Fact) -> str:
     fact list pays that off the same way: a line the reader can click through
     to the message behind it is a citation, while the same line without one is
     a claim.
+
+    A fact whose link was removed at its author's request (P7a: message ID 0)
+    links to its server instead: still a working link, no longer to anyone's
+    message.
     """
+    if fact.message_id == 0:
+        return f"https://discord.com/channels/{fact.guild_id}"
     return f"https://discord.com/channels/{fact.guild_id}/{fact.channel_id}/{fact.message_id}"
 
 

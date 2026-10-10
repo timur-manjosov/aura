@@ -49,6 +49,8 @@ from aura.answer_card import (
     card_to_layout_view,
     card_to_plain_text,
     components_v2_available,
+    label_legacy_embed,
+    with_answer_labels,
 )
 from aura.answer_check import build_statements, verify_answer_v2
 from aura.answer_contract import synthesize_contract_answer
@@ -528,7 +530,16 @@ async def _answer_in_v2(
             style=style,
         )
         return
-    await _send_card(interaction, card, style=style)
+    await _send_card(
+        interaction,
+        with_answer_labels(
+            card,
+            locale=locale,
+            ai_label=settings.ai_label_enabled,
+            privacy_line=settings.privacy_info_enabled,
+        ),
+        style=style,
+    )
 
 
 async def _handle_ask_command_error(
@@ -648,11 +659,16 @@ async def ask_command(interaction: discord.Interaction[AuraClient], question: st
             await _send_card(
                 interaction,
                 (
-                    build_fact_list_card(
-                        MessageKind.RELATED,
-                        t("ask_no_info_related", locale),
-                        retrieval.related_facts,
-                        question=question,
+                    with_answer_labels(
+                        build_fact_list_card(
+                            MessageKind.RELATED,
+                            t("ask_no_info_related", locale),
+                            retrieval.related_facts,
+                            question=question,
+                        ),
+                        locale=locale,
+                        ai_label=False,
+                        privacy_line=settings.privacy_info_enabled,
                     )
                     if retrieval.related
                     else build_notice_card(
@@ -700,11 +716,16 @@ async def ask_command(interaction: discord.Interaction[AuraClient], question: st
             await _remove_public_deferral(interaction)
             await _send_card(
                 interaction,
-                build_fact_list_card(
-                    MessageKind.LIMIT,
-                    _limit_note(outcome, locale, now=now),
-                    relevant_facts[:_FREE_ANSWER_FACT_LIMIT],
-                    question=question,
+                with_answer_labels(
+                    build_fact_list_card(
+                        MessageKind.LIMIT,
+                        _limit_note(outcome, locale, now=now),
+                        relevant_facts[:_FREE_ANSWER_FACT_LIMIT],
+                        question=question,
+                    ),
+                    locale=locale,
+                    ai_label=False,
+                    privacy_line=settings.privacy_info_enabled,
                 ),
                 style=settings.answer_card_style,
                 ephemeral=True,
@@ -778,11 +799,14 @@ async def ask_command(interaction: discord.Interaction[AuraClient], question: st
 
     embed = discord.Embed(description=_truncate(result.answer, _ANSWER_DISPLAY_LIMIT))
     if cited_facts:
-        links = "\n".join(
-            f"https://discord.com/channels/{fact.guild_id}/{fact.channel_id}/{fact.message_id}"
-            for fact in cited_facts
-        )
+        links = "\n".join(source_link(fact) for fact in cited_facts)
         embed.add_field(name=t("ask_sources_label", locale), value=links, inline=False)
+    label_legacy_embed(
+        embed,
+        locale=locale,
+        ai_label=settings.ai_label_enabled,
+        privacy_line=settings.privacy_info_enabled,
+    )
 
     # A normal, visible message -- not ephemeral. Unlike the moderator
     # debug tools, a good answer has value to everyone who can see the
